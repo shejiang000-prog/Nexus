@@ -82,8 +82,7 @@ def run(args):
                 stack.callback(proc.wait,5)
                 stack.callback(proc.terminate)
                 return proc
-            daemon = launch([args.xray,"run","-config",config])
-            peers = [daemon]
+            peers = [] if args.full_device else [launch([args.xray,"run","-config",config])]
             if args.shoes:
                 settings = []
                 for typ in ("tuic","anytls"):
@@ -102,9 +101,12 @@ def run(args):
                         listener.update(protocol=dict(type="tls",tls_targets={"nexus.test":tls}))
                         auth=password
                     settings.append(listener)
-                    nodes.append(dict(type=typ,name=typ,config=f"{typ}://{auth}@{peer}?sni=nexus.test"+("&alpn=h3" if typ=="tuic" else "")))
+                    nodes.append(dict(type=typ,name=typ,config=f"{typ}://{auth}@{peer}?sni=nexus.test" + (f"&pcs={pin}" if args.full_device else "") +("&alpn=h3" if typ=="tuic" else "")))
                 path=root/"shoes.yaml"
                 path.write_text(json.dumps(settings))
+                if args.full_device:
+                    from subscription_lab import full_device
+                    return full_device(args, root, nodes, inbounds, settings)
                 peers.append(launch([args.shoes,"-t","2","--no-reload",path]))
             try:
                 import time
@@ -127,4 +129,7 @@ if __name__=="__main__":
     parser.add_argument("--xray",required=True,type=Path)
     parser.add_argument("--shoes",type=Path)
     parser.add_argument("--fixture",required=True,type=Path)
-    run(parser.parse_args())
+    parser.add_argument("--full-device",action="store_true")
+    args = parser.parse_args()
+    if args.full_device and not args.shoes: parser.error("--full-device requires --shoes")
+    run(args)

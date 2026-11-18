@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.*
 import org.json.JSONObject
 
-private data class Plan(val profile: Profile?, val outbound: JSONObject?, val name: String, val dns: String?, val checkKey: String? = null)
+private data class Plan(val profile: Profile?, val outbound: JSONObject?, val name: String, val dns: String?, val checkKey: String? = null, val node: String? = checkKey)
 
 class Tunnel(private val signingAlias: String, private val protectSocket: (Int) -> Boolean, private val ready: (Int) -> Unit) {
     var path: (Long,Long,Long) -> Unit = { _,_,_ -> }
@@ -31,7 +31,7 @@ class Tunnel(private val signingAlias: String, private val protectSocket: (Int) 
 
 data class TunnelState(val starting: Boolean = false, val port: Int = 0, val error: String = "", val subscription: String = "",
                        val vpn: Boolean = false, val waiting: Boolean = false, val activeProfile: Profile? = null,
-                       val connectedAt: Long = 0, val path: String = "") {
+                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "") {
     val active get() = starting || port != 0 || vpn
 }
 
@@ -80,9 +80,10 @@ class TunnelService : VpnService() {
                 if (refs!=null) {
                     require(refs.length()<=7)
                     for (i in 0 until refs.length()) alternates.addLast(refs.getJSONObject(i))
+                    alternates.addLast(JSONObject().put("source",source.id).put("updated",source.updated).put("index",index))
                 }
                 Plan(null, CompatEngine.outbound(node), source.label + " · " + node.getString("name"), dns,
-                    if (refs==null) null else nodeKey(source.id,node))
+                    if (refs==null) null else nodeKey(source.id,node),nodeKey(source.id,node))
             } else {
                 val p = requireNotNull(Profile.load(this))
                 if (systemStart) require(p.dns != null)
@@ -199,15 +200,18 @@ class TunnelService : VpnService() {
         val prefs = getSharedPreferences("local",0)
         if (plan.checkKey!=null && !prefs.contains("pinned")) {
             val store=Subscriptions(this)
-            while (alternates.isNotEmpty()) {
+            repeat(alternates.size) {
                 val ref=alternates.removeFirst()
                 val next=runCatching {
                     val source=store.get(ref.getString("source"))
-                    require(source.updated==ref.getLong("updated") && store.appearance.getBoolean("auto/"+source.id,false))
+                    require(source.updated==ref.getLong("updated") && source.hasAllowance() && store.appearance.getBoolean("auto/"+source.id,false))
                     val node=source.nodes.getJSONObject(ref.getInt("index"))
                     Plan(null,CompatEngine.outbound(node),source.label+" · "+node.getString("name"),plan.dns,nodeKey(source.id,node))
                 }.getOrNull()
-                if (next!=null) { selected=next;return next }
+                if (next!=null) {
+                    alternates.addLast(ref)
+                    if (next.node!=plan.node) { selected=next;return next }
+                }
             }
         }
         if (plan.profile == null || plan.dns == null || prefs.contains("pinned") || !prefs.getBoolean("failover",false)) return plan
@@ -240,7 +244,7 @@ class TunnelService : VpnService() {
                     if (token == serial) {
                         failures = 0
                         state.value = TunnelState(port = port, vpn = vpn, subscription = if (plan.outbound != null) plan.name else "",
-                            activeProfile = plan.profile, connectedAt = android.os.SystemClock.elapsedRealtime())
+                            activeProfile = plan.profile, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
                         val label = if (vpn) "VPN" else "本机端口 $port"
                         getSystemService(NotificationManager::class.java).notify(1, notification(label + " · " + plan.name))
                         if (vpn) monitorExit(plan,token)
@@ -249,25 +253,24 @@ class TunnelService : VpnService() {
                 if (plan.outbound != null) {
                     val net = requireNotNull(physical)
                     val dns = requireNotNull(connectivity.getLinkProperties(net)?.dnsServers?.firstOrNull()?.hostAddress)
-                    CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0]) {
-                        plan.checkKey?.let { key ->
-                            val vpnNet=requireNotNull(connectivity.activeNetwork)
-                            check(connectivity.getNetworkCapabilities(vpnNet)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true)
+                    val health = plan.checkKey?.let { key -> {
+                            val vpnNet = connectivity.activeNetwork
                             val start=android.os.SystemClock.elapsedRealtime()
                             val passed=runCatching {
+                                check(vpnNet != null && connectivity.getNetworkCapabilities(vpnNet)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true)
                                 val conn=vpnNet.openConnection(java.net.URL("https://example.com/")) as javax.net.ssl.HttpsURLConnection
                                 try {
+                                    conn.setRequestProperty("Connection","close")
                                     conn.connectTimeout=6000;conn.readTimeout=6000;conn.useCaches=false;conn.instanceFollowRedirects=false
                                     check(conn.responseCode==200 && conn.inputStream.bounded(32768).toString(Charsets.UTF_8).contains("Example Domain"))
                                 } finally { conn.disconnect() }
                             }.isSuccess
-                            val history=getSharedPreferences("node-quality",0)
-                            val edit=history.edit().putInt("total/$key",history.getInt("total/$key",0)+1)
-                            if (passed) edit.putInt("passed/$key",history.getInt("passed/$key",0)+1)
-                                .putLong("ms/$key",android.os.SystemClock.elapsedRealtime()-start)
-                            edit.apply()
-                            check(passed)
+                            NodeQuality(this,net).record(key,passed,android.os.SystemClock.elapsedRealtime()-start)
+                            passed
                         }
+                    }
+                    CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health) {
+                        check(health?.invoke() != false)
                         ready(0)
                     }
                 } else {
@@ -288,14 +291,15 @@ class TunnelService : VpnService() {
                 if (token == serial) {
                     cancel?.close()
                     cancel = null
-                    if (vpn && result != 0 && network != null && ++failures <= 8) {
+                    failures = (failures + 1).coerceAtMost(32)
+                    if (vpn && result != 0 && network != null && (failures <= 8 || plan.checkKey != null)) {
                         state.value = TunnelState(vpn = true, error = "节点不可用，正在等待重试")
                         main.postDelayed({
                             if (token == serial) {
                                 val next = if (attempt >= 1 || plan.checkKey!=null) runCatching { nextPlan(plan) }.getOrDefault(plan) else plan
                                 startWorker(next, if (next === plan) minOf(attempt + 1,5) else 0)
                             }
-                        }, 1000L shl attempt)
+                        }, 1000L shl maxOf(attempt, if (plan.checkKey==null) 0 else (failures / 4).coerceAtMost(5)))
                     } else if (vpn) {
                         state.value = TunnelState(vpn = true, error = "私人节点不可用，请检查设备授权及目标许可后重新连接")
                         getSystemService(NotificationManager::class.java).notify(1, notification("私人节点不可用"))

@@ -34,6 +34,10 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo +1.100.0 build --release --locked -p nexus-server --target aarch64-unknown-linux-gnu
           install -D target/release/nexus-server apps/android/app/build/linuxNodes/x86_64/nexus-server
           install -D target/aarch64-unknown-linux-gnu/release/nexus-server apps/android/app/build/linuxNodes/aarch64/nexus-server
+          for binary in apps/android/app/build/linuxNodes/*/nexus-server; do
+            newest=$(readelf --version-info "$binary" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+            test -n "$newest" && dpkg --compare-versions "${newest#GLIBC_}" le 2.36
+          done
       - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "ndk;28.2.13676358" "build-tools;35.0.0"'
       - run: bash gradlew :app:assembleDebug :app:assembleDebugAndroidTest :vpnprobe:assembleDebug
         working-directory: apps/android

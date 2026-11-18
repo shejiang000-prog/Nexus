@@ -103,16 +103,9 @@ class MainActivity : ComponentActivity() {
         var confirmConnect by remember { mutableStateOf(false) }
         var useVpn by rememberSaveable { mutableStateOf(true) }
         var message by remember { mutableStateOf("") }
-        var subscriptions by rememberSaveable { mutableStateOf(false) }
-        var sourcePreview by remember { mutableStateOf(emptyList<Pair<String,Int>>()) }
-        LaunchedEffect(subscriptions) {
-            if (!subscriptions) runCatching { withContext(Dispatchers.IO) {
-                Subscriptions(this@MainActivity).all().map { it.label to it.nodes.length() }
-            } }.onSuccess { sourcePreview = it }.onFailure { message = "无法读取本机订阅" }
-        }
         var networks by rememberSaveable { mutableStateOf(false) }
         var manageServer by rememberSaveable { mutableStateOf(false) }
-        LaunchedEffect(incoming) { if (incoming!=null) { manageServer=true;subscriptions=false;networks=false } }
+        LaunchedEffect(incoming) { if (incoming!=null) { manageServer=true;networks=false } }
         var rotate by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             runCatching { withContext(Dispatchers.IO) { Profile.load(this@MainActivity) } }
@@ -161,13 +154,9 @@ class MainActivity : ComponentActivity() {
                 }
                 return@MaterialTheme
             }
-            if (subscriptions) {
-                Surface(Modifier.fillMaxSize(), color = colors.background) { SubscriptionScreen { subscriptions = false } }
-                return@MaterialTheme
-            }
             Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
-                Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
-                    .widthIn(max = 640.dp), horizontalAlignment = Alignment.Start) {
+                SubscriptionScreen {
+                Column(Modifier.fillMaxWidth().widthIn(max = 640.dp), horizontalAlignment = Alignment.Start) {
                     Spacer(Modifier.height(24.dp))
                     Text(getString(R.string.app_name), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = colors.primary)
                     Spacer(Modifier.height(12.dp))
@@ -211,9 +200,6 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(16.dp))
                     HorizontalDivider()
-                    Text("我的订阅", style = MaterialTheme.typography.titleLarge)
-                    sourcePreview.forEach { (name,count) -> Text("$name · $count 个节点") }
-                    TextButton(onClick = { subscriptions = true }) { Text("订阅与全部节点") }
                     TextButton(onClick = { networks = true }) { Text("出口与诊断") }
                     TextButton(enabled = !tunnel.active, onClick = { manageServer = true }) { Text("部署与分享") }
                     Spacer(Modifier.height(16.dp))
@@ -226,6 +212,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     }
                     Spacer(Modifier.height(24.dp))
+                }
                 }
             }
             candidate?.let { item ->

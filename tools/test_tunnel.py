@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -154,19 +155,26 @@ def run(binaries, identity):
                 blocked = bridge.getsockname()[1]
                 drop.bind((LOOPBACK, blocked))
                 def forward():
-                    with bridge.accept()[0] as left, socket.create_connection((LOOPBACK, upstream)) as right:
-                        peers = {left: right, right: left}
-                        while peers:
-                            for src in select.select(list(peers), [], [], 15)[0]:
-                                chunk = src.recv(65536)
-                                if chunk:
-                                    peers[src].sendall(chunk)
-                                else:
-                                    peers.pop(src).shutdown(socket.SHUT_WR)
+                    for _ in range(2):
+                        with bridge.accept()[0] as left, socket.create_connection((LOOPBACK, upstream)) as right:
+                            peers = {left: right, right: left}
+                            while peers:
+                                for src in select.select(list(peers), [], [], 15)[0]:
+                                    chunk = src.recv(65536)
+                                    if chunk:
+                                        peers[src].sendall(chunk)
+                                    else:
+                                        peers.pop(src).shutdown(socket.SHUT_WR)
                 thread = threading.Thread(target=forward, daemon=True)
                 thread.start()
                 with listener(blocked, "auto", "tcp", web) as local:
-                    post(local)
+                    measurements = []
+                    for _ in range(2):
+                        started = time.monotonic()
+                        post(local)
+                        measurements.append(time.monotonic()-started)
+                    print("UDP blocked, two authenticated requests: %.2fs, %.2fs" % tuple(measurements),flush=True)
+                    assert measurements[1] < 5, "repeated a full QUIC setup timeout on the same blocked path"
                 thread.join(3)
                 passed("UDP dropped, automatic verified TLS/TCP fallback")
         finally:

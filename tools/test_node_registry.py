@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from node_admin import Registry, b64, initialize, openssl
+from node_admin import Registry, b64, initialize, migration_snapshot, openssl
 from test_tunnel import endpoint, process
 
 def keypair(root, name):
@@ -85,6 +85,12 @@ def test(binaries):
         node.owner("backup",{})
         node.owner("restore",{})
         assert node.owner("devices",{})==revoked and any(r["action"]=="restore" for r in node.owner("audit",{}))
+        snapshot = migration_snapshot(root/"node")
+        initialize(root/"moved",dict(host="127.0.0.2",dns="1.1.1.1",port=28443,claim_port=28444,name="Moved",migration=snapshot))
+        moved = Registry(root/"moved")
+        assert (root/"node"/"ca.der").read_bytes() == (root/"moved"/"ca.der").read_bytes()
+        assert moved.owner("devices",{}) == revoked and moved.owner("audit",{}) == node.owner("audit",{})
+        assert "127.0.0.2" in moved.config["claim_url"]
         echo.shutdown()
         print("PASS: two devices, idempotent claim, redemption limit, byte quota, live revoke, owner continuity, audit")
 

@@ -19,3 +19,9 @@ sudo unshare -n -- python3 tools/benchmark_link.py --bin-dir /absolute/path/to/r
 ```
 
 后续在同一授权 VPS 和同一设备复测，增加 VLESS + REALITY、1 / 8 / 32 并发、持续上传下载、连接恢复、CPU/RSS 与长连接。保留失败分母，分别报告 UDP 封锁与网络切换。
+
+## UDP 不通时的连续连接
+
+2026-11-19，Debian 13 WSL，release 构建。客户端连接同一台只转发 TCP 的测试服务器，UDP 套接字持续丢弃 QUIC 包。一个客户端进程连续发起两笔 512 KiB POST，逐字节检查回显。改动前耗时分别为 8.05 秒、8.09 秒，改动后为 8.05 秒、0.09 秒。数据来自这一组回环实验。
+
+自动模式在一次 QUIC 建连超时且 TLS 身份验证成功后，保留 30 秒的 TCP 优先期。后续流量不会延长该期限。期限结束后重新探测 QUIC，Android 切换底层网络后会创建新连接器。显式 QUIC 模式、证书错误处理和设备授权沿用原有逻辑。复验使用 `tools/test_tunnel.py` 的 “UDP blocked, two authenticated requests” 用例。

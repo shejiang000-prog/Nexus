@@ -74,6 +74,25 @@ data class Profile(val name: String, val server: String, val tlsName: String, va
         saved.put(key, JSONObject(data))
         check(prefs.edit().putString("servers", saved.toString()).putString("profile", data).commit())
     }
+    fun moveEndpoint(context: Context, address: String): Profile {
+        val prefs = context.getSharedPreferences("local",0)
+        require(!prefs.contains("pinned") && load(context)?.server == server)
+        val data = json().put("server",address)
+        val moved = parse(data.toString())
+        val old = "$server/$fingerprint"
+        val next = "$address/$fingerprint"
+        val servers = JSONObject(prefs.getString("servers","{}")!!)
+        require(next != old && !servers.has(next))
+        servers.remove(old)
+        servers.put(next,data)
+        val edit = prefs.edit().putString("servers",servers.toString()).putString("profile",data.toString())
+        prefs.getStringSet("apps/$old",null)?.let { edit.putStringSet("apps/$next",it.toSet()).remove("apps/$old") }
+        for (setting in listOf("monitor","hold")) if (prefs.contains("$setting/$old"))
+            edit.putBoolean("$setting/$next",prefs.getBoolean("$setting/$old",false)).remove("$setting/$old")
+        prefs.getString("exit/$old",null)?.let { edit.putString("exit/$next",it).remove("exit/$old") }
+        check(edit.commit())
+        return moved
+    }
     companion object {
         fun servers(context: Context): List<Profile> {
             val prefs = context.getSharedPreferences("local", 0)

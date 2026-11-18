@@ -180,6 +180,39 @@ class Registry:
             conn.execute("UPDATE invites SET uses=uses-1 WHERE hash=?",(digest,))
             return profile
 
+# Logical snapshots contain fixed data columns only. Restore never executes SQL from the archive.
+MIGRATION_TABLES = {
+    "invites": ("hash,label,claim_until,expires,quota,uses,max_devices", (0,)),
+    "devices": ("cert,id,name,invite,pub,expires,quota,used,revoked", (0,3,4)),
+    "audit": ("at,action,subject", ()),
+}
+
+def migration_snapshot(root):
+    result = {"format":"nexus-migration/1", "ca":(root/"ca.pem").read_text(), "key":(root/"ca.key").read_text()}
+    with closing(sqlite3.connect(root/"devices.db")) as conn:
+        conn.execute("BEGIN")
+        for table, (columns, blobs) in MIGRATION_TABLES.items():
+            rows = []
+            for record in conn.execute(f"SELECT {columns} FROM {table}"):
+                row = list(record)
+                for i in blobs:
+                    if row[i] is not None: row[i] = b64(row[i])
+                rows.append(row)
+            result[table] = rows
+    if len(json.dumps(result).encode()) > 4*1024*1024:
+        raise ValueError("migration archive exceeds 4 MiB")
+    return result
+
+def restore_rows(conn, snapshot):
+    for table, (columns, blobs) in MIGRATION_TABLES.items():
+        names = columns.split(",")
+        for values in snapshot[table]:
+            if not isinstance(values,list) or len(values)!=len(names): raise ValueError("invalid migration row")
+            row = list(values)
+            for i in blobs:
+                if row[i] is not None: row[i] = base64.b64decode(row[i],validate=True)
+            conn.execute(f"INSERT INTO {table}({columns}) VALUES ({','.join('?' for _ in names)})", row)
+
 def initialize(root, args):
     if root.exists():
         raise ValueError("choose a new directory")
@@ -191,9 +224,17 @@ def initialize(root, args):
         raise ValueError("ports must differ")
     address = f"[{host}]" if host.version==6 else str(host)
     root.mkdir(mode=0o700)
-    openssl("req","-x509",*clock_margin("req"),"-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-noenc","-subj","/CN=Nexus private CA",
-            "-days","3650","-addext","basicConstraints=critical,CA:TRUE","-addext","keyUsage=critical,keyCertSign,cRLSign",
-            "-keyout",root/"ca.key","-out",root/"ca.pem")
+    migration = args.get("migration")
+    if migration is not None:
+        if migration["format"] != "nexus-migration/1": raise ValueError("invalid migration format")
+        (root/"ca.key").write_text(migration["key"])
+        (root/"ca.pem").write_text(migration["ca"])
+        if openssl("pkey","-in",root/"ca.key","-pubout") != openssl("x509","-in",root/"ca.pem","-noout","-pubkey"):
+            raise ValueError("CA key mismatch")
+    else:
+        openssl("req","-x509",*clock_margin("req"),"-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-noenc","-subj","/CN=Nexus private CA",
+                "-days","3650","-addext","basicConstraints=critical,CA:TRUE","-addext","keyUsage=critical,keyCertSign,cRLSign",
+                "-keyout",root/"ca.key","-out",root/"ca.pem")
     openssl("req","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-noenc","-subj","/CN=nexus.node",
             "-keyout",root/"server.key","-out",root/"server.csr")
     ext = root/"server.ext"
@@ -210,6 +251,7 @@ def initialize(root, args):
     with sqlite3.connect(root/"devices.db") as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        if migration is not None: restore_rows(conn,migration)
     return {"ok":True}
 
 def serve(registry):
@@ -272,12 +314,17 @@ if __name__ == "__main__":
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument("root",type=Path)
-    parser.add_argument("action",choices=["init","serve","owner","invite","claim","devices","revoke","edit","audit","backup","restore"])
+    parser.add_argument("action",choices=["init","serve","owner","invite","claim","devices","revoke","edit","audit","backup","restore","migration-export"])
     args = parser.parse_args()
     if args.action == "serve":
         serve(Registry(args.root))
+    elif args.action == "migration-export":
+        print(json.dumps(migration_snapshot(args.root)))
     else:
-        request = json.loads(sys.stdin.buffer.read(8193) or b"{}")
+        maximum = 5*1024*1024 if args.action == "init" else 8192
+        payload = sys.stdin.buffer.read(maximum+1)
+        if len(payload)>maximum: raise ValueError("request too large")
+        request = json.loads(payload or b"{}")
         if args.action == "init":
             result = initialize(args.root,request)
         else:

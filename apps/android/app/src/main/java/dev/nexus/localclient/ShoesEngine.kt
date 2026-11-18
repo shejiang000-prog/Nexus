@@ -3,9 +3,6 @@ package dev.nexus.localclient
 import android.net.Network
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import android.system.Os
-import android.system.OsConstants
-import android.system.StructPollfd
 import com.shoesproxy.ShoesNative
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,12 +19,16 @@ object ShoesEngine {
         val password: String
         val uuid: String?
         val alpn: List<String>
+        val pin: String?
         if (raw is String) {
             val uri = Uri.parse(raw)
-            require(uri.scheme == type && uri.getQueryParameter("allowInsecure") !in setOf("1","true") &&
-                uri.getQueryParameter("insecure") !in setOf("1","true"))
-            require(uri.queryParameterNames.all { it in setOf("sni","alpn","allowInsecure","insecure","udp_relay_mode") })
+            require(uri.scheme == type && listOf("allowInsecure","insecure").all { key ->
+                uri.getQueryParameters(key).all { it.lowercase() in setOf("false","0") }
+            })
+            require(uri.getQueryParameters("pcs").size <= 1)
+            require(uri.queryParameterNames.all { it in setOf("sni","alpn","allowInsecure","insecure","udp_relay_mode","pcs") })
             require(uri.getQueryParameter("udp_relay_mode") in setOf(null,"native"))
+            pin = uri.getQueryParameter("pcs")
             host = requireNotNull(uri.host).removeSurrounding("[","]")
             port = if (uri.port == -1) 443 else uri.port
             val auth = requireNotNull(uri.userInfo)
@@ -37,6 +38,7 @@ object ShoesEngine {
             alpn = uri.getQueryParameter("alpn")?.split(',') ?: emptyList()
         } else {
             val j = raw as JSONObject
+            pin = j.optString("certificate_sha256").takeIf { it.isNotEmpty() }
             val tls = j.optJSONObject("tls")
             require(tls==null || tls.keys().asSequence().all { it in setOf("enabled","insecure","server_name","alpn") })
             require(!j.has("ca") && !j.has("ca-str") && !j.has("certificate") && !j.has("fingerprint") && !j.has("ech-opts"))
@@ -55,6 +57,10 @@ object ShoesEngine {
         require(sni.matches(Regex("[A-Za-z0-9.:_-]{1,253}")) && alpn.all { it.length in 1..32 })
         val proto = JSONObject().put("type",type).put("password",password).put("udp_enabled",true)
         val tls = JSONObject().put("sni_hostname",sni).put("verify",true)
+        if (pin != null) {
+            require(pin.matches(Regex("[a-fA-F0-9]{64}")))
+            tls.put("server_fingerprints", JSONArray().put(pin.lowercase())).put("verify", false)
+        }
         if (alpn.isNotEmpty()) tls.put("alpn_protocols",JSONArray(alpn))
         val client = JSONObject().put("address",(if (':' in host) "[$host]" else host)+":"+port)
         if (type=="tuic") {
@@ -64,7 +70,7 @@ object ShoesEngine {
         return JSONObject().put("shoesClient",client).put("bootstrap",host)
     }
     fun run(out: JSONObject, physical: Network, tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor,
-            protect: (Int) -> Boolean, ready: () -> Unit): Int {
+            protect: (Int) -> Boolean, health: (() -> Boolean)?, ready: () -> Unit): Int {
         val client = JSONObject(out.getJSONObject("shoesClient").toString())
         val ip = physical.getAllByName(out.getString("bootstrap")).first().hostAddress!!
         val port = client.getString("address").substringAfterLast(':')
@@ -76,12 +82,9 @@ object ShoesEngine {
         val handle = ShoesNative.start(JSONArray().put(settings).toString()) { fd -> protect(fd) }
         check(handle>0)
         try {
-            val poll = StructPollfd().apply { fd=cancel.fileDescriptor; events=OsConstants.POLLIN.toShort() }
-            var started = false
-            while (Os.poll(arrayOf(poll), if (started) 1000 else 300)==0) {
-                check(ShoesNative.isRunning())
-                if (!started) { ready(); started = true }
-            }
+            check(ShoesNative.isRunning())
+            ready()
+            CompatEngine.waitForStop(cancel, health) { ShoesNative.isRunning() }
             return 0
         } finally { ShoesNative.stop(handle) }
     }

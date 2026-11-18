@@ -55,6 +55,32 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, fromLink: Invi
         }
     }
     fun manager() = NodeManager(context, host.trim(), sshPort.toInt(), user.trim(), password, pin.trim(), sshKey)
+    var migrationPassword by remember { mutableStateOf("") }
+    val exportMigration = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri != null) work {
+            val m = manager()
+            try {
+                withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openOutputStream(uri,"wt")).use { m.exportMigration(migrationPassword.toCharArray(),it) }
+                }
+                feedback = "迁移文件已保存，旧服务器已停用。请在目标服务器导入。"
+            } catch (e: Exception) {
+                feedback = "导出未完成。请检查旧服务器状态；如已归档，可使用「恢复已移除部署」重新启用。"
+            } finally { migrationPassword = "" }
+        }
+    }
+    val importMigration = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) work {
+            val m = manager()
+            try {
+                val profile = withContext(Dispatchers.IO) {
+                    val snapshot = requireNotNull(context.contentResolver.openInputStream(uri)).use { readMigration(it,migrationPassword.toCharArray()) }
+                    m.deploy(name,dns,port.toInt(),claimPort.toInt(),snapshot)
+                }
+                onProfile(profile)
+            } finally { migrationPassword = "" }
+        }
+    }
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) work { sshKey = withContext(Dispatchers.IO) {
             require(uri.scheme == "content")
@@ -126,6 +152,12 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, fromLink: Invi
                 TextButton(enabled = !busy,onClick = { confirm = "备份授权" }) { Text("备份授权") }
                 TextButton(enabled = !busy,onClick = { confirm = "恢复授权" }) { Text("恢复授权") }
             }
+            OutlinedTextField(migrationPassword,{ migrationPassword=it.take(256) },singleLine=true,
+                visualTransformation=PasswordVisualTransformation(),label={ Text("整机迁移口令（至少 12 字符）") })
+            Row {
+                TextButton(enabled=!busy && migrationPassword.length>=12,onClick={confirm="导出整机迁移文件"}) { Text("迁出服务器") }
+                TextButton(enabled=!busy && migrationPassword.length>=12,onClick={confirm="将节点迁入此服务器"}) { Text("迁入服务器") }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(days,{ days = it.take(3) },Modifier.weight(1f),singleLine = true,label = { Text("有效天数") })
                 OutlinedTextField(count,{ count = it.take(3) },Modifier.weight(1f),singleLine = true,label = { Text("设备数") })
@@ -169,18 +201,22 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, fromLink: Invi
     }
     if (confirm.isNotEmpty()) AlertDialog(onDismissRequest = { confirm = "" }, title = { Text(confirm) },
         text = { Text(when (confirm) {
-            "部署私人节点" -> "将在 $host 的 Debian 13 上验证 SSH 指纹，创建独立账户和两个 systemd 服务。需要 root 或免密 sudo。隧道端口 $port，邀请端口 $claimPort。请确保网络允许这些端口。"
+            "部署私人节点" -> "将在 $host 上验证 SSH 指纹（Debian 12/13 或 Ubuntu 24.04），创建独立账户和两个 systemd 服务。需要 root 或免密 sudo。隧道端口 $port，邀请端口 $claimPort。请确保网络允许这些端口。"
             "领取邀请" -> "${invitation?.name}\n${invitation?.url?.host}\n请通过可信渠道核对服务器证书指纹\n${invitation?.pin}"
             "更新节点程序","回滚节点程序" -> "将重启 $host 的两个 Nexus 服务，当前连接会中断。程序更新保留设备授权、证书和配额。"
             "重启服务" -> "将重启 $host 的隧道与邀请服务，中断当前连接。"
             "移除部署" -> "将停止 $host 上的 Nexus 服务，移除启动项并归档程序。现有连接会中断，设备授权和密钥保留在服务器，可恢复。"
             "恢复已移除部署" -> "将恢复并启动 $host 上先前归档的两个 Nexus 服务，沿用服务器上现有的身份和授权。"
             "备份授权" -> "授权数据库和配置标识将备份到这台 VPS，替换上次快照。"
+            "导出整机迁移文件" -> "将停止并归档 $host 的两个服务，使用口令加密保存节点 CA 私钥、设备权限、配额和撤销记录。旧服务器保留数据。"
+            "将节点迁入此服务器" -> "将在空白服务器 $host 按当前端口和 DNS 启动原节点身份。请确认旧节点已停用，向成员更新连接地址并重新分享邀请。"
             "恢复授权" -> "将此 VPS 的设备权限、邀请和已用额度恢复至快照时点。此后撤销的授权可能重新有效。"
             else -> selected?.optString("name").orEmpty()
         }) }, confirmButton = { TextButton(onClick = {
             val action = confirm; confirm = ""
-            work {
+            if (action=="导出整机迁移文件") exportMigration.launch("nexus-migration.nxm")
+            else if (action=="将节点迁入此服务器") importMigration.launch(arrayOf("*/*"))
+            else work {
                 when (action) {
                     "移除部署","恢复已移除部署" -> {
                         withContext(Dispatchers.IO) { manager().maintain(if (action=="移除部署") "archive" else "reactivate") }

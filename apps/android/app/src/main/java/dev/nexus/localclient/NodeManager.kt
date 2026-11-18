@@ -43,25 +43,29 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         if (sshKey == null) ssh.setPassword(password.toByteArray())
         try { ssh.connect(10000); return action(ssh) } finally { ssh.disconnect(); jsch.removeAllIdentity() }
     }
-    private fun run(ssh: Session, cmd: String, data: JSONObject? = null): String {
+    private fun run(ssh: Session, cmd: String, data: JSONObject? = null, limit: Int = 131072): String {
         val channel = ssh.openChannel("exec") as ChannelExec
         try {
             channel.setCommand(cmd)
             channel.setInputStream((data?.toString() ?: "").byteInputStream())
             val output = channel.inputStream
             channel.connect(8000)
-            val result = output.bounded(131072).toString(Charsets.UTF_8)
+            val result = output.bounded(limit).toString(Charsets.UTF_8)
             val deadline = android.os.SystemClock.elapsedRealtime() + 3000
             while (!channel.isClosed && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(20)
             check(channel.exitStatus == 0)
             return result.trim()
         } finally { channel.disconnect() }
     }
-    fun deploy(name: String, dns: String, nodePort: Int, claimPort: Int): Profile {
+    fun deploy(name: String, dns: String, nodePort: Int, claimPort: Int, migration: JSONObject? = null): Profile {
         require(name.length in 1..64 && nodePort in 1024..65535 && claimPort in 1024..65535 && nodePort != claimPort)
         val config = JSONObject().put("name", name).put("host", host).put("dns", dns)
             .put("port", nodePort).put("claim_port", claimPort).put("pub", base64(Identity.publicKey()))
+        migration?.let { config.put("migration",it) }
         return Profile.parse(install(config))
+    }
+    fun exportMigration(pass: CharArray, output: java.io.OutputStream) {
+        writeMigration(pass,output) { install(JSONObject().put("action","migration-export")).toByteArray() }
     }
     fun maintain(action: String) {
         require(action in setOf("upgrade","rollback","archive","reactivate"))
@@ -88,19 +92,69 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             check(run(ssh,"sha256sum $dir/install_node.py").substringBefore(' ')==hashes.getString("install_node.py"))
             config.put("arch",arch).put("sha256",hashes)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "${sudo}python3 -I $dir/install_node.py", config)
+            run(ssh, "${sudo}python3 -I $dir/install_node.py", config, if (config.optString("action")=="migration-export") 4*1024*1024+1 else 131072)
         } finally { runCatching { run(ssh, "rm -f -- $dir/install_node.py $dir/node_admin.py $dir/nexus-server && rmdir -- $dir") } }
     }
     fun service(restart: Boolean): String = session { ssh ->
         val sudo = if (user=="root") "" else "sudo -n "
         if (restart) run(ssh,"${sudo}systemctl restart nexus-node.service nexus-claim.service")
-        run(ssh,"systemctl show nexus-node.service nexus-claim.service -p Id -p ActiveState -p MemoryCurrent -p CPUUsageNSec -p NRestarts")
+        val report = run(ssh, """
+            LC_ALL=C
+            export LC_ALL
+            /opt/nexus-node/nexus-server --version 2>/dev/null || echo 'nexus-server (旧版本)'
+            systemctl show nexus-node.service nexus-claim.service -p Id -p ActiveState -p Result -p NRestarts --no-pager
+            awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {printf "内存  %.0f / %.0f MiB\n",(t-a)/1024,t/1024}' /proc/meminfo
+            awk '{printf "运行时间  %.1f 小时\n",$1/3600}' /proc/uptime
+            awk '{printf "系统负载（1/5/15 分钟）  %s / %s / %s\n",$1,$2,$3}' /proc/loadavg
+            { head -1 /proc/stat; sleep 0.25; head -1 /proc/stat; } | awk '{t=0; for(i=2;i<=9;i++) t+=${'$'}i; idle=$5+$6} NR==1 {t0=t;i0=idle} END {if(t>t0) printf "CPU 使用率  %.1f%%\n",100*(1-(idle-i0)/(t-t0))}'
+            awk -F: '/:/ && $1 !~ /^[[:space:]]*lo$/ {split($2,n," "); rx+=n[1]; tx+=n[9]} END {printf "网卡累计  ↓ %.1f MiB  ↑ %.1f MiB\n",rx/1048576,tx/1048576}' /proc/net/dev
+            journalctl -q -u nexus-node.service -u nexus-claim.service -p err -n1 -o short-unix 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+[.]/ {print "最近错误记录（Unix 秒）  " $1}'
+        """.trimIndent())
+        report.lineSequence().joinToString("\n") { it.replace("Id=nexus-node.service","隧道服务")
+            .replace("Id=nexus-claim.service","邀请服务").replace("ActiveState=","状态  ")
+            .replace("NRestarts=","自动重启  ").replace("Result=","最近运行结果  ") }
     }
     fun owner(action: String, args: JSONObject = JSONObject()): String {
         require(action in setOf("invite","devices","revoke","edit","audit","owner","backup","restore"))
         val sudo = if (user == "root") "" else "sudo -n "
         return session { run(it, "${sudo}runuser -u nexus-node -- python3 -I /opt/nexus-node/node_admin.py /var/lib/nexus-node/identity $action", args) }
     }
+}
+
+internal fun writeMigration(pass: CharArray, output: java.io.OutputStream, snapshot: () -> ByteArray) {
+    val random = java.security.SecureRandom()
+    val salt = ByteArray(16).also(random::nextBytes)
+    val iv = ByteArray(12).also(random::nextBytes)
+    val cipher = migrationCipher(javax.crypto.Cipher.ENCRYPT_MODE,pass,salt,iv)
+    val data = snapshot()
+    try {
+        output.write("NXM1".toByteArray())
+        output.write(salt)
+        output.write(iv)
+        output.write(cipher.doFinal(data))
+        output.flush()
+    } finally { data.fill(0) }
+}
+
+private fun migrationCipher(mode: Int, pass: CharArray, salt: ByteArray, iv: ByteArray): javax.crypto.Cipher {
+    require(pass.size in 12..256)
+    val spec = javax.crypto.spec.PBEKeySpec(pass,salt,600000,256)
+    val secret = try { javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded }
+        finally { spec.clearPassword(); pass.fill('\u0000') }
+    return try {
+        javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(mode,javax.crypto.spec.SecretKeySpec(secret,"AES"),javax.crypto.spec.GCMParameterSpec(128,iv))
+        }
+    } finally { secret.fill(0) }
+}
+
+internal fun readMigration(input: java.io.InputStream, pass: CharArray): JSONObject {
+    val data = input.bounded(4*1024*1024+64)
+    require(data.size > 48 && data.copyOfRange(0,4).contentEquals("NXM1".toByteArray()))
+    val cipher = migrationCipher(javax.crypto.Cipher.DECRYPT_MODE,pass,data.copyOfRange(4,20),data.copyOfRange(20,32))
+    val plain = cipher.doFinal(data,32,data.size-32)
+    return try { JSONObject(plain.toString(Charsets.UTF_8)).also { require(it.getString("format")=="nexus-migration/1") } }
+        finally { plain.fill(0) }
 }
 
 data class Invitation(val name: String, val url: URL, val pin: String, private val token: String) {

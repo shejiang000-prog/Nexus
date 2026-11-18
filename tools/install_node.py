@@ -1,4 +1,4 @@
-"""Install a new Nexus node on Debian 13. Run from the private SSH upload directory."""
+"""Install a new Nexus node on supported Debian and Ubuntu releases. Run from the private SSH upload directory."""
 import fcntl
 import hashlib
 import ipaddress
@@ -24,14 +24,25 @@ def run(*command, data=None):
                           check=True, timeout=45).stdout
 
 def install(cfg):
-    if os.geteuid() != 0 or platform.freedesktop_os_release().get("ID") != "debian" or platform.freedesktop_os_release().get("VERSION_ID") != "13":
-        raise ValueError("Debian 13 with root privileges required")
+    release = platform.freedesktop_os_release()
+    supported = {("debian", "12"), ("debian", "13"), ("ubuntu", "24.04")}
+    if os.geteuid() != 0 or (release.get("ID"), release.get("VERSION_ID")) not in supported:
+        raise ValueError("Debian 12/13 or Ubuntu 24.04 with root privileges required")
     if not Path("/run/systemd/system").is_dir() or not shutil.which("openssl"):
         raise ValueError("systemd and OpenSSL are required")
     # A directory lock leaves no file behind and serializes simultaneous installations.
     lock = os.open("/opt", os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if cfg.get("action") == "migration-export":
+            switch_installation(False)
+            try:
+                script = Path(__file__).with_name("node_admin.py").read_text()
+                data = run("runuser","-u",USER,"--","python3","-I","-c",script,str(STATE/"identity"),"migration-export")
+                return json.loads(data)
+            except BaseException:
+                switch_installation(True)
+                raise
         if cfg.get("action") in ("archive","reactivate"):
             return switch_installation(cfg["action"]=="reactivate")
         if cfg.get("action") in ("upgrade","rollback"):

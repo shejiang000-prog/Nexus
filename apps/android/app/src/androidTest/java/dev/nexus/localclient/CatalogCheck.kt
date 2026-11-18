@@ -108,6 +108,67 @@ class CatalogCheck : Instrumentation() {
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "migration-crypto" -> {
+                    val data = JSONObject().put("format","nexus-migration/1").put("probe",UUID.randomUUID().toString())
+                    val secret = UUID.randomUUID().toString()
+                    val output = java.io.ByteArrayOutputStream()
+                    writeMigration(secret.toCharArray(),output) { data.toString().toByteArray() }
+                    val sealed = output.toByteArray()
+                    check(!sealed.toString(Charsets.ISO_8859_1).contains(data.getString("probe")))
+                    check(readMigration(sealed.inputStream(),secret.toCharArray()).getString("probe") == data.getString("probe"))
+                    check(runCatching { readMigration(sealed.inputStream(),UUID.randomUUID().toString().toCharArray()) }.isFailure)
+                    sealed[sealed.lastIndex] = (sealed.last().toInt() xor 1).toByte()
+                    check(runCatching { readMigration(sealed.inputStream(),secret.toCharArray()) }.isFailure)
+                    result.putString("migration","round trip, incorrect password and modified ciphertext checked")
+                }
+                "remove-qa-source" -> {
+                    val label = requireNotNull(args.getString("source"))
+                    require(label.matches(Regex("Nexus-QA-[0-9a-f]{8}[.](json|txt)")))
+                    val store = Subscriptions(targetContext)
+                    store.all().singleOrNull { it.label == label }?.let { store.remove(it.id) }
+                }
+                "subscription-vpn" -> {
+                    val label = requireNotNull(args.getString("source"))
+                    require(label.startsWith("Nexus-QA-"))
+                    val source = Subscriptions(targetContext).all().single { it.label == label }
+                    val rows = (0 until source.nodes.length()).map { NodeRow(source,it,source.nodes.getJSONObject(it)) }
+                    val row = rows.single { it.type == args.getString("protocol") }
+                    val ctx = targetContext
+                    val settings = Subscriptions(ctx).appearance
+                    val key = "auto/"+source.id
+                    val previous = settings.all[key] as? Boolean
+                    val signal = File(ctx.cacheDir,"subscription-qa-stop")
+                    signal.delete()
+                    require(android.net.VpnService.prepare(ctx) == null)
+                    val home = startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    try {
+                        check(settings.edit().putBoolean(key,true).commit())
+                        ctx.startForegroundService(subscriptionRequest(ctx,row,rows,"192.0.2.53",true))
+                        val deadline = android.os.SystemClock.elapsedRealtime() + 540000
+                        val stateFile = File(ctx.cacheDir,"subscription-qa-state")
+                        var previousState = ""
+                        while (!signal.exists() && android.os.SystemClock.elapsedRealtime() < deadline) {
+                            val state = TunnelService.state.value
+                            val statusText = if (state.connectedAt != 0L) state.subscription.substringAfterLast(" · ")
+                                else if (state.waiting) "waiting" else if (state.error.isNotEmpty()) "retry" else "starting"
+                            if (statusText != previousState) {
+                                stateFile.writeText(statusText)
+                                previousState = statusText
+                            }
+                            Thread.sleep(150)
+                        }
+                        check(signal.exists()) { "matrix host timed out" }
+                    } finally {
+                        ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+                        runBlocking { withTimeout(12000) { TunnelService.state.first { !it.active } } }
+                        val restore = settings.edit()
+                        if (previous == null) restore.remove(key) else restore.putBoolean(key,previous)
+                        restore.commit()
+                        File(ctx.cacheDir,"subscription-qa-state").delete()
+                        signal.delete()
+                        runOnMainSync { home.finish() }
+                    }
+                }
                 "failover" -> checkFailover(result)
                 "key" -> {
                     require(!privateKey.exists())
@@ -116,6 +177,54 @@ class CatalogCheck : Instrumentation() {
                         privateKey.outputStream().use { kp.writePrivateKey(it) }
                         pub.outputStream().use { kp.writePublicKey(it,"emulator-qa") }
                     } finally { kp.dispose() }
+                }
+                "migration-ssh" -> {
+                    val host = requireNotNull(args.getString("host"))
+                    fun peer(key: String) = NodeManager(targetContext,host,args.getString(key+"Port")!!.toInt(),
+                        "root","",args.getString(key+"Pin")!!,privateKey.readBytes())
+                    val src = peer("src")
+                    val dst = peer("dst")
+                    val dns = requireNotNull(args.getString("dns"))
+                    val before = src.deploy("Nexus migration QA",dns,28741,28742)
+                    val link = JSONObject(src.owner("invite",JSONObject().put("name","QA migration guest").put("device_seconds",3600)
+                        .put("valid_seconds",180).put("quota",123456))).getString("link")
+                    Invitation.parse(link).claim("QA migration guest")
+                    val devices = JSONArray(src.owner("devices"))
+                    val guest = (0 until devices.length()).map(devices::getJSONObject).single { it.getString("name")=="QA migration guest" }
+                    src.owner("revoke",JSONObject().put("id",guest.getString("id")))
+                    val secret = UUID.randomUUID().toString()
+                    val buffer = java.io.ByteArrayOutputStream()
+                    src.exportMigration(secret.toCharArray(),buffer)
+                    val restored = dst.deploy("Nexus migration QA",dns,28751,28752,readMigration(buffer.toByteArray().inputStream(),secret.toCharArray()))
+                    check(before.fingerprint==restored.fingerprint && before.server!=restored.server)
+                    val after = JSONArray(dst.owner("devices"))
+                    val transferred=(0 until after.length()).map(after::getJSONObject).single { it.getString("id")==guest.getString("id") }
+                    check(transferred.getInt("revoked")==1 && transferred.getLong("quota")==123456L)
+                    val statusText=dst.service(false)
+                    check("nexus-server 0.1.0" in statusText && "CPU 使用率" in statusText && "状态  active" in statusText)
+                    result.putString("migration","pinned SSH deployment, encrypted migration, CA, revoked guest, quota and active services")
+                    val ctx=targetContext
+                    require(android.net.VpnService.prepare(ctx)==null && !TunnelService.state.value.active)
+                    val prefs=ctx.getSharedPreferences("local",0)
+                    val key=restored.server+"/"+restored.fingerprint
+                    val saved=listOf("profile","servers","pinned").associateWith { prefs.getString(it,null) }
+                    val home=startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    try {
+                        check(prefs.edit().remove("pinned").putBoolean("monitor/$key",true).putBoolean("hold/$key",true)
+                            .putString("exit/$key","192.0.2.253").commit())
+                        restored.save(ctx)
+                        ctx.startForegroundService(Intent(ctx,TunnelService::class.java).setAction("vpn"))
+                        runBlocking { withTimeout(65000) { TunnelService.state.first { it.vpn && it.error.contains("出口 IP 已变化") } } }
+                        check(prefs.getString("exit/$key","192.0.2.253")!="192.0.2.253")
+                        result.putString("exit","real HTTPS exit lookup held the VPN after a seeded baseline change")
+                    } finally {
+                        ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+                        runBlocking { withTimeout(10000) { TunnelService.state.first { !it.active } } }
+                        val edit=prefs.edit().remove("monitor/$key").remove("hold/$key").remove("exit/$key")
+                        saved.forEach { (k,v) -> edit.putString(k,v) }
+                        check(edit.commit())
+                        runOnMainSync { home.finish() }
+                    }
                 }
                 "deploy" -> {
                     val host = args.getString("host")!!

@@ -142,6 +142,10 @@ async fn session(ch: Channel, allowed: &Policy, registry: Option<&Registry>) -> 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
+    if args.as_slice() == ["--version"] {
+        println!("nexus-server {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.len() < 6 {
         return Err("usage: nexus-server LISTEN CA.der SERVER.der SERVER.key.der DEVICE.der ALLOWED_IP:PORT [...]".into());
     }

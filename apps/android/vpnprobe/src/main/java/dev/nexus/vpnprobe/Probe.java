@@ -55,7 +55,9 @@ public final class Probe extends Instrumentation {
             if (vpn && !cm.getLinkProperties(network).getDnsServers().contains(InetAddress.getByName(resolver)))
                 throw new AssertionError("incorrect VPN DNS");
             for (String host : new String[]{"example.com", "example.org"}) {
+                result.putString("stage", host + " DNS");
                 if (InetAddress.getAllByName(host).length == 0) throw new AssertionError("empty DNS answer");
+                result.putString("stage", host + " HTTPS");
                 HttpsURLConnection c = (HttpsURLConnection)new URL("https://" + host + "/?nexus=" + System.nanoTime()).openConnection();
                 try {
                     c.setUseCaches(false);
@@ -75,7 +77,7 @@ public final class Probe extends Instrumentation {
             if (vpn) {
                 // The lab node denies documentation addresses. A premature local SYN-ACK
                 // would let connect() succeed and break a browser's IPv4 fallback.
-                for (String address : new String[]{"192.0.2.123", "2001:db8::123"}) {
+                for (String address : options.containsKey("subscription") ? new String[0] : new String[]{"192.0.2.123", "2001:db8::123"}) {
                     try (Socket denied = new Socket()) {
                         denied.connect(new InetSocketAddress(InetAddress.getByName(address), 443), 6000);
                         throw new AssertionError("unreachable destination completed TCP handshake: " + address);
@@ -89,6 +91,7 @@ public final class Probe extends Instrumentation {
                     udp.connect(peer, port);
                     udp.setSoTimeout(6000);
                     for (int size : new int[]{32, 1200, 1472}) {
+                        result.putString("stage", "UDP " + size);
                         byte[] payload = new byte[size];
                         new SecureRandom().nextBytes(payload);
                         udp.send(new DatagramPacket(payload, payload.length));

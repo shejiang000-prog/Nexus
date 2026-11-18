@@ -33,6 +33,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, onSelect: (Profile) ->
     var failover by remember { mutableStateOf(prefs.getBoolean("failover",false)) }
     var result by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var newAddress by remember { mutableStateOf<String?>(null) }
     var ipConsent by remember { mutableStateOf(false) }
     var pickApps by remember { mutableStateOf(false) }
     val selected = tunnel.activeProfile ?: current
@@ -91,7 +92,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, onSelect: (Profile) ->
                                 val previous = prefs.getString("exit/$key", null)
                                 if (previous != null && previous != ip) lines += "出口已变化 · 上次 $previous"
                                 lines += "$ip · ${body.optString("country").take(8)} · ${body.optString("org").take(100)}"
-                                prefs.edit().putString("exit/$key", ip).apply()
+                                if (!prefs.getBoolean("monitor/$key",false)) prefs.edit().putString("exit/$key", ip).apply()
                             } else {
                                 check(data.contains("Example Domain"))
                                 lines += "HTTPS 网页验证成功 · ${SystemClock.elapsedRealtime() - start} ms"
@@ -115,6 +116,19 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, onSelect: (Profile) ->
                 trailingContent = { TextButton(enabled = !chosen && !tunnel.active && pinned == null, onClick = {
                     runCatching { server.save(context) }.onSuccess { onSelect(server) }.onFailure { result = "切换失败" }
                 }) { Text(if (chosen) "当前出口" else "选择") } })
+        }
+        if (current != null) {
+            TextButton(enabled=!tunnel.active && pinned==null,onClick={newAddress=current.server}) { Text("更新迁移后的服务器地址") }
+            newAddress?.let { address ->
+                AlertDialog(onDismissRequest={newAddress=null},title={Text("更新私人节点地址")},text={Column {
+                    Text("向拥有者确认新地址及端口。下次连接继续校验原 CA 和本机设备证书。")
+                    OutlinedTextField(address,{newAddress=it.take(96)},singleLine=true,label={Text("新 IP:端口")})
+                }},confirmButton={ TextButton(onClick={
+                    runCatching { current.moveEndpoint(context,address.trim()) }.onSuccess {
+                        onSelect(it); servers=Profile.servers(context);newAddress=null
+                    }.onFailure { result="地址无效、已存在或节点已锁定";newAddress=null }
+                }) { Text("更新地址") } },dismissButton={TextButton(onClick={newAddress=null}) { Text("取消") }})
+            }
         }
         if (current?.dns != null) {
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {

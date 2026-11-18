@@ -1,6 +1,5 @@
 package dev.nexus.localclient
 
-import androidx.activity.compose.BackHandler
 import android.content.Intent
 import android.net.VpnService
 import android.app.Activity
@@ -27,7 +26,7 @@ import java.text.DateFormat
 import java.util.Date
 import org.json.JSONObject
 
-private data class NodeRow(val source: Subscription, val index: Int, val node: JSONObject) {
+internal data class NodeRow(val source: Subscription, val index: Int, val node: JSONObject) {
     val type get() = node.getString("type")
     val region by lazy {
         val data = node.optJSONObject("config")
@@ -37,11 +36,45 @@ private data class NodeRow(val source: Subscription, val index: Int, val node: J
     val favorite by lazy { nodeKey(source.id,node) }
 }
 
+internal fun Subscription.hasAllowance(): Boolean {
+    val usage = usage.split(';').mapNotNull { field ->
+        val parts = field.trim().split('=',limit=2)
+        val amount = parts.getOrNull(1)?.toLongOrNull()?.takeIf { it >= 0 } ?: return@mapNotNull null
+        parts[0] to amount
+    }.toMap()
+    val expires = usage["expire"] ?: 0
+    val quota = usage["total"] ?: 0
+    return (expires == 0L || expires > System.currentTimeMillis()/1000) &&
+        (quota == 0L || (usage["download"] ?: 0) < quota - (usage["upload"] ?: 0))
+}
+
+private fun rankedNodes(context: android.content.Context, rows: List<NodeRow>): List<NodeRow> {
+    val store = Subscriptions(context)
+    val quality = NodeQuality(context, context.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
+    return rows.filter { it.type in CompatEngine.types && store.appearance.getBoolean("auto/"+it.source.id,false) &&
+        it.source.hasAllowance() }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
+            .thenByDescending { quality.score(it.favorite) })
+}
+
+internal fun subscriptionRequest(context: android.content.Context, row: NodeRow, allRows: List<NodeRow>,
+                                dns: String, smart: Boolean): Intent {
+    val request = Intent(context,TunnelService::class.java).setAction("subscription")
+        .putExtra("source",row.source.id).putExtra("updated",row.source.updated).putExtra("index",row.index).putExtra("dns",dns)
+    if (smart) {
+        val candidates = rankedNodes(context,allRows).filter { it.favorite != row.favorite }.take(7)
+        val refs = org.json.JSONArray()
+        candidates.forEach { refs.put(JSONObject().put("source",it.source.id).put("updated",it.source.updated).put("index",it.index)) }
+        request.putExtra("alternates",refs.toString())
+    }
+    return request
+}
+
 @Composable
-fun SubscriptionScreen(close: () -> Unit) {
+fun SubscriptionScreen(home: @Composable () -> Unit) {
     val context = LocalContext.current
     val store = remember { Subscriptions(context) }
     val scope = rememberCoroutineScope()
+    val scroll = androidx.compose.foundation.lazy.rememberLazyListState()
     var sources by remember { mutableStateOf(emptyList<Subscription>()) }
     var selected by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
@@ -55,6 +88,7 @@ fun SubscriptionScreen(close: () -> Unit) {
     var editSource by remember { mutableStateOf<Subscription?>(null) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf("") }
     val prefs = remember { context.getSharedPreferences("node-favorites",0) }
     var favorites by remember { mutableStateOf(prefs.getStringSet("items",emptySet()).orEmpty().toSet()) }
     var favoritesOnly by remember { mutableStateOf(false) }
@@ -68,27 +102,16 @@ fun SubscriptionScreen(close: () -> Unit) {
     var dns by remember { mutableStateOf("1.1.1.1") }
     var smart by remember { mutableStateOf(false) }
     val allRows = remember(sources) { sources.flatMap { s -> (0 until s.nodes.length()).map { NodeRow(s,it,s.nodes.getJSONObject(it)) } } }
-    val history = remember { context.getSharedPreferences("node-quality",0) }
-    fun score(row: NodeRow): Double {
-        val total=history.getInt("total/"+row.favorite,0)
-        return if (total==0) 0.5 else history.getInt("passed/"+row.favorite,0).toDouble()/total
-    }
     val tunnel by TunnelService.state.collectAsState()
+    val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
+    val quality = NodeQuality(context, tunnel.physical ?: connectivity.activeNetwork)
+    var speedResult by remember(tunnel.connectedAt) { mutableStateOf("") }
     fun connect(row: NodeRow) {
         prefs.edit().putLong("recent/"+row.favorite,System.currentTimeMillis()).apply()
-        val request=Intent(context,TunnelService::class.java).setAction("subscription")
-            .putExtra("source",row.source.id).putExtra("updated",row.source.updated).putExtra("index",row.index).putExtra("dns",dns)
-        if (smart) {
-            val candidates=allRows.filter { it.type in CompatEngine.types && it.favorite!=row.favorite &&
-                store.appearance.getBoolean("auto/"+it.source.id,false) }.sortedWith(compareByDescending<NodeRow>(::score)
-                    .thenBy { history.getLong("ms/"+it.favorite,Long.MAX_VALUE) }).take(7)
-            val refs=org.json.JSONArray()
-            candidates.forEach { refs.put(JSONObject().put("source",it.source.id).put("updated",it.source.updated).put("index",it.index)) }
-            request.putExtra("alternates",refs.toString())
-        }
+        val request = subscriptionRequest(context,row,allRows,dns,smart)
         context.startForegroundService(request)
         chosen = null
-        close()
+        scope.launch { scroll.scrollToItem(0) }
     }
     val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) chosen?.let(::connect) else { message = "VPN 授权已取消"; chosen = null }
@@ -96,11 +119,12 @@ fun SubscriptionScreen(close: () -> Unit) {
     fun update(action: () -> Unit) {
         if (busy) return
         busy = true
+        errorMessage = ""
         scope.launch {
             try {
                 sources = withContext(Dispatchers.IO) { action(); store.all() }
-                message = ""
-            } catch (_: Exception) { message = "操作失败，请检查订阅格式、文件大小或 HTTPS 地址。" }
+                message = ""; errorMessage = ""
+            } catch (_: Exception) { message = ""; errorMessage = "操作失败，请检查订阅格式、文件大小或 HTTPS 地址。" }
             finally { busy = false }
         }
     }
@@ -119,7 +143,9 @@ fun SubscriptionScreen(close: () -> Unit) {
                     }.isSuccess }
                 }
                 sources = withContext(Dispatchers.IO) { store.all() }
-                message = "已导入 $count / ${uris.size} 个文件"
+                val summary = "已导入 $count / ${uris.size} 个文件"
+                message = if (count==uris.size) summary else ""
+                errorMessage = if (count==uris.size) "" else summary
                 busy = false
             }
         }
@@ -146,13 +172,14 @@ fun SubscriptionScreen(close: () -> Unit) {
             "端口延迟" -> rows.sortedBy { metrics[it.favorite]?.takeIf { ms -> ms >= 0 } ?: Long.MAX_VALUE }
             "最近选择" -> rows.sortedByDescending { prefs.getLong("recent/"+it.favorite,0) }
             "收藏优先" -> rows.sortedByDescending { it.favorite in favorites }
-            "验证成功率" -> rows.sortedByDescending(::score)
+            "网络质量" -> rows.sortedByDescending { quality.score(it.favorite) }
             else -> rows
         }
     }
     fun measure() {
         if (busy || tunnel.active) return
         busy = true
+        errorMessage = ""
         scope.launch {
             try {
                 val results = mutableMapOf<String,Long>()
@@ -177,17 +204,34 @@ fun SubscriptionScreen(close: () -> Unit) {
             } finally { busy = false }
         }
     }
-    BackHandler(onBack = close)
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
-        contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        state = scroll, contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { home() }
         item {
-            TextButton(onClick = close) { Text("返回我的网络") }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("订阅与节点", style = MaterialTheme.typography.headlineMedium)
                 Button(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加订阅") }
             }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.error)
+            if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (errorMessage.isNotEmpty()) Text(errorMessage, color = MaterialTheme.colorScheme.error)
+            val current = tunnel
+            current.node?.let { node ->
+                TextButton(enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            speedResult = withContext(Dispatchers.IO) {
+                                val vpn = requireNotNull(connectivity.activeNetwork)
+                                require(connectivity.getNetworkCapabilities(vpn)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true)
+                                quality.measure(vpn,node) { TunnelService.state.value.connectedAt == current.connectedAt }
+                            }
+                        } catch (_: Exception) { speedResult = "测速中断，请检查连接后重试" }
+                        finally { busy = false }
+                    }
+                }) { Text("通过当前节点测速（Cloudflare，上下行各 1 MiB）") }
+                if (speedResult.isNotEmpty()) Text(speedResult)
+            }
             if (sources.isEmpty() && !busy) Text("添加订阅后，可以按来源查看节点。")
         }
         items(sources, key = { it.id }) { source ->
@@ -251,7 +295,7 @@ fun SubscriptionScreen(close: () -> Unit) {
                         DropdownMenu(expanded = filterMenu==tag,onDismissRequest = { filterMenu="" }) {
                             val choices = when(tag) { "协议" -> listOf("") + allRows.map { it.type }.distinct().sorted()
                                 "地区" -> listOf("") + allRows.map { it.region }.distinct().sorted()
-                                else -> listOf("默认","端口延迟","验证成功率","最近选择","收藏优先") }
+                                else -> listOf("默认","端口延迟","网络质量","最近选择","收藏优先") }
                             choices.forEach { choice -> DropdownMenuItem(text = { Text(choice.ifEmpty { "全部" }) },onClick = {
                                 when(tag) { "协议" -> protocol=choice; "地区" -> region=choice; else -> sort=choice }
                                 filterMenu=""
@@ -260,6 +304,14 @@ fun SubscriptionScreen(close: () -> Unit) {
                     }
                 }
             }
+            TextButton(enabled=!tunnel.active && !busy && visible.isNotEmpty(),onClick={
+                if (context.getSharedPreferences("local",0).contains("pinned")) message="请先解除固定出口"
+                else {
+                    val best=rankedNodes(context,visible).firstOrNull()
+                    if (best==null) message="请在可用订阅的管理页启用「参与自动选择」"
+                    else { smart=true; chosen=best }
+                }
+            }) { Text("按当前网络质量选择节点") }
             TextButton(enabled = !tunnel.active && !busy && visible.isNotEmpty(),onClick = { measure() }) { Text("检测筛选结果的 TCP 端口") }
             FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") })
         }
@@ -287,7 +339,7 @@ fun SubscriptionScreen(close: () -> Unit) {
         text = { Column { Text(row.source.label + " · " + row.node.getString("name"))
             OutlinedTextField(dns,{ dns = it.take(15) },singleLine = true,label = { Text("经节点访问的 DNS 地址") })
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) { Checkbox(smart,{ smart=it });Text("验证网页并尝试备用节点") }
-            if (smart) Text("通过 VPN 验证 example.com。失败时最多尝试七个已参与自动选择的节点，出口可能变化。")
+            if (smart) Text("每 20 秒经 VPN 向 example.com 验证网页。连续失败两次会尝试备用节点，出口可能变化。")
         } },
         confirmButton = { TextButton(onClick = {
             val prompt = VpnService.prepare(context)

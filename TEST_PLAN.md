@@ -15,3 +15,9 @@
 | 隐私 F | 无中央 API。需在产品功能齐全后补充离线、订阅本地加密与全链路流量观察 |
 
 七种兼容协议均已有来自 Android 原生引擎的测试网页回执。分协议状态和全设备验收范围见 [交接记录](docs/handoff/INDEX.md)。`tools/compat_lab.py` 可启动限定目标的对端。Android 仪器测试入口为 `CatalogCheck` 的 interop 模式。独立测试 APK 的 `Probe` 使用另一个 Android UID，可以核对 VPN 或直连默认网络、DNS、两站 HTTPS 和不同大小的 UDP 回包。恢复脚本验证模拟器两种底层网络关闭和重新开启过程中的 TUN 路由。
+
+## 雷电订阅协议端到端验收
+
+安装同一构建的 app Debug、app AndroidTest 和 vpnprobe Debug。主机需要 adb、Python 3 和 Node.js 22，隔离的 WSL 节点需要测试用的 Xray 和 shoes Linux 可执行文件。运行 `python tools/verify_subscription_vpn.py --help` 查看参数。可用 `--links` 测普通 Base64 链接订阅，`--ld` 追加断网恢复与主动测速，`--screens` 保留当前测试页截图。
+
+每个主节点都要通过系统文件选择器导入的来源建立 Android VPN。雷电浏览器需要显示与当次请求匹配的节点回执和公网网页，独立 UID 需要校验系统 VPN、DNS、两站 HTTPS 正文及三种 UDP 包长。关闭当前服务端进程后再执行同样检查，并核对新回执来自不同协议。测试生成的节点、凭据和来源在运行结束后清理。

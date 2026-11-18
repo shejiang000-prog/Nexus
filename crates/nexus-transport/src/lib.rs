@@ -273,6 +273,7 @@ pub struct Connector {
     tls: Arc<ClientConfig>,
     quic: tokio::sync::OnceCell<Endpoint>,
     pooled: tokio::sync::Mutex<Option<Connection>>,
+    retry_quic: std::sync::Mutex<Option<std::time::Instant>>,
     server: SocketAddr,
     name: ServerName<'static>,
 }
@@ -305,6 +306,7 @@ impl Connector {
             tls: Arc::new(tls),
             quic: tokio::sync::OnceCell::new(),
             pooled: tokio::sync::Mutex::new(None),
+            retry_quic: std::sync::Mutex::new(None),
             #[cfg(target_os = "android")]
             network_handle: 0,
             #[cfg(target_os = "android")]
@@ -407,17 +409,28 @@ impl Connector {
         })
     }
     pub async fn connect(&self, mode: &Mode, udp: bool) -> io::Result<Channel> {
-        if !matches!(mode, Mode::Tls) {
+        let cooling_down = matches!(mode, Mode::Auto)
+            && self
+                .retry_quic
+                .lock()
+                .map_err(err)?
+                .is_some_and(|until| std::time::Instant::now() < until);
+        let attempt_quic = !matches!(mode, Mode::Tls) && !cooling_down;
+        if attempt_quic {
             match timeout(SETUP, self.quic(udp)).await {
                 Ok(Err(e))
                     if matches!(mode, Mode::Auto)
                         && e.kind() == io::ErrorKind::AddrNotAvailable => {}
-                Ok(result) => return result,
+                Ok(Ok(channel)) => {
+                    *self.retry_quic.lock().map_err(err)? = None;
+                    return Ok(channel);
+                }
+                Ok(Err(error)) => return Err(error),
                 Err(e) if matches!(mode, Mode::Quic) => return Err(e.into()),
                 Err(_) => {}
             }
         }
-        timeout(SETUP, async {
+        let channel = timeout(SETUP, async {
             #[cfg(target_os = "android")]
             let socket = {
                 use tokio::net::TcpSocket;
@@ -443,6 +456,11 @@ impl Connector {
                 connection: None,
             })
         })
-        .await?
+        .await??;
+        if attempt_quic {
+            *self.retry_quic.lock().map_err(err)? =
+                Some(std::time::Instant::now() + Duration::from_secs(30));
+        }
+        Ok(channel)
     }
 }

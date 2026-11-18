@@ -97,8 +97,25 @@ object CompatEngine {
         require(outbound.getString("protocol") in setOf("vless","vmess","trojan","shadowsocks","hysteria"))
         return outbound.put("tag","selected")
     }
+    fun waitForStop(cancel: ParcelFileDescriptor, health: (() -> Boolean)?, running: (() -> Boolean)? = null) {
+        val poll = android.system.StructPollfd().apply {
+            fd = cancel.fileDescriptor
+            events = android.system.OsConstants.POLLIN.toShort()
+        }
+        var missed = 0
+        var next = android.os.SystemClock.elapsedRealtime() + 20_000
+        while (android.system.Os.poll(arrayOf(poll), if (running != null) 1000 else if (health != null) 20_000 else -1) == 0) {
+            check(running?.invoke() != false)
+            if (health != null && android.os.SystemClock.elapsedRealtime() >= next) {
+                missed = if (health()) 0 else missed + 1
+                check(missed < 2) { "节点网页连续两次验证失败" }
+                next = android.os.SystemClock.elapsedRealtime() + 20_000
+            }
+        }
+    }
+
     @Synchronized fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
-                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, ready: () -> Unit): Int {
+                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, ready: () -> Unit): Int {
         socketProtection = { fd ->
             runCatching {
                 check(service.protect(fd))
@@ -108,7 +125,7 @@ object CompatEngine {
         }
         try {
             if (outbound.has("shoesClient")) {
-                try { return ShoesEngine.run(outbound, network, tun, cancel, requireNotNull(socketProtection), ready) }
+                try { return ShoesEngine.run(outbound, network, tun, cancel, requireNotNull(socketProtection), health, ready) }
                 finally { socketProtection = null }
             }
             if (!registered) {
@@ -123,7 +140,7 @@ object CompatEngine {
                 .put("outbounds",JSONArray().put(outbound))
             invoke("runXray",JSONObject().put("xrayJson",config.toString()))
             ready()
-            ParcelFileDescriptor.AutoCloseInputStream(cancel).use { it.read() }
+            waitForStop(cancel, health)
             return 0
         } finally {
             if (!outbound.has("shoesClient")) {
