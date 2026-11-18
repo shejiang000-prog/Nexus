@@ -9,6 +9,6 @@
 | Linux | Debian 13 x86_64 WSL2，普通用户启动服务，Rust 原生二进制。其他发行版/架构须另验 |
 | 测试 | Python 3、OpenSSL 3 CLI，短期测试身份。无中央服务器、订阅 SDK、商业代理内核或预置服务器 |
 
-直接和间接 Rust 包见 THIRD_PARTY_LICENSES.md。Android 构建可执行 `gradlew :app:dependencies --configuration debugRuntimeClasspath` 复核解析图。AndroidX 使用 Apache-2.0。Android SDK/NDK 与 WebView2 各自适用平台提供方的条款，正式分发需保留适用 notices。
+Android TUN 使用 netstack-smoltcp 0.2.5（MIT 或 Apache-2.0），smoltcp 负责 TCP/IP，futures-util 驱动有界包通道。直接和间接 Rust 包见 THIRD_PARTY_LICENSES.md。Android 构建可执行 `gradlew :app:dependencies --configuration debugRuntimeClasspath` 复核解析图。AndroidX 使用 Apache-2.0。Android SDK/NDK 与 WebView2 各自适用平台提供方的条款，正式分发需保留适用 notices。
 
 上游资料：[Quinn](https://docs.rs/quinn/)、[rustls](https://docs.rs/rustls/)、[Android Keystore](https://developer.android.com/privacy-and-security/keystore)、[AndroidX](https://source.android.com/docs/setup/about/licenses)、[Tauri](https://v2.tauri.app/start/prerequisites/)。

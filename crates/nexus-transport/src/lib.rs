@@ -138,6 +138,8 @@ impl std::str::FromStr for Mode {
 }
 
 pub struct Connector {
+    #[cfg(target_os = "android")]
+    network_handle: u64,
     tls: Arc<ClientConfig>,
     quic: tokio::sync::OnceCell<Endpoint>,
     server: SocketAddr,
@@ -163,21 +165,53 @@ impl Connector {
         Ok(Self {
             tls: Arc::new(tls),
             quic: tokio::sync::OnceCell::new(),
+            #[cfg(target_os = "android")]
+            network_handle: 0,
             server,
             name: ServerName::try_from(name.to_owned()).map_err(err)?,
         })
     }
+    #[cfg(target_os = "android")]
+    pub fn with_android_network(mut self, handle: u64) -> Self {
+        self.network_handle = handle;
+        self
+    }
+    #[cfg(target_os = "android")]
+    fn bind_android_network(&self, socket: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+        #[link(name = "android")]
+        extern "C" {
+            fn android_setsocknetwork(network: u64, fd: i32) -> i32;
+        }
+        // NDK API 23+, socket owns the descriptor throughout this synchronous call.
+        if self.network_handle != 0
+            && unsafe { android_setsocknetwork(self.network_handle, socket.as_raw_fd()) } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
     fn endpoint(&self) -> io::Result<Endpoint> {
-        let mut quic = Endpoint::client(
-            if self.server.is_ipv4() {
-                "0.0.0.0:0"
-            } else {
-                "[::]:0"
-            }
-            .parse()
-            .unwrap(),
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::AddrNotAvailable, e))?;
+        let local = if self.server.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        }
+        .parse::<SocketAddr>()
+        .unwrap();
+        #[cfg(target_os = "android")]
+        let endpoint = (|| {
+            let udp = std::net::UdpSocket::bind(local)?;
+            self.bind_android_network(&udp)?;
+            Endpoint::new(
+                quinn::EndpointConfig::default(),
+                None,
+                udp,
+                Arc::new(quinn::TokioRuntime),
+            )
+        })();
+        #[cfg(not(target_os = "android"))]
+        let endpoint = Endpoint::client(local);
+        let mut quic = endpoint.map_err(|e| io::Error::new(io::ErrorKind::AddrNotAvailable, e))?;
         quic.set_default_client_config(quinn::ClientConfig::new(Arc::new(
             QuicClientConfig::try_from(self.tls.as_ref().clone()).map_err(err)?,
         )));
@@ -210,6 +244,18 @@ impl Connector {
             }
         }
         timeout(SETUP, async {
+            #[cfg(target_os = "android")]
+            let socket = {
+                use tokio::net::TcpSocket;
+                let tcp = if self.server.is_ipv4() {
+                    TcpSocket::new_v4()?
+                } else {
+                    TcpSocket::new_v6()?
+                };
+                self.bind_android_network(&tcp)?;
+                tcp.connect(self.server).await?
+            };
+            #[cfg(not(target_os = "android"))]
             let socket = TcpStream::connect(self.server).await?;
             let stream = TlsConnector::from(self.tls.clone())
                 .connect(self.name.clone(), socket)

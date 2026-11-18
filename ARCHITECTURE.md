@@ -8,10 +8,10 @@
 | nexus-transport | Quinn QUIC、rustls 双向 TLS、证书链与设备叶证书校验，向协议层交付双向字节流 |
 | nexus-client | 发送 OPEN，只有目标获准且服务端成功建立目标 socket 才返回成功。CLI 提供 TCP 或 UDP 测试入口 |
 | nexus-server | 监听同号 UDP/TCP；仅一个经所有者授权的设备，逐目标核对精确 IP 与端口 |
-| nexus-android | JNI 桥接、Keystore 签名回调、回环监听、取消和活动连接生命周期 |
+| nexus-android | JNI 桥接、Keystore 签名回调、回环监听、TUN IP 包和 TCP 流转换、取消及活动连接生命周期 |
 | apps/android | Kotlin / Compose、文件选择器、信任确认、设备身份及前台服务 |
 | apps/desktop | 独立 Tauri 2 / WebView2 初始化工程。保留首页、订阅、服务器、朋友分享的导航和空状态 |
 
 Android 用系统文件选择器导出公钥，拥有者在线下签发设备证书。导入文件仅含公开证书、服务器和目标。导入时检查本机公钥、有效期和签名，并向用户展示 CA 指纹。启动时由设备 Keystore 完成 P-256 签名。前台服务负责 Rust 会话；断开通过关闭 Unix socket pair 取消所有子任务。显示的端口只属于本次会话。
 
-Windows 与 Linux CLI 的开发身份采用短期文件凭据。Android 不复用桌面的文件私钥。生产 SSH 部署、邀请授权、订阅引擎和全设备 VPN 目前均无运行入口。
+Windows 与 Linux CLI 的开发身份采用短期文件凭据。Android 的两种入口共用设备身份、rustls 认证与服务端 OPEN。VpnService 声明一条 IPv4 主机路由，将自身 UID 排除在 VPN 之外，交给 Rust 的是非阻塞 TUN 描述符副本。服务保留原描述符，底层网络变化时取消原有流并重新认证。手机为每个获准的浏览器 TCP 流建立独立的 Nexus 流。生产 SSH 部署、邀请授权、订阅引擎和全设备 VPN 仍待开发。

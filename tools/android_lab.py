@@ -2,6 +2,8 @@
 import argparse
 import base64
 import json
+import secrets
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,8 +13,23 @@ from pathlib import Path
 from lab_identity import generate
 from test_tunnel import EchoHttp, endpoint, process
 
+class BrowserTarget(EchoHttp):
+    def do_GET(self):
+        if not re.fullmatch(r"/vpn/[0-9a-f]{8,32}", self.path):
+            self.send_error(404)
+            return
+        receipt = secrets.token_hex(12)
+        page = f"<!doctype html><meta name=viewport content='width=device-width'><title>Nexus private node</title><h1>Nexus private node</h1><p>Debian receipt: {receipt}</p>".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+        print(f"GET {self.path} receipt={receipt}", flush=True)
+
 def lab(args):
-    with tempfile.TemporaryDirectory() as tmp, ThreadingHTTPServer(("127.0.0.1", 0), EchoHttp) as http:
+    with tempfile.TemporaryDirectory() as tmp, ThreadingHTTPServer(("127.0.0.1", 0), BrowserTarget) as http:
         keys = Path(tmp) / "keys"
         generate(keys)
         http.received = []

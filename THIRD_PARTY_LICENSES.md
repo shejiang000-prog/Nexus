@@ -16,6 +16,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [alloc-stdlib](https://crates.io/crates/alloc-stdlib/0.3.0) | 0.3.0 | BSD-3-Clause | desktop |
 | [android_system_properties](https://crates.io/crates/android_system_properties/0.1.6) | 0.1.6 | MIT OR Apache-2.0 | desktop |
 | [anyhow](https://crates.io/crates/anyhow/1.0.104) | 1.0.104 | MIT OR Apache-2.0 | desktop |
+| [arrayvec](https://crates.io/crates/arrayvec/0.7.8) | 0.7.8 | MIT OR Apache-2.0 | core |
 | [atk](https://crates.io/crates/atk/0.18.2) | 0.18.2 | MIT | desktop |
 | [atk-sys](https://crates.io/crates/atk-sys/0.18.2) | 0.18.2 | MIT | desktop |
 | [atomic-waker](https://crates.io/crates/atomic-waker/1.1.2) | 1.1.2 | Apache-2.0 OR MIT | desktop |
@@ -26,7 +27,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [bit-set](https://crates.io/crates/bit-set/0.8.0) | 0.8.0 | Apache-2.0 OR MIT | desktop |
 | [bit-vec](https://crates.io/crates/bit-vec/0.10.2) | 0.10.2 | Apache-2.0 OR MIT | desktop |
 | [bit-vec](https://crates.io/crates/bit-vec/0.8.0) | 0.8.0 | Apache-2.0 OR MIT | desktop |
-| [bitflags](https://crates.io/crates/bitflags/1.3.2) | 1.3.2 | MIT/Apache-2.0 | desktop |
+| [bitflags](https://crates.io/crates/bitflags/1.3.2) | 1.3.2 | MIT/Apache-2.0 | core, desktop |
 | [bitflags](https://crates.io/crates/bitflags/2.13.2) | 2.13.2 | MIT OR Apache-2.0 | desktop |
 | [block-buffer](https://crates.io/crates/block-buffer/0.10.4) | 0.10.4 | MIT OR Apache-2.0 | desktop |
 | [block-buffer](https://crates.io/crates/block-buffer/0.12.1) | 0.12.1 | MIT OR Apache-2.0 | desktop |
@@ -36,7 +37,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [bs58](https://crates.io/crates/bs58/0.5.1) | 0.5.1 | MIT/Apache-2.0 | desktop |
 | [bumpalo](https://crates.io/crates/bumpalo/3.20.4) | 3.20.4 | MIT OR Apache-2.0 | core, desktop |
 | [bytemuck](https://crates.io/crates/bytemuck/1.25.2) | 1.25.2 | Zlib OR Apache-2.0 OR MIT | desktop |
-| [byteorder](https://crates.io/crates/byteorder/1.5.0) | 1.5.0 | Unlicense OR MIT | desktop |
+| [byteorder](https://crates.io/crates/byteorder/1.5.0) | 1.5.0 | Unlicense OR MIT | core, desktop |
 | [bytes](https://crates.io/crates/bytes/1.12.2) | 1.12.2 | MIT | core, desktop |
 | [cairo-rs](https://crates.io/crates/cairo-rs/0.18.5) | 0.18.5 | MIT | desktop |
 | [cairo-sys-rs](https://crates.io/crates/cairo-sys-rs/0.18.2) | 0.18.2 | MIT | desktop |
@@ -74,6 +75,9 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [darling_core](https://crates.io/crates/darling_core/0.24.1) | 0.24.1 | MIT | desktop |
 | [darling_macro](https://crates.io/crates/darling_macro/0.24.1) | 0.24.1 | MIT | desktop |
 | [dbus](https://crates.io/crates/dbus/0.9.12) | 0.9.12 | Apache-2.0/MIT | desktop |
+| [defmt](https://crates.io/crates/defmt/1.2.0) | 1.2.0 | MIT OR Apache-2.0 | core |
+| [defmt-macros](https://crates.io/crates/defmt-macros/1.2.0) | 1.2.0 | MIT OR Apache-2.0 | core |
+| [defmt-parser](https://crates.io/crates/defmt-parser/1.1.0) | 1.1.0 | MIT OR Apache-2.0 | core |
 | [deranged](https://crates.io/crates/deranged/0.5.9) | 0.5.9 | MIT OR Apache-2.0 | desktop |
 | [derive_more](https://crates.io/crates/derive_more/2.1.1) | 2.1.1 | MIT | desktop |
 | [derive_more-impl](https://crates.io/crates/derive_more-impl/2.1.1) | 2.1.1 | MIT | desktop |
@@ -96,6 +100,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [embed_plist](https://crates.io/crates/embed_plist/1.2.2) | 1.2.2 | MIT OR Apache-2.0 | desktop |
 | [equivalent](https://crates.io/crates/equivalent/1.0.3) | 1.0.3 | Apache-2.0 OR MIT | desktop |
 | [erased-serde](https://crates.io/crates/erased-serde/0.4.11) | 0.4.11 | MIT OR Apache-2.0 | desktop |
+| [etherparse](https://crates.io/crates/etherparse/0.16.0) | 0.16.0 | MIT OR Apache-2.0 | core |
 | [fastrand](https://crates.io/crates/fastrand/2.5.0) | 2.5.0 | Apache-2.0 OR MIT | desktop |
 | [fdeflate](https://crates.io/crates/fdeflate/0.3.7) | 0.3.7 | MIT OR Apache-2.0 | desktop |
 | [field-offset](https://crates.io/crates/field-offset/0.3.6) | 0.3.6 | MIT OR Apache-2.0 | desktop |
@@ -107,12 +112,13 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [foreign-types-macros](https://crates.io/crates/foreign-types-macros/0.2.4) | 0.2.4 | MIT/Apache-2.0 | desktop |
 | [foreign-types-shared](https://crates.io/crates/foreign-types-shared/0.3.1) | 0.3.1 | MIT/Apache-2.0 | desktop |
 | [form_urlencoded](https://crates.io/crates/form_urlencoded/1.2.2) | 1.2.2 | MIT OR Apache-2.0 | desktop |
-| [futures-channel](https://crates.io/crates/futures-channel/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | desktop |
+| [futures](https://crates.io/crates/futures/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core |
+| [futures-channel](https://crates.io/crates/futures-channel/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
 | [futures-core](https://crates.io/crates/futures-core/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
-| [futures-executor](https://crates.io/crates/futures-executor/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | desktop |
-| [futures-io](https://crates.io/crates/futures-io/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | desktop |
-| [futures-macro](https://crates.io/crates/futures-macro/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | desktop |
-| [futures-sink](https://crates.io/crates/futures-sink/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | desktop |
+| [futures-executor](https://crates.io/crates/futures-executor/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
+| [futures-io](https://crates.io/crates/futures-io/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
+| [futures-macro](https://crates.io/crates/futures-macro/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
+| [futures-sink](https://crates.io/crates/futures-sink/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
 | [futures-task](https://crates.io/crates/futures-task/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
 | [futures-util](https://crates.io/crates/futures-util/0.3.34) | 0.3.34 | MIT OR Apache-2.0 | core, desktop |
 | [gdk](https://crates.io/crates/gdk/0.18.2) | 0.18.2 | MIT | desktop |
@@ -136,8 +142,10 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [gtk](https://crates.io/crates/gtk/0.18.2) | 0.18.2 | MIT | desktop |
 | [gtk-sys](https://crates.io/crates/gtk-sys/0.18.2) | 0.18.2 | MIT | desktop |
 | [gtk3-macros](https://crates.io/crates/gtk3-macros/0.18.2) | 0.18.2 | MIT | desktop |
+| [hash32](https://crates.io/crates/hash32/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | core |
 | [hashbrown](https://crates.io/crates/hashbrown/0.12.3) | 0.12.3 | MIT OR Apache-2.0 | desktop |
 | [hashbrown](https://crates.io/crates/hashbrown/0.17.1) | 0.17.1 | MIT OR Apache-2.0 | desktop |
+| [heapless](https://crates.io/crates/heapless/0.9.3) | 0.9.3 | MIT OR Apache-2.0 | core |
 | [heck](https://crates.io/crates/heck/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | desktop |
 | [heck](https://crates.io/crates/heck/0.5.0) | 0.5.0 | MIT OR Apache-2.0 | desktop |
 | [hex](https://crates.io/crates/hex/0.4.3) | 0.4.3 | MIT OR Apache-2.0 | desktop |
@@ -191,9 +199,10 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [libredox](https://crates.io/crates/libredox/0.1.25) | 0.1.25 | MIT | desktop |
 | [link-section](https://crates.io/crates/link-section/0.19.4) | 0.19.4 | Apache-2.0 OR MIT | desktop |
 | [litemap](https://crates.io/crates/litemap/0.8.3) | 0.8.3 | Unicode-3.0 | desktop |
-| [lock_api](https://crates.io/crates/lock_api/0.4.14) | 0.4.14 | MIT OR Apache-2.0 | desktop |
+| [lock_api](https://crates.io/crates/lock_api/0.4.14) | 0.4.14 | MIT OR Apache-2.0 | core, desktop |
 | [log](https://crates.io/crates/log/0.4.35) | 0.4.35 | MIT OR Apache-2.0 | core, desktop |
 | [lru-slab](https://crates.io/crates/lru-slab/0.1.3) | 0.1.3 | MIT OR Apache-2.0 OR Zlib | core |
+| [managed](https://crates.io/crates/managed/0.8.0) | 0.8.0 | 0BSD | core |
 | [markup5ever](https://crates.io/crates/markup5ever/0.39.0) | 0.39.0 | MIT OR Apache-2.0 | desktop |
 | [markup5ever](https://crates.io/crates/markup5ever/0.40.0) | 0.40.0 | MIT OR Apache-2.0 | desktop |
 | [memchr](https://crates.io/crates/memchr/2.8.3) | 2.8.3 | Unlicense OR MIT | core, desktop |
@@ -206,6 +215,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [ndk](https://crates.io/crates/ndk/0.9.0) | 0.9.0 | MIT OR Apache-2.0 | desktop |
 | [ndk-context](https://crates.io/crates/ndk-context/0.1.1) | 0.1.1 | MIT OR Apache-2.0 | desktop |
 | [ndk-sys](https://crates.io/crates/ndk-sys/0.6.0+11769913) | 0.6.0+11769913 | MIT OR Apache-2.0 | desktop |
+| [netstack-smoltcp](https://crates.io/crates/netstack-smoltcp/0.2.5) | 0.2.5 | MIT OR Apache-2.0 | core |
 | [new_debug_unreachable](https://crates.io/crates/new_debug_unreachable/1.0.6) | 1.0.6 | MIT | desktop |
 | [num-conv](https://crates.io/crates/num-conv/0.2.2) | 0.2.2 | MIT OR Apache-2.0 | desktop |
 | [num-traits](https://crates.io/crates/num-traits/0.2.19) | 0.2.19 | MIT OR Apache-2.0 | desktop |
@@ -253,6 +263,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [portable-atomic-util](https://crates.io/crates/portable-atomic-util/0.2.8) | 0.2.8 | Apache-2.0 OR MIT | desktop |
 | [potential_utf](https://crates.io/crates/potential_utf/0.1.6) | 0.1.6 | Unicode-3.0 | desktop |
 | [powerfmt](https://crates.io/crates/powerfmt/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | desktop |
+| [ppv-lite86](https://crates.io/crates/ppv-lite86/0.2.21) | 0.2.21 | MIT OR Apache-2.0 | core |
 | [precomputed-hash](https://crates.io/crates/precomputed-hash/0.1.1) | 0.1.1 | MIT | desktop |
 | [proc-macro-crate](https://crates.io/crates/proc-macro-crate/1.3.1) | 1.3.1 | MIT OR Apache-2.0 | desktop |
 | [proc-macro-crate](https://crates.io/crates/proc-macro-crate/2.0.2) | 2.0.2 | MIT OR Apache-2.0 | desktop |
@@ -268,7 +279,10 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [r-efi](https://crates.io/crates/r-efi/5.3.0) | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | desktop |
 | [r-efi](https://crates.io/crates/r-efi/6.0.0) | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | core, desktop |
 | [rand](https://crates.io/crates/rand/0.10.4) | 0.10.4 | MIT OR Apache-2.0 | core |
+| [rand](https://crates.io/crates/rand/0.8.8) | 0.8.8 | MIT OR Apache-2.0 | core |
+| [rand_chacha](https://crates.io/crates/rand_chacha/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | core |
 | [rand_core](https://crates.io/crates/rand_core/0.10.1) | 0.10.1 | MIT OR Apache-2.0 | core |
+| [rand_core](https://crates.io/crates/rand_core/0.6.4) | 0.6.4 | MIT OR Apache-2.0 | core |
 | [rand_pcg](https://crates.io/crates/rand_pcg/0.10.2) | 0.10.2 | MIT OR Apache-2.0 | core |
 | [raw-window-handle](https://crates.io/crates/raw-window-handle/0.6.2) | 0.6.2 | MIT OR Apache-2.0 OR Zlib | desktop |
 | [redox_syscall](https://crates.io/crates/redox_syscall/0.5.18) | 0.5.18 | MIT | desktop |
@@ -291,7 +305,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [schemars](https://crates.io/crates/schemars/0.9.0) | 0.9.0 | MIT | desktop |
 | [schemars](https://crates.io/crates/schemars/1.2.3) | 1.2.3 | MIT | desktop |
 | [schemars_derive](https://crates.io/crates/schemars_derive/0.8.22) | 0.8.22 | MIT | desktop |
-| [scopeguard](https://crates.io/crates/scopeguard/1.2.0) | 1.2.0 | MIT OR Apache-2.0 | desktop |
+| [scopeguard](https://crates.io/crates/scopeguard/1.2.0) | 1.2.0 | MIT OR Apache-2.0 | core, desktop |
 | [selectors](https://crates.io/crates/selectors/0.38.0) | 0.38.0 | MPL-2.0 | desktop |
 | [selectors](https://crates.io/crates/selectors/0.41.0) | 0.41.0 | MPL-2.0 | desktop |
 | [semver](https://crates.io/crates/semver/1.0.28) | 1.0.28 | MIT OR Apache-2.0 | desktop |
@@ -317,11 +331,13 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [siphasher](https://crates.io/crates/siphasher/1.0.4) | 1.0.4 | MIT OR Apache-2.0 | desktop |
 | [slab](https://crates.io/crates/slab/0.4.12) | 0.4.12 | MIT | core, desktop |
 | [smallvec](https://crates.io/crates/smallvec/1.16.6) | 1.16.6 | MIT OR Apache-2.0 | desktop |
+| [smoltcp](https://crates.io/crates/smoltcp/0.14.0) | 0.14.0 | 0BSD | core |
 | [socket2](https://crates.io/crates/socket2/0.6.5) | 0.6.5 | MIT OR Apache-2.0 | core, desktop |
 | [softbuffer](https://crates.io/crates/softbuffer/0.4.8) | 0.4.8 | MIT OR Apache-2.0 | desktop |
 | [soup3](https://crates.io/crates/soup3/0.5.0) | 0.5.0 | MIT | desktop |
 | [soup3-sys](https://crates.io/crates/soup3-sys/0.5.0) | 0.5.0 | MIT | desktop |
-| [stable_deref_trait](https://crates.io/crates/stable_deref_trait/1.2.1) | 1.2.1 | MIT OR Apache-2.0 | desktop |
+| [spin](https://crates.io/crates/spin/0.9.9) | 0.9.9 | MIT | core |
+| [stable_deref_trait](https://crates.io/crates/stable_deref_trait/1.2.1) | 1.2.1 | MIT OR Apache-2.0 | core, desktop |
 | [static_vcruntime](https://crates.io/crates/static_vcruntime/3.0.0) | 3.0.0 | MIT OR Apache-2.0 OR Zlib | desktop |
 | [string_cache](https://crates.io/crates/string_cache/0.11.0) | 0.11.0 | MIT OR Apache-2.0 | desktop |
 | [string_cache](https://crates.io/crates/string_cache/0.9.0) | 0.9.0 | MIT OR Apache-2.0 | desktop |
@@ -360,7 +376,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | core, desktop |
 | [tokio-macros](https://crates.io/crates/tokio-macros/2.7.2) | 2.7.2 | MIT | core |
 | [tokio-rustls](https://crates.io/crates/tokio-rustls/0.26.6) | 0.26.6 | MIT OR Apache-2.0 | core |
-| [tokio-util](https://crates.io/crates/tokio-util/0.7.20) | 0.7.20 | MIT | desktop |
+| [tokio-util](https://crates.io/crates/tokio-util/0.7.20) | 0.7.20 | MIT | core, desktop |
 | [toml](https://crates.io/crates/toml/0.8.2) | 0.8.2 | MIT OR Apache-2.0 | desktop |
 | [toml](https://crates.io/crates/toml/1.2.1+spec-1.1.0) | 1.2.1+spec-1.1.0 | MIT OR Apache-2.0 | desktop |
 | [toml_datetime](https://crates.io/crates/toml_datetime/0.6.3) | 0.6.3 | MIT OR Apache-2.0 | desktop |
@@ -458,6 +474,8 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | desktop |
 | [yoke](https://crates.io/crates/yoke/0.8.4) | 0.8.4 | Unicode-3.0 | desktop |
 | [yoke-derive](https://crates.io/crates/yoke-derive/0.8.4) | 0.8.4 | Unicode-3.0 | desktop |
+| [zerocopy](https://crates.io/crates/zerocopy/0.8.63) | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | core |
+| [zerocopy-derive](https://crates.io/crates/zerocopy-derive/0.8.63) | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | core |
 | [zerofrom](https://crates.io/crates/zerofrom/0.1.8) | 0.1.8 | Unicode-3.0 | desktop |
 | [zerofrom-derive](https://crates.io/crates/zerofrom-derive/0.1.8) | 0.1.8 | Unicode-3.0 | desktop |
 | [zeroize](https://crates.io/crates/zeroize/1.9.2) | 1.9.2 | Apache-2.0 OR MIT | core |

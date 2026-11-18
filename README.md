@@ -1,6 +1,6 @@
 # Nexus
 
-Android 优先的本地网络客户端与私人节点协议。此开发批次可使用设备独立密钥通过自己的 Linux 服务端向单个许可目标转发数据。无需注册。当前手机入口为固定目标的本地 TCP 端口。
+Android 优先的本地网络客户端与私人节点协议。用户可通过系统 VPN 或本地 TCP 端口访问私人节点授权的单个目标。设备独立密钥存于 Android Keystore，无需注册。
 
 - [Android 构建、导入和使用](docs/ANDROID.md)
 - [工程架构](ARCHITECTURE.md) · [协议规范](PROTOCOL_SPEC.md) · [威胁模型](SECURITY.md)

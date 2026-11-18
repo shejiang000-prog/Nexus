@@ -1,4 +1,5 @@
 #![cfg(target_os = "android")]
+mod vpn;
 use jni::{
     objects::{GlobalRef, JByteArray, JObject, JString, JValue},
     JNIEnv, JavaVM,
@@ -68,39 +69,54 @@ impl Signer for Key {
         sign().map_err(|_| rustls::Error::General("device signing failed".into()))
     }
 }
-async fn serve(connector: Connector, target: SocketAddr, device: Arc<Device>) -> io::Result<()> {
-    let connector = Arc::new(connector);
-    // Validate the complete OPEN before announcing that the local port is ready.
-    drop(open(&connector, &Mode::Auto, Flow::Tcp, target).await?);
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let mut active = JoinSet::new();
-    {
-        let mut env = device
-            .vm
-            .attach_current_thread()
-            .map_err(io::Error::other)?;
+impl Device {
+    fn ready(&self, port: u16) -> io::Result<()> {
+        let mut env = self.vm.attach_current_thread().map_err(io::Error::other)?;
         env.call_method(
-            &device.callback,
+            &self.callback,
             "onReady",
             "(I)V",
-            &[JValue::Int(listener.local_addr()?.port().into())],
+            &[JValue::Int(port.into())],
         )
         .map_err(io::Error::other)?;
+        Ok(())
     }
+}
+
+async fn transfer(
+    mut local: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    connector: Arc<Connector>,
+    target: SocketAddr,
+) {
+    let flow = async {
+        let mut ch = open(&connector, &Mode::Auto, Flow::Tcp, target).await?;
+        copy_bidirectional(&mut local, &mut ch.stream).await?;
+        ch.drain().await;
+        Ok::<_, io::Error>(())
+    };
+    let _ = timeout(LIFETIME, flow).await;
+}
+
+async fn serve(
+    connector: Connector,
+    target: SocketAddr,
+    device: Arc<Device>,
+    tun: Option<OwnedFd>,
+    route: std::net::IpAddr,
+) -> io::Result<()> {
+    let connector = Arc::new(connector);
+    drop(open(&connector, &Mode::Auto, Flow::Tcp, target).await?);
+    if let Some(fd) = tun {
+        return vpn::forward(fd, route, target, connector, device).await;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut active = JoinSet::new();
+    device.ready(listener.local_addr()?.port())?;
     loop {
         tokio::select! {
             result=listener.accept(), if active.len()<16 =>{
-                let (mut local,_)=result?;
-                let connector=connector.clone();
-                active.spawn(async move {
-                    let transfer=async {
-                        let mut ch=open(&connector,&Mode::Auto,Flow::Tcp,target).await?;
-                        copy_bidirectional(&mut local,&mut ch.stream).await?;
-                        ch.drain().await;
-                        Ok::<_,io::Error>(())
-                    };
-                    let _=timeout(LIFETIME,transfer).await;
-                });
+                let (local,_)=result?;
+                active.spawn(transfer(local,connector.clone(),target));
             }
             Some(_)=active.join_next(), if !active.is_empty()=>{}
         }
@@ -112,6 +128,9 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
     mut env: JNIEnv,
     callback: JObject,
     cancel_fd: i32,
+    tun_fd: i32,
+    network_handle: i64,
+    route: JString,
     server: JString,
     name: JString,
     target: JString,
@@ -123,12 +142,16 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
     }
     // Kotlin transfers sole ownership with ParcelFileDescriptor.detachFd().
     let cancel = unsafe { OwnedFd::from_raw_fd(cancel_fd) };
+    // A VPN session receives its own dup; the service holds the original throughout recovery.
+    let tun = (tun_fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(tun_fd) });
     let run = || -> Result<(), Box<dyn std::error::Error>> {
         let server: String = env.get_string(&server)?.into();
         let name: String = env.get_string(&name)?.into();
         let target: String = env.get_string(&target)?.into();
         let server = server.parse()?;
         let target = target.parse()?;
+        let route: String = env.get_string(&route)?.into();
+        let route = route.parse()?;
         let mut roots = RootCertStore::empty();
         roots.add(env.convert_byte_array(ca)?.into())?;
         let device = Arc::new(Device {
@@ -142,7 +165,8 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
         let tls = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .with_root_certificates(roots)
             .with_client_cert_resolver(Arc::new(SingleCertAndKey::from(key)));
-        let connector = Connector::from_config(server, &name, tls)?;
+        let connector =
+            Connector::from_config(server, &name, tls)?.with_android_network(network_handle as u64);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -152,7 +176,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
             socket.set_nonblocking(true)?;
             let mut stop=UnixStream::from_std(socket)?;
             let mut byte=[0u8];
-            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device)=>outcome}
+            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device,tun,route)=>outcome}
         })?;
         Ok(())
     };

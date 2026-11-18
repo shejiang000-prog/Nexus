@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
+futures-util = { version = "0.3", features = ["sink"] }
+netstack-smoltcp = "0.2.5"
 nexus-client = { path = "../nexus-client" }
 nexus-protocol.workspace = true
 nexus-transport.workspace = true

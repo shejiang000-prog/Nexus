@@ -1,5 +1,20 @@
 # Nexus · Android 优先
 
+## 2026-11-18 单目标 VpnService 与浏览器验收
+
+环境为 API 35 x86_64 可见模拟器和同一台 Debian 13 WSL2 私人节点。Android 使用系统 VPN 授权、单条 IPv4 主机路由和非 VPN 底层网络；TCP 和 QUIC 隧道套接字绑定到所选网络。服务器只允许访问它自己的回环网页目标。用户在模拟器 Chrome 中手动导航，验收同时检查屏幕正文和 Linux 服务端 GET 日志。
+
+| 检查 | 结果 |
+|---|---|
+| 浏览器通过私人节点 | Chrome 返回 Debian 页面，首次请求 b7a52c94 的回执为 04ea3962e6c2a4e6f22c89b1，与服务端一致 |
+| 网络中断与恢复 | 关闭 Wi-Fi 和移动数据后显示「等待网络」，保留私人主机的 TUN 路由。恢复两种网络后自动重新认证；新请求 63ad914f 的回执为 e4076c35415bb8c657e3fafa，与服务端一致 |
+| 用户主动断开 | 最终构建再次通过断网恢复。点击断开后 UI 回到「未连接」，tun0、/32 路由和前台服务均已移除；默认网络恢复，模拟器直连 Debian 收到 ICMP 回应 |
+| 原本地端口模式 | 最终构建收发 524288 字节逐字节一致，HTTP 200，断开后本地端口拒绝连接 |
+
+验收中修复两处问题：默认网络回调会返回 VPN 自身，现仅监听物理网络；系统绑定会延长服务生命周期，现显式关闭 TUN 和活动流再停止服务。Windows 核心回归通过 2 项单测与 14 项进程集成检查，Android x86_64 原生目标通过 Clippy。最终本地 Debug APK 的 SHA-256 为 `ff0a60d9d6d7255dc015f7a58a86ec5f6d800bac51b04089ddeff3afa783ae97`。
+
+上次 CI 的 Android 作业在 SDK 安装处报告 sdkmanager 不在 PATH，现从 ANDROID_HOME 直接调用；同批 core 和 desktop-bootstrap 已通过。Codex Security 差异扫描未能识别当前 Git 工作树。本轮覆盖单目标 TCP、模拟器断网恢复及断开清理。全设备 VPN、UDP/DNS 和真机弱网仍需独立验收。
+
 ## 2026-11-18 首次设备授权与转发验收
 
 Android Debug 0.1.0（versionCode 1），API 35 x86_64 模拟器，使用 Android Keystore 生成的 P-256 设备密钥。服务端运行于独立 WSL2 Debian 13 x86_64，以普通用户身份启动。验收配置只包含公钥证书与地址。

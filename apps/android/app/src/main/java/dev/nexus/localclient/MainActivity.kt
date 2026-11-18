@@ -3,6 +3,7 @@ package dev.nexus.localclient
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -65,6 +67,7 @@ class MainActivity : ComponentActivity() {
         var profile by remember { mutableStateOf<Profile?>(null) }
         var candidate by remember { mutableStateOf<Profile?>(null) }
         var confirmConnect by remember { mutableStateOf(false) }
+        var useVpn by rememberSaveable { mutableStateOf(true) }
         var message by remember { mutableStateOf("") }
         LaunchedEffect(Unit) {
             runCatching { withContext(Dispatchers.IO) { Profile.load(this@MainActivity) } }
@@ -90,8 +93,15 @@ class MainActivity : ComponentActivity() {
                     } }
             }
         }
-        fun connect() { startForegroundService(Intent(this, TunnelService::class.java).setAction("connect")) }
+        fun connect() { startForegroundService(Intent(this, TunnelService::class.java).setAction(if (useVpn) "vpn" else "connect")) }
         val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { connect() }
+        fun requestNotification() {
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                notifications.launch(Manifest.permission.POST_NOTIFICATIONS) else connect()
+        }
+        val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) requestNotification() else message = "VPN 授权已取消"
+        }
         MaterialTheme(colorScheme = colors) {
             Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
                 Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
@@ -104,18 +114,21 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(20.dp))
                     Column(Modifier.fillMaxWidth().background(if (dark) Color(0xFF244439) else Color(0xFFDAE9DF),
                         RoundedCornerShape(16.dp)).padding(20.dp)) {
-                        Text("本地 TCP 转发", style = MaterialTheme.typography.labelLarge)
+                        Text(if (tunnel.vpn || (!tunnel.active && useVpn)) "私人节点 VPN" else "本地 TCP 转发", style = MaterialTheme.typography.labelLarge)
                         Spacer(Modifier.height(8.dp))
-                        Text(when { tunnel.starting -> "正在验证"; tunnel.port > 0 -> "转发已开启"; else -> "未连接" },
+                        Text(when { tunnel.waiting -> "等待网络"; tunnel.starting -> "正在验证"; tunnel.vpn && tunnel.error.isNotEmpty() -> "节点不可用"; tunnel.vpn -> "VPN 已连接"; tunnel.port > 0 -> "转发已开启"; else -> "未连接" },
                             fontSize = 28.sp, fontWeight = FontWeight.Medium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                        Text(if (tunnel.port > 0) "127.0.0.1:${tunnel.port}" else profile?.name ?: "尚未添加私人节点",
+                        Text(if (tunnel.port > 0) "127.0.0.1:${tunnel.port}" else if (tunnel.vpn) profile?.vpnEndpoint.orEmpty() else profile?.name ?: "尚未添加私人节点",
                             fontFamily = if (tunnel.port > 0) FontFamily.Monospace else FontFamily.Default)
                         if (profile != null || tunnel.active) {
                             Spacer(Modifier.height(12.dp))
-                            Button(onClick = {
-                                if (tunnel.active) stopService(Intent(this@MainActivity, TunnelService::class.java))
-                                else confirmConnect = true
-                            }) { Text(if (tunnel.active) "断开" else "开始转发") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {
+                                    if (tunnel.active) startService(Intent(this@MainActivity, TunnelService::class.java).setAction("stop"))
+                                    else { useVpn = true; confirmConnect = true }
+                                }) { Text(if (tunnel.active) "断开" else "连接 VPN") }
+                                if (!tunnel.active) TextButton(onClick = { useVpn = false; confirmConnect = true }) { Text("本地转发") }
+                            }
                         }
                     }
                     Spacer(Modifier.height(24.dp))
@@ -155,11 +168,13 @@ class MainActivity : ComponentActivity() {
                         candidate = null
                     }) { Text("确认导入") } }, dismissButton = { TextButton(onClick = { candidate = null }) { Text("取消") } })
             }
-            if (confirmConnect) AlertDialog(onDismissRequest = { confirmConnect = false }, title = { Text("开启本地端口？") },
-                text = { Text("转发期间，本机应用可通过此端口访问 ${profile?.target}。其他流量继续使用原网络。") },
+            if (confirmConnect) AlertDialog(onDismissRequest = { confirmConnect = false }, title = { Text(if (useVpn) "连接私人节点 VPN？" else "开启本地端口？") },
+                text = { Text(if (useVpn) "应用访问 ${profile?.vpnEndpoint} 时，TCP 请求将通过私人节点前往 ${profile?.target}。其他地址继续使用原网络。"
+                    else "转发期间，本机应用可通过此端口访问 ${profile?.target}。其他流量继续使用原网络。") },
                 confirmButton = { TextButton(onClick = {
                     confirmConnect = false
-                    if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS) else connect()
+                    val prompt = if (useVpn) VpnService.prepare(this@MainActivity) else null
+                    if (prompt == null) requestNotification() else consent.launch(prompt)
                 }) { Text("连接") } }, dismissButton = { TextButton(onClick = { confirmConnect = false }) { Text("取消") } })
         }
     }

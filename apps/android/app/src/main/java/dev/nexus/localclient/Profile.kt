@@ -37,6 +37,11 @@ object Identity {
 
 data class Profile(val name: String, val server: String, val tlsName: String, val target: String,
                    val ca: ByteArray, val device: ByteArray) {
+    // Loopback belongs to the phone itself. Represent server-local and IPv6 targets with an IPv4 alias.
+    val vpnHost: String get() = target.substringBeforeLast(':').let {
+        if (it.startsWith("127.") || it.startsWith("[") || it == "192.0.2.2") "192.0.2.1" else it
+    }
+    val vpnEndpoint: String get() = vpnHost + ":" + target.substringAfterLast(':')
     val fingerprint: String get() = MessageDigest.getInstance("SHA-256").digest(ca)
         .joinToString(":") { "%02X".format(it) }
     private fun json() = JSONObject().put("version", 1).put("name", name).put("server", server)
