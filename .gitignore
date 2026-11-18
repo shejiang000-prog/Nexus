@@ -1,0 +1,16 @@
+/target/
+**/build/
+**/.gradle/
+/apps/desktop/target/
+**/local.properties
+**/gen/schemas/
+*.der
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+.env
+*.log
+/lab-identity/
+__pycache__/

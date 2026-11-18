@@ -1,0 +1,16 @@
+[package]
+name = "nexus-android"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+nexus-client = { path = "../nexus-client" }
+nexus-protocol.workspace = true
+nexus-transport.workspace = true
+rustls.workspace = true
+tokio.workspace = true

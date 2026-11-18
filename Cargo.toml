@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/*"]
+exclude = ["apps/desktop"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+nexus-protocol = { path = "crates/nexus-protocol" }
+nexus-transport = { path = "crates/nexus-transport" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "sync"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }

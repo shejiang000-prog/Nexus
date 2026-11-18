@@ -1,0 +1,40 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+android {
+    namespace 'dev.nexus.localclient'
+    compileSdk 36
+    ndkVersion '28.2.13676358'
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures { compose true }
+    sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('nexusJni'))
+    defaultConfig {
+        applicationId 'dev.nexus.localclient'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0'
+    }
+}
+kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2025.12.01')
+    implementation 'androidx.activity:activity-compose:1.10.1'
+    implementation 'androidx.compose.material3:material3:1.4.0'
+}
+
+def nativeOutput = layout.buildDirectory.dir('nexusJni')
+def rustBuild = tasks.register('buildRust', Exec) {
+    def repo = rootProject.projectDir.parentFile.parentFile
+    inputs.files(fileTree(new File(repo, 'crates')), new File(repo, 'Cargo.lock'),
+        new File(repo, 'Cargo.toml'), new File(repo, 'tools/build_android.py'))
+    outputs.dir(nativeOutput)
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'),
+        new File(repo, 'tools/build_android.py'), android.ndkDirectory, nativeOutput.get().asFile
+}
+tasks.named('preBuild').configure { dependsOn rustBuild }
