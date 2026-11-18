@@ -25,7 +25,9 @@
 | 真实测速、主动断开 | 恢复后各传 1 MiB，本次下载 3.50 Mbps、上传 5.20 Mbps。主动断开后 TUN 消失，独立应用经普通网络从两个 HTTPS 站点读回正文 |
 | 界面及清理 | 已查看深浅色首页、节点列表和真实浏览器截图；本轮未见 Nexus 崩溃。恢复原网络及浅色设置，清理当次 QA 订阅和节点，原私人配置保留 |
 
-工作分支交付包含本页和交接索引。下一位接手者可先检查下方工作分支 CI，随后推进真机与公网验收。
+功能与本页同批推送到工作分支。功能提交 `5074f9b` 对应 [GitHub Actions 运行 44369737852](https://github.com/shejiang000-prog/Nexus/actions/runs/44369737852)。下方徽章随本分支最新一次推送更新；点开后可核对提交与 core、android、desktop-bootstrap 三个作业。下一阶段是真机与公网验收。
+
+[![分支 CI](https://github.com/shejiang000-prog/Nexus/actions/workflows/build.yml/badge.svg?branch=android%2Fsubscription-vpn-acceptance)](https://github.com/shejiang000-prog/Nexus/actions/workflows/build.yml?query=branch%3Aandroid%2Fsubscription-vpn-acceptance)
 
 ## 七种协议的实际流量
 
