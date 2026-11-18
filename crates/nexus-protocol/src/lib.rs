@@ -10,7 +10,7 @@ pub const OK: u8 = 0;
 pub const INVALID: u8 = 1;
 pub const DENIED: u8 = 2;
 pub const UNREACHABLE: u8 = 3;
-pub const MAX_PACKET: usize = 1232;
+pub const MAX_PACKET: usize = 1472; // Largest IPv4 UDP payload at the Android TUN MTU of 1500.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {

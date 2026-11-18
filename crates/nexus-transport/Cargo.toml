@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+nexus-protocol.workspace = true
 tokio.workspace = true
 quinn.workspace = true
 rustls.workspace = true

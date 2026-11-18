@@ -12,9 +12,13 @@ android {
     }
     buildFeatures { compose true }
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('nexusJni'))
+    sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('shoesJni'))
+    sourceSets.main.assets.srcDir(layout.buildDirectory.dir('shoesNotices'))
     defaultConfig {
         applicationId 'dev.nexus.localclient'
+        testInstrumentationRunner 'dev.nexus.localclient.CatalogCheck'
         minSdk 26
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
         targetSdk 36
         versionCode 1
         versionName '0.1.0'
@@ -22,13 +26,33 @@ android {
 }
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 
+def engineAar = layout.buildDirectory.file('engines/libXray.aar')
+def engineScript = new File(rootProject.projectDir.parentFile.parentFile, 'tools/fetch_android_engine.py')
+def fetchEngine = tasks.register('fetchEngine', Exec) {
+    inputs.file(engineScript)
+    outputs.file(engineAar)
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), engineScript, engineAar.get().asFile
+}
 dependencies {
+    implementation files(engineAar).builtBy(fetchEngine)
+    implementation 'com.github.mwiede:jsch:2.28.8'
+    implementation 'org.yaml:snakeyaml:2.6'
+    implementation 'com.google.zxing:core:3.5.4'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
     implementation platform('androidx.compose:compose-bom:2025.12.01')
     implementation 'androidx.activity:activity-compose:1.10.1'
     implementation 'androidx.compose.material3:material3:1.4.0'
 }
 
 def nativeOutput = layout.buildDirectory.dir('nexusJni')
+def shoesBuild = tasks.register('buildShoes', Exec) {
+    def script = new File(rootProject.projectDir.parentFile.parentFile, 'tools/build_android_shoes.py')
+    inputs.file(script)
+    def jni = layout.buildDirectory.dir('shoesJni')
+    def notices = layout.buildDirectory.dir('shoesNotices')
+    outputs.dirs(jni,notices)
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), script, android.ndkDirectory, jni.get().asFile, notices.get().asFile
+}
 def rustBuild = tasks.register('buildRust', Exec) {
     def repo = rootProject.projectDir.parentFile.parentFile
     inputs.files(fileTree(new File(repo, 'crates')), new File(repo, 'Cargo.lock'),
@@ -37,4 +61,20 @@ def rustBuild = tasks.register('buildRust', Exec) {
     commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'),
         new File(repo, 'tools/build_android.py'), android.ndkDirectory, nativeOutput.get().asFile
 }
-tasks.named('preBuild').configure { dependsOn rustBuild }
+tasks.named('preBuild').configure { dependsOn rustBuild, fetchEngine, shoesBuild }
+
+def adminAssets = tasks.register('prepareNodeAssets', Sync) {
+    from(new File(rootProject.projectDir.parentFile.parentFile, 'tools')) { include 'node_admin.py', 'install_node.py' }
+    from(providers.environmentVariable('NEXUS_LINUX_BINARIES').orElse(layout.buildDirectory.dir('linuxNodes').map { it.asFile.absolutePath })) {
+        into 'linux'
+        include 'x86_64/nexus-server', 'aarch64/nexus-server'
+    }
+    into layout.buildDirectory.dir('nodeAssets')
+    doLast {
+        for (abi in ['x86_64','aarch64']) {
+            if (!new File(destinationDir, "linux/$abi/nexus-server").isFile()) throw new GradleException("Missing Linux node for $abi. See docs/ANDROID.md")
+        }
+    }
+}
+android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('nodeAssets'))
+tasks.named('preBuild').configure { dependsOn adminAssets }

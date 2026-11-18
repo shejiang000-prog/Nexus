@@ -1,8 +1,14 @@
-use nexus_protocol::{
-    read_open, read_packet, write_packet, Flow, DENIED, INVALID, MAX_PACKET, OK, UNREACHABLE,
-};
+mod access;
+use access::{Device, Registry};
+use nexus_protocol::{read_open, Flow, DENIED, INVALID, MAX_PACKET, OK, UNREACHABLE};
 use nexus_transport::{Channel, ServerTls, LIFETIME, MAX_CONNECTIONS, SETUP};
-use std::{collections::HashSet, env, io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    env, io,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     io::{copy_bidirectional, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
@@ -10,7 +16,42 @@ use tokio::{
     time::timeout,
 };
 
-async fn relay(mut ch: Channel, allowed: &HashSet<SocketAddr>) -> io::Result<()> {
+struct Policy {
+    exact: HashSet<SocketAddr>,
+    internet: bool,
+}
+
+impl Policy {
+    fn permits(&self, addr: SocketAddr) -> bool {
+        self.exact.contains(&addr)
+            || self.internet
+                && match addr.ip() {
+                    IpAddr::V4(ip) => !matches!(
+                        ip.octets(),
+                        [0 | 10 | 127 | 224..=255, ..]
+                            | [100, 64..=127, ..]
+                            | [169, 254, ..]
+                            | [172, 16..=31, ..]
+                            | [192, 168, ..]
+                            | [192, 0, 0 | 2, _]
+                            | [192, 88, 99, _]
+                            | [198, 18 | 19, ..]
+                            | [198, 51, 100, _]
+                            | [203, 0, 113, _]
+                            | [168, 63, 129, 16]
+                    ),
+                    IpAddr::V6(ip) => {
+                        let [a, b, ..] = ip.segments();
+                        (0x2000..0x4000).contains(&a)
+                            && a != 0x2002
+                            && !(a == 0x2001 && (b < 0x200 || b == 0xdb8))
+                            && !(a == 0x3fff && b < 0x1000)
+                    }
+                }
+    }
+}
+
+async fn relay(mut ch: Channel, allowed: &Policy, device: Option<&Device>) -> io::Result<()> {
     let stream = &mut ch.stream;
     let (flow, addr) = match timeout(SETUP, read_open(stream)).await? {
         Ok(v) => v,
@@ -21,7 +62,7 @@ async fn relay(mut ch: Channel, allowed: &HashSet<SocketAddr>) -> io::Result<()>
             return Ok(());
         }
     };
-    if !allowed.contains(&addr) {
+    if !allowed.permits(addr) {
         stream.write_u8(DENIED).await?;
     } else {
         match flow {
@@ -29,7 +70,13 @@ async fn relay(mut ch: Channel, allowed: &HashSet<SocketAddr>) -> io::Result<()>
                 Ok(Ok(mut target)) => {
                     stream.write_u8(OK).await?;
                     stream.flush().await?;
-                    copy_bidirectional(stream, &mut target).await?;
+                    if let Some(device) = device {
+                        let (r, w) = tokio::io::split(stream);
+                        let (tr, tw) = target.split();
+                        tokio::try_join!(device.copy(r, tw), device.copy(tr, w))?;
+                    } else {
+                        copy_bidirectional(stream, &mut target).await?;
+                    }
                 }
                 _ => stream.write_u8(UNREACHABLE).await?,
             },
@@ -43,12 +90,14 @@ async fn relay(mut ch: Channel, allowed: &HashSet<SocketAddr>) -> io::Result<()>
                 socket.connect(addr).await?;
                 stream.write_u8(OK).await?;
                 stream.flush().await?;
-                let (mut r, mut w) = tokio::io::split(stream);
+                let (mut r, mut w) = ch.packets();
                 let outbound = async {
-                    let mut buf = [0; MAX_PACKET];
                     loop {
-                        let n = read_packet(&mut r, &mut buf).await?;
-                        socket.send(&buf[..n]).await?;
+                        let packet = r.recv().await?;
+                        if let Some(device) = device {
+                            device.charge(packet.len()).await?;
+                        }
+                        socket.send(&packet).await?;
                     }
                     #[allow(unreachable_code)]
                     Ok::<(), io::Error>(())
@@ -58,19 +107,36 @@ async fn relay(mut ch: Channel, allowed: &HashSet<SocketAddr>) -> io::Result<()>
                     loop {
                         let n = socket.recv(&mut buf).await?;
                         if n <= MAX_PACKET {
-                            write_packet(&mut w, &buf[..n]).await?;
+                            if let Some(device) = device {
+                                device.charge(n).await?;
+                            }
+                            w.send(&buf[..n]).await?;
                         }
                     }
                     #[allow(unreachable_code)]
                     Ok::<(), io::Error>(())
                 };
-                tokio::select! {res=outbound=>res?,res=inbound=>res?}
+                return tokio::select! {res=outbound=>res,res=inbound=>res};
             }
         }
     }
     ch.stream.shutdown().await?;
     ch.drain().await;
     Ok(())
+}
+
+async fn session(ch: Channel, allowed: &Policy, registry: Option<&Registry>) -> io::Result<()> {
+    if let Some(registry) = registry {
+        let cert = ch
+            .peer_certificate
+            .as_ref()
+            .ok_or(io::ErrorKind::PermissionDenied)?;
+        let device = registry.device(cert.as_ref());
+        device.charge(0).await?;
+        tokio::select! { r = device.until_revoked() => r, r = relay(ch, allowed, Some(&device)) => r }
+    } else {
+        relay(ch, allowed, None).await
+    }
 }
 
 #[tokio::main]
@@ -80,36 +146,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: nexus-server LISTEN CA.der SERVER.der SERVER.key.der DEVICE.der ALLOWED_IP:PORT [...]".into());
     }
     let addr: SocketAddr = args[0].parse()?;
-    let tls = ServerTls::load(&args[1], &args[2], &args[3], &args[4])?;
-    let allowed = Arc::new(
-        args[5..]
+    let (tls, registry) = match args[4].strip_prefix("registry:") {
+        Some(path) => (
+            ServerTls::for_device_registry(&args[1], &args[2], &args[3])?,
+            Some(Registry::open(path.as_ref())?),
+        ),
+        None => (
+            ServerTls::load(&args[1], &args[2], &args[3], &args[4])?,
+            None,
+        ),
+    };
+    let allowed = Arc::new(Policy {
+        internet: args[5..].iter().any(|s| s == "--internet"),
+        exact: args[5..]
             .iter()
+            .filter(|s| *s != "--internet")
             .map(|s| s.parse())
             .collect::<Result<HashSet<SocketAddr>, _>>()?,
-    );
+    });
     let tcp = TcpListener::bind(addr).await?;
     let endpoint = tls.endpoint(tcp.local_addr()?)?;
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let flows = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     println!("READY {}", tcp.local_addr()?);
     loop {
         let permit = slots.clone().acquire_owned().await?;
         let tls = tls.clone();
         let allowed = allowed.clone();
+        let registry = registry.clone();
+        let flows = flows.clone();
         // One admission per tick bounds failed handshakes as well as successful ones.
         tokio::time::sleep(Duration::from_millis(10)).await;
         tokio::select! {
             res=tcp.accept()=> {
                 let (socket,_) = res?;
                 tokio::spawn(async move {let _permit=permit;
-                    if let Ok(Ok(ch))=timeout(SETUP,tls.tcp(socket)).await { let _=timeout(LIFETIME,relay(ch,&allowed)).await; }
+                    if let Ok(Ok(ch))=timeout(SETUP,tls.tcp(socket)).await {
+                        if let Ok(_flow) = flows.try_acquire() { let _=timeout(LIFETIME,session(ch,&allowed,registry.as_ref())).await; }
+                    }
                 });
             }
             Some(incoming)=endpoint.accept()=> {
                 if !incoming.remote_address_validated() && incoming.may_retry() {let _=incoming.retry(); continue;}
                 tokio::spawn(async move {let _permit=permit;
-                    if let Ok(Ok(ch))=timeout(SETUP,tls.quic(incoming)).await { let _=timeout(LIFETIME,relay(ch,&allowed)).await; }
+                    if let Ok(Ok(conn))=timeout(SETUP,tls.quic(incoming)).await {
+                        let serve = async {
+                            let mut active = tokio::task::JoinSet::new();
+                            let mut idle = SETUP;
+                            loop {
+                                tokio::select! {
+                                    accepted = conn.accept() => {
+                                        let Ok(ch) = accepted else { break };
+                                        idle = Duration::from_secs(60);
+                                        let Ok(flow) = flows.clone().try_acquire_owned() else { continue };
+                                        let allowed = allowed.clone();
+                                        let registry = registry.clone();
+                                        active.spawn(async move { let _flow = flow; let _ = timeout(LIFETIME, session(ch, &allowed, registry.as_ref())).await; });
+                                        if !conn.multiplex { let _ = active.join_next().await; break }
+                                    }
+                                    Some(_) = active.join_next() => {}
+                                    _ = tokio::time::sleep(idle), if active.is_empty() => break,
+                                }
+                            }
+                        };
+                        let _ = timeout(LIFETIME, serve).await;
+                    }
                 });
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn internet_is_opt_in_and_keeps_internal_services_private() {
+        let mut policy = Policy {
+            exact: HashSet::from(["10.0.0.1:53".parse().unwrap()]),
+            internet: false,
+        };
+        let public = "1.1.1.1:443".parse().unwrap();
+        assert!(!policy.permits(public));
+        policy.internet = true;
+        assert!(policy.permits(public));
+        assert!(policy.permits("[2606:4700:4700::1111]:443".parse().unwrap()));
+        assert!(policy.permits("10.0.0.1:53".parse().unwrap()));
+        for addr in [
+            "10.0.0.1:80",
+            "127.0.0.1:22",
+            "169.254.169.254:80",
+            "100.100.100.200:80",
+            "[::ffff:127.0.0.1]:80",
+            "[::1]:22",
+            "[64:ff9b::7f00:1]:22",
+            "[fd00::1]:80",
+            "[2002:7f00:1::]:80",
+        ] {
+            assert!(!policy.permits(addr.parse().unwrap()), "{addr}");
         }
     }
 }

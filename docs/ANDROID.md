@@ -1,8 +1,18 @@
 # Android Debug 使用与验证
 
-Android 提供私人节点 VPN 和本地 TCP 转发。两种模式都验证服务器名称、CA 和本机设备证书，优先使用 QUIC。每份配置指定一个 TCP 目标。
+Android 可用 Nexus 私人节点连接全设备 VPN，或按配置开放本机 TCP 转发。私人节点验证服务器名称、CA 和 Android Keystore 设备身份。订阅节点另外使用对应协议的认证流程。
 
-## 浏览器使用 VPN
+## 全设备连接
+
+版本 2 私人配置在版本 1 的基础上增加数值 IPv4 字段 `dns`。核对并导入配置后点击「连接 VPN」，首次使用需在 Android 系统弹窗确认。IPv4、IPv6 默认路由进入 TUN，系统 DNS 和各应用的 TCP、UDP 经私人节点转发。DNS 服务器必须从节点可达。只给底层隧道套接字调用 protect。物理网络断开时保留 VPN 路由，新网络可用后重建会话。主动断开后关闭 TUN，恢复系统选路。系统撤销或杀死 VPN 进程时的保护依赖系统策略。
+
+在「出口与诊断」可锁定私人节点或开启备用节点切换。固定出口优先。协议握手成功和网页访问成功是两个独立检查。可用「检测端口、DNS 和网页」分别验证。ipinfo.io 支持单次查询，用户还可为具体节点启用每五分钟一次的出口查询，并选择地址变化时暂停转发。
+
+雷电模拟器的 ADB 会随 Wi-Fi 暂时离线。在已连接的 Nexus 首页，使用 `python tools/verify_android_vpn_recovery.py --ld-shell <雷电安装目录>/ld.exe --ld-index 0` 从模拟器控制台执行断网恢复验收。脚本会恢复测试前开启的 Wi-Fi 和移动数据。
+
+测试机可给下方 android_lab.py 命令附加 `--dns <节点可达的 IPv4 解析器>` 生成版本 2 配置。该模式允许转发至公网地址。服务器默认保留目标白名单，开启公网访问需要显式指定 `--internet`，私人网络地址仍需单独授权。只向受信任设备签发证书。
+
+## 旧版单目标配置
 
 导入配置后选择「连接 VPN」，核对界面列出的浏览器目标和服务端目标，首次使用需确认 Android 系统的连接请求。浏览器直接访问该地址，无需设置 HTTP 代理。普通 IPv4 配置使用原目标 IP；服务端回环及 IPv6 目标使用手机侧 IPv4 别名 192.0.2.1。端口保持一致。HTTPS 站点仍须通过浏览器自身的证书验证。
 
@@ -18,11 +28,24 @@ VPN 仅接管指定 IPv4 的 /32 路由，并在 Rust 转发层检查许可端�
 
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
+cargo install cargo-ndk --version 4.1.2 --locked
 cd apps/android
 ./gradlew :app:assembleDebug
 ```
 
-Windows 使用 gradlew.bat。APK 位于 app/build/outputs/apk/debug/app-debug.apk。首次运行需要用户自己的测试服务器；安装包无预置可用节点。
+构建前，在支持的 Linux 环境依照仓库 CI 的 Android 作业交叉编译两个 nexus-server，将它们放在 app/build/linuxNodes/{x86_64,aarch64}/nexus-server。也可用 NEXUS_LINUX_BINARIES 指定具有相同布局的目录。首次构建需要网络获取已固定的兼容引擎及 Cargo 包。Windows 使用 gradlew.bat。APK 位于 app/build/outputs/apk/debug/app-debug.apk，另外两个验收目标是 :app:assembleDebugAndroidTest 和 :vpnprobe:assembleDebug。
+
+## 部署、分享与订阅
+
+服务器维护页可以检测或重启服务，从受信任 APK 更新程序，或回滚到上一次安装的程序。上述操作会中断现有连接。拥有者可在 VPS 上备份、恢复授权库；恢复操作将设备、邀请和额度带回快照时点，需要单独确认。在「出口与诊断」可为私人节点选择业务应用。空列表覆盖全设备，非空列表仅覆盖指定应用。使用始终开启或系统级阻止直连前，请在 Android 系统设置确认期望的网络行为。
+
+「移除部署」会停止服务、取消自动启动并在服务器侧归档程序与 systemd 单元，保留设备和签发身份。「恢复已移除部署」还原原来的安装并启动两项服务。
+
+订阅的「管理」可设置置顶、排序和是否参与自动选择。勾选「验证网页并尝试备用节点」后，先验证选中节点可到达 example.com，失败时从已参与自动选择的来源尝试最多七个候选。每个候选保留来源身份，候选顺序参考本机已有的网页验证成功率和耗时。
+
+在「部署与分享」输入本人服务器的 SSH 地址，并通过 VPS 控制台独立确认 SHA-256 主机指纹。当前安装器支持 Debian 13 的 x86_64 与 aarch64，需要 root 或免密 sudo。确认页面显示端口。首次安装创建普通服务账户和两个 systemd 服务，已有部署会退出。部署完可给其他设备创建限额、限时邀请。接收者的设备自己生成私钥，并在领取时证明持有对应私钥。
+
+「订阅与全部节点」接受 HTTPS 订阅、节点文本、Base64、Clash proxies 和 sing-box outbounds。各来源分别加密保存在手机中。具体协议的实测进度见交接记录。配置导出会包含节点连接凭据。
 
 ## 使用自己的测试环境
 

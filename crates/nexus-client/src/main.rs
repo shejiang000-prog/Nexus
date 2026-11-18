@@ -1,5 +1,5 @@
 use nexus_client::open;
-use nexus_protocol::{read_packet, write_packet, Flow, MAX_PACKET};
+use nexus_protocol::{Flow, MAX_PACKET};
 use nexus_transport::{Connector, Mode, LIFETIME, MAX_CONNECTIONS, SETUP};
 use std::{env, io, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -63,12 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 let exchange = async {
-                    let mut ch = open(&connector, &mode, Flow::Udp, target).await?;
-                    write_packet(&mut ch.stream, &buf[..n]).await?;
-                    let n =
-                        read_packet(&mut ch.stream, (&mut buf[..MAX_PACKET]).try_into().unwrap())
-                            .await?;
-                    socket.send_to(&buf[..n], peer).await?;
+                    let ch = open(&connector, &mode, Flow::Udp, target).await?;
+                    let (mut reader, mut writer) = ch.packets();
+                    writer.send(&buf[..n]).await?;
+                    socket.send_to(&reader.recv().await?, peer).await?;
                     Ok::<_, io::Error>(())
                 };
                 if !matches!(timeout(SETUP * 3, exchange).await, Ok(Ok(()))) {

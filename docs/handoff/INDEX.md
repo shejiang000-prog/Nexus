@@ -1,5 +1,44 @@
 # Nexus · Android 优先
 
+## 2026-11-19 全设备与节点管理开发分支
+
+分支 `android/full-device-vpn` 基于 `06ede8b`。系统测试使用 API 35 模拟器和雷电 14（API 34 x86_64），节点位于独立 Debian 13 WSL 环境。
+
+| 功能 | 实测证据与范围 |
+|---|---|
+| 私人节点全设备 VPN | 主模拟器保留设备身份覆盖安装候选 APK 后，确认 IPv4 / IPv6 默认 TUN 路由和节点 DNS。独立 UID 访问 example.com 与 example.org，分别取得 HTTPS 200 并核对正文，32、1200、1472 字节随机 UDP 原样返回 |
+| 网络恢复与主动断开 | 同时关闭 Wi-Fi 和移动数据后进入等待，双栈默认 TUN 路由保留。恢复网络后自动认证，同一独立应用再次通过两站 HTTPS 和三种 UDP 包长。主动断开后 TUN 与前台服务消失，普通网络上的独立前台应用从两站读回正确正文 |
+| 订阅来源 | 模拟器导入三个测试来源，更新一个来源后其余数据保持一致，持久层没有测试凭据明文 |
+| 协议互通 | VLESS、VMess、Trojan、Shadowsocks、Hysteria2、TUIC 和 AnyTLS 均从 Android 测试入口获得独立 Debian HTTP 回执。TUIC 明确协商 h3，AnyTLS 与 TUIC 的实验对端使用固定测试证书。该用例使用回环 SOCKS 入口，与系统 VPN 测试分开 |
+| 服务器与邀请 | 二号模拟器通过带指纹校验的 SSH 与 SFTP 部署 Debian 13 x86_64，两个普通用户服务运行，Android 的另一用户使用独立 Keystore 领取邀请。Linux 测试验证额度、活动连接撤销和拥有者继续传输。维护测试依次更新、回滚、重新更新，两个服务均启动，CA 和授权记录保留 |
+| 回归 | 14 项进程级传输测试通过，包含强制 QUIC、TCP 回退及认证拒绝。工作区 Clippy 和单测通过。Android 安装包包含 x86_64 和 arm64-v8a |
+
+雷电内置浏览器实测发现，节点无公网 IPv6 路由时，手机提前确认 TCP 握手会导致浏览器显示 ERR_CONNECTION_CLOSED。转发器现在等节点实际连接目标后才确认 SYN，拒绝时返回 TCP RST。修复后浏览器成功加载 example.com 和 www.debian.org 的页面正文。独立应用核对 IPv4、IPv6 被拒目标均在握手前失败。
+
+雷电上的公钥由本机生成，Debian 为它签发独立配置，导入时 CA 指纹与节点一致。断网时双栈 TUN 路由保留，恢复后独立应用再次完成两站 HTTPS 和三种 UDP 回显。浏览器新请求 `ab1902ea` 的页面回执 `8399aa6219e836560d7f1482` 与节点日志一致。主动断开后没有 TUN 或前台服务，普通网络下两个 HTTPS 正文正确。本地转发另行完成 524288 字节回显，断开后旧端口拒绝连接。真机、独立公网 VPS 和实际 IPv6 网站尚待验证。
+
+第二台模拟器实际运行了拥有者和来宾的 Android 私人节点客户端。来宾自行签名、重复领取同一证书并取得 HTTPS 200。随后服务器撤销该设备，来宾新连接在打开手机端口前被拒，拥有者仍取得 HTTPS 200。设备叶证书签发时间留出两分钟的时钟偏差余量，客户端仍检查有效期。Linux 维护用例已经过更新、回滚、再次更新。Debug 包通过安装，检查了 API 35 首页与订阅页实屏。
+
+| 协议 | SUPPORTED | CODED | TESTED | WORKING |
+|---|---|---|---|---|
+| VLESS | 是 | 是 | Android → Debian | 测试链接 TCP 网页 |
+| VMess | 是 | 是 | Android → Debian | 测试链接 TCP 网页 |
+| Trojan | 是 | 是 | Android → Debian | TLS 网页回执 |
+| Shadowsocks | 是 | 是 | Android → Debian | AES-128-GCM 网页回执 |
+| Hysteria2 | 是 | 是 | Android → Debian | QUIC 上的网页回执 |
+| TUIC | 是 | 是 | Android → Debian | TUIC v5、h3 网页回执 |
+| AnyTLS | 是 | 是 | Android → Debian | TLS 网页回执 |
+
+这些结果只覆盖表中的链路和测试参数。
+
+候选 APK 的 Rust 包转发路径又通过独立的 DNS 事务测试。向受控描述符写入真实 IPv4/UDP 包，节点解析器返回正确事务号和回答记录。这个用例覆盖最后版本的原生代码，系统 TUN 仍以单独的模拟器检查为准。弱网实验完成 5 种载体、12 组 RTT/丢包条件、720 次应用层往返。[基准与可复验数据](../../BENCHMARKS.md)
+
+最后一份 Debug 构建重新安装至 emulator-5570。七种协议回执、独立 DNS 事务、拥有者 HTTPS、来宾撤销与本机端口关闭全部通过。来宾轮换密钥后，先前配置仍能用原 Keystore 别名签名。通过实际界面连续导入三个独立来源，首页同时展示三个来源及各自的节点数。Android 通过 VIEW Intent 打开测试邀请后停在用户核对页面。已修复 SQLite WAL 快照在仅移动主文件时恢复失败的问题，授权备份和恢复回归通过。
+
+在 emulator-5560 验证断开后的普通网络时，Android 曾将没有前台界面的测试 UID 标为 APP_BACKGROUND。独立探针现在使用前台 Activity，在系统默认网络上进行 DNS 和 HTTPS 核验，全程使用未绑定的普通套接字。Codex Security 的 diff 模式未能识别工作树，Git 实测该目录为具有有效 HEAD 的非裸工作树。
+
+API 35 实测固定出口时，不可用节点连续三次失败仍保留 VPN，解除固定后，客户端自动与可用备用私人节点完成认证。相机实扫、始终开启和系统阻止直连、按应用路由、订阅智能选择及 IP 变化保护仍需独立设备验收。已在隔离 Debian 节点验证可恢复的移除部署，两个服务均停止，启动单元和程序从活动路径移除。恢复归档后 CA 保持一致，拥有者重新取得 HTTPS 200。当前备份恢复对象是服务器授权库，恢复校验当前服务器配置与 CA。跨机器迁移、物理设备长连接电耗、独立公网 VPS 与 VLESS + REALITY 横向基准尚未验证。
+
 ## 2026-11-18 单目标 VpnService 与浏览器验收
 
 环境为 API 35 x86_64 可见模拟器和同一台 Debian 13 WSL2 私人节点。Android 使用系统 VPN 授权、单条 IPv4 主机路由和非 VPN 底层网络；TCP 和 QUIC 隧道套接字绑定到所选网络。服务器只允许访问它自己的回环网页目标。用户在模拟器 Chrome 中手动导航，验收同时检查屏幕正文和 Linux 服务端 GET 日志。

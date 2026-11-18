@@ -35,8 +35,20 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 class MainActivity : ComponentActivity() {
+    private var incoming by mutableStateOf<Invitation?>(null)
+    private fun readInvitation(value: Intent?) {
+        if (value?.action != Intent.ACTION_VIEW) return
+        val url = value.data ?: return
+        if (url.scheme=="nexus" && url.host=="invite" && url.port == -1 && url.encodedUserInfo==null &&
+            url.encodedQuery==null && url.encodedFragment==null) incoming=runCatching { Invitation.parse(url.toString()) }.getOrNull()
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        readInvitation(intent)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState==null) readInvitation(intent)
         enableEdgeToEdge()
         setContent { Home() }
     }
@@ -64,11 +76,44 @@ class MainActivity : ComponentActivity() {
             background = Color(0xFFF5F6F1), surface = Color(0xFFFBFCF8), onSurface = Color(0xFF182820))
         val scope = rememberCoroutineScope()
         val tunnel by TunnelService.state.collectAsState()
+        var rates by remember { mutableStateOf("") }
+        LaunchedEffect(tunnel.connectedAt) {
+            rates = ""
+            if (tunnel.connectedAt == 0L) return@LaunchedEffect
+            val uid = android.os.Process.myUid()
+            var tx = android.net.TrafficStats.getUidTxBytes(uid)
+            var rx = android.net.TrafficStats.getUidRxBytes(uid)
+            var last = android.os.SystemClock.elapsedRealtime()
+            while (true) {
+                kotlinx.coroutines.delay(2000)
+                val now = android.os.SystemClock.elapsedRealtime()
+                val sent = android.net.TrafficStats.getUidTxBytes(uid)
+                val received = android.net.TrafficStats.getUidRxBytes(uid)
+                val duration = android.text.format.DateUtils.formatElapsedTime((now-tunnel.connectedAt)/1000)
+                rates = if (tx >= 0 && rx >= 0 && sent >= tx && received >= rx && now>last) {
+                    val up = (sent-tx)*1000/(now-last)/1024
+                    val down = (received-rx)*1000/(now-last)/1024
+                    "$duration · Nexus 流量 ↑$up ↓$down KiB/s"
+                } else duration
+                tx = sent; rx = received; last = now
+            }
+        }
         var profile by remember { mutableStateOf<Profile?>(null) }
         var candidate by remember { mutableStateOf<Profile?>(null) }
         var confirmConnect by remember { mutableStateOf(false) }
         var useVpn by rememberSaveable { mutableStateOf(true) }
         var message by remember { mutableStateOf("") }
+        var subscriptions by rememberSaveable { mutableStateOf(false) }
+        var sourcePreview by remember { mutableStateOf(emptyList<Pair<String,Int>>()) }
+        LaunchedEffect(subscriptions) {
+            if (!subscriptions) runCatching { withContext(Dispatchers.IO) {
+                Subscriptions(this@MainActivity).all().map { it.label to it.nodes.length() }
+            } }.onSuccess { sourcePreview = it }.onFailure { message = "无法读取本机订阅" }
+        }
+        var networks by rememberSaveable { mutableStateOf(false) }
+        var manageServer by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(incoming) { if (incoming!=null) { manageServer=true;subscriptions=false;networks=false } }
+        var rotate by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             runCatching { withContext(Dispatchers.IO) { Profile.load(this@MainActivity) } }
                 .onSuccess { profile = it }.onFailure { message = "原有设备配置已失效，请重新导入" }
@@ -103,6 +148,23 @@ class MainActivity : ComponentActivity() {
             if (it.resultCode == RESULT_OK) requestNotification() else message = "VPN 授权已取消"
         }
         MaterialTheme(colorScheme = colors) {
+            if (manageServer) {
+                Surface(Modifier.fillMaxSize(), color = colors.background) {
+                    ServerScreen(onProfile = { candidate = it; manageServer = false; incoming=null },
+                        close = { manageServer = false; incoming=null },fromLink=incoming)
+                }
+                return@MaterialTheme
+            }
+            if (networks) {
+                Surface(Modifier.fillMaxSize(), color = colors.background) {
+                    NetworkScreen(profile, tunnel, onSelect = { profile = it }, close = { networks = false })
+                }
+                return@MaterialTheme
+            }
+            if (subscriptions) {
+                Surface(Modifier.fillMaxSize(), color = colors.background) { SubscriptionScreen { subscriptions = false } }
+                return@MaterialTheme
+            }
             Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
                 Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
                     .widthIn(max = 640.dp), horizontalAlignment = Alignment.Start) {
@@ -114,12 +176,17 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(20.dp))
                     Column(Modifier.fillMaxWidth().background(if (dark) Color(0xFF244439) else Color(0xFFDAE9DF),
                         RoundedCornerShape(16.dp)).padding(20.dp)) {
-                        Text(if (tunnel.vpn || (!tunnel.active && useVpn)) "私人节点 VPN" else "本地 TCP 转发", style = MaterialTheme.typography.labelLarge)
+                        Text(if (tunnel.subscription.isNotEmpty()) "订阅节点 VPN" else if (tunnel.vpn || (!tunnel.active && useVpn)) "私人节点 VPN" else "本地 TCP 转发", style = MaterialTheme.typography.labelLarge)
                         Spacer(Modifier.height(8.dp))
-                        Text(when { tunnel.waiting -> "等待网络"; tunnel.starting -> "正在验证"; tunnel.vpn && tunnel.error.isNotEmpty() -> "节点不可用"; tunnel.vpn -> "VPN 已连接"; tunnel.port > 0 -> "转发已开启"; else -> "未连接" },
+                        Text(when { tunnel.waiting -> "等待网络"; tunnel.starting -> "正在连接"; tunnel.vpn && tunnel.error.isNotEmpty() -> "节点不可用"; tunnel.subscription.isNotEmpty() -> "VPN 已启动"; tunnel.vpn -> "VPN 已连接"; tunnel.port > 0 -> "转发已开启"; else -> "未连接" },
                             fontSize = 28.sp, fontWeight = FontWeight.Medium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                        Text(if (tunnel.port > 0) "127.0.0.1:${tunnel.port}" else if (tunnel.vpn) profile?.vpnEndpoint.orEmpty() else profile?.name ?: "尚未添加私人节点",
+                        Text(if (tunnel.subscription.isNotEmpty()) tunnel.subscription else if (tunnel.port > 0) "127.0.0.1:${tunnel.port}" else if (tunnel.vpn) (tunnel.activeProfile ?: profile)?.let {
+                            val apps = getSharedPreferences("local",0).getStringSet("apps/"+it.server+"/"+it.fingerprint,emptySet()).orEmpty()
+                            (if (apps.isEmpty()) it.vpnSummary else "业务 VPN · ${apps.size} 个应用") + " · " + it.name
+                        }.orEmpty() else profile?.name ?: "尚未添加私人节点",
                             fontFamily = if (tunnel.port > 0) FontFamily.Monospace else FontFamily.Default)
+                        if (rates.isNotEmpty()) Text(rates, style = MaterialTheme.typography.bodySmall)
+                        if (tunnel.path.isNotEmpty()) Text(tunnel.path,style=MaterialTheme.typography.bodySmall)
                         if (profile != null || tunnel.active) {
                             Spacer(Modifier.height(12.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -135,7 +202,7 @@ class MainActivity : ComponentActivity() {
                     Text("我的服务器", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.semantics { heading() })
                     Spacer(Modifier.height(8.dp))
-                    Text(profile?.let { it.name + "\n" + it.server + "\n转发目标  " + it.target }
+                    Text(profile?.let { it.name + "\n" + it.server + "\n" + (it.dns?.let { dns -> "VPN DNS  $dns" } ?: ("转发目标  " + it.target)) }
                         ?: "先导出本机公钥，再导入服务器拥有者为这台设备签发的配置。")
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -144,9 +211,15 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(16.dp))
                     HorizontalDivider()
+                    Text("我的订阅", style = MaterialTheme.typography.titleLarge)
+                    sourcePreview.forEach { (name,count) -> Text("$name · $count 个节点") }
+                    TextButton(onClick = { subscriptions = true }) { Text("订阅与全部节点") }
+                    TextButton(onClick = { networks = true }) { Text("出口与诊断") }
+                    TextButton(enabled = !tunnel.active, onClick = { manageServer = true }) { Text("部署与分享") }
                     Spacer(Modifier.height(16.dp))
                     Text("设备身份", style = MaterialTheme.typography.titleMedium)
                     Text("设备私钥保存在 Android 密钥库中。", style = MaterialTheme.typography.bodyMedium)
+                    TextButton(enabled = !tunnel.active,onClick = { rotate = true }) { Text("轮换本机公钥") }
                     if (message.isNotEmpty() || tunnel.error.isNotEmpty()) {
                         Spacer(Modifier.height(12.dp))
                         Text(tunnel.error.ifEmpty { message }, color = if (tunnel.error.isEmpty()) colors.primary else colors.error,
@@ -158,7 +231,7 @@ class MainActivity : ComponentActivity() {
             candidate?.let { item ->
                 AlertDialog(onDismissRequest = { candidate = null }, title = { Text("信任这台服务器？") },
                     text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                        Text(item.name + "\n" + item.server + "\n转发目标  " + item.target)
+                        Text(item.name + "\n" + item.server + "\n" + item.vpnSummary + "\n本地转发目标  " + item.target)
                         Spacer(Modifier.height(12.dp)); Text("请与服务器拥有者核对 CA 指纹（SHA-256）")
                         Text(item.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                         if (profile != null) Text("确认后将替换当前私人节点。")
@@ -168,8 +241,15 @@ class MainActivity : ComponentActivity() {
                         candidate = null
                     }) { Text("确认导入") } }, dismissButton = { TextButton(onClick = { candidate = null }) { Text("取消") } })
             }
+            if (rotate) AlertDialog(onDismissRequest = { rotate = false },title = { Text("为新授权生成密钥？") },
+                text = { Text("后续导出和领取邀请使用新公钥。已有配置继续使用对应的旧密钥，完成迁移后可在服务器撤销旧设备。") },
+                confirmButton = { TextButton(onClick = { rotate = false; scope.launch {
+                    message = runCatching { withContext(Dispatchers.IO) { Identity.rotate() }; "新公钥已生成，可导出或领取邀请" }
+                        .getOrDefault("生成失败")
+                } }) { Text("生成") } },dismissButton = { TextButton(onClick = { rotate = false }) { Text("取消") } })
             if (confirmConnect) AlertDialog(onDismissRequest = { confirmConnect = false }, title = { Text(if (useVpn) "连接私人节点 VPN？" else "开启本地端口？") },
-                text = { Text(if (useVpn) "应用访问 ${profile?.vpnEndpoint} 时，TCP 请求将通过私人节点前往 ${profile?.target}。其他地址继续使用原网络。"
+                text = { Text(if (useVpn && profile?.dns != null) "此设备应用的 DNS、TCP 和 UDP 将通过私人节点。断网期间暂停转发，断开后恢复原网络。"
+                    else if (useVpn) "应用访问 ${profile?.vpnEndpoint} 时，TCP 请求将通过私人节点前往 ${profile?.target}。其他地址继续使用原网络。"
                     else "转发期间，本机应用可通过此端口访问 ${profile?.target}。其他流量继续使用原网络。") },
                 confirmButton = { TextButton(onClick = {
                     confirmConnect = false

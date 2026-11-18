@@ -1,0 +1,5 @@
+libXray v26.11.9 (MIT)
+https://github.com/XTLS/libXray/tree/v26.11.9
+
+Xray-core 676eaf66f8f0 (MPL-2.0)
+https://github.com/XTLS/Xray-core/tree/676eaf66f8f0

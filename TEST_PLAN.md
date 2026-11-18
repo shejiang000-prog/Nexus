@@ -14,4 +14,4 @@
 | 稳定性 E | CLI 重启和回退已纳入自动化；移动网络切换、业务固定出口防泄漏和长稳待办 |
 | 隐私 F | 无中央 API。需在产品功能齐全后补充离线、订阅本地加密与全链路流量观察 |
 
-VLESS、VMess、Trojan、Shadowsocks、Hysteria2、TUIC、AnyTLS：各项 SUPPORTED / CODED / TESTED / WORKING 均为否。本批无兼容订阅引擎。
+七种兼容协议均已有来自 Android 原生引擎的测试网页回执。分协议状态和全设备验收范围见 [交接记录](docs/handoff/INDEX.md)。`tools/compat_lab.py` 可启动限定目标的对端。Android 仪器测试入口为 `CatalogCheck` 的 interop 模式。独立测试 APK 的 `Probe` 使用另一个 Android UID，可以核对 VPN 或直连默认网络、DNS、两站 HTTPS 和不同大小的 UDP 回包。恢复脚本验证模拟器两种底层网络关闭和重新开启过程中的 TUN 路由。

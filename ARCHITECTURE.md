@@ -14,4 +14,6 @@
 
 Android 用系统文件选择器导出公钥，拥有者在线下签发设备证书。导入文件仅含公开证书、服务器和目标。导入时检查本机公钥、有效期和签名，并向用户展示 CA 指纹。启动时由设备 Keystore 完成 P-256 签名。前台服务负责 Rust 会话；断开通过关闭 Unix socket pair 取消所有子任务。显示的端口只属于本次会话。
 
-Windows 与 Linux CLI 的开发身份采用短期文件凭据。Android 的两种入口共用设备身份、rustls 认证与服务端 OPEN。VpnService 声明一条 IPv4 主机路由，将自身 UID 排除在 VPN 之外，交给 Rust 的是非阻塞 TUN 描述符副本。服务保留原描述符，底层网络变化时取消原有流并重新认证。手机为每个获准的浏览器 TCP 流建立独立的 Nexus 流。生产 SSH 部署、邀请授权、订阅引擎和全设备 VPN 仍待开发。
+Windows 与 Linux CLI 的开发身份采用短期文件凭据。Android 的两种私人入口共用设备身份、rustls 认证与服务端 OPEN。VpnService 为版本 1 建立单条 IPv4 主机路由，为版本 2 建立 IPv4/IPv6 默认路由并指定 DNS，仅保护底层传输套接字。服务保留 TUN 描述符，网络变化后取消旧流并重新认证。Rust 转发 TCP 流和有界的双向 UDP 关联。
+
+订阅使用 libXray 和 shoes 的 Android 接口。单个出站参数来自订阅，TUN、路由和底层套接字由客户端控制。私人节点管理经指纹校验的 SSH 部署两项普通用户 systemd 服务。nexus-server 按服务器本地授权库检查设备并扣减配额，node_admin.py 负责签发及邀请领取。两项服务独立于订阅引擎及官方账户。

@@ -1,6 +1,6 @@
 # Nexus
 
-Android 优先的本地网络客户端与私人节点协议。用户可通过系统 VPN 或本地 TCP 端口访问私人节点授权的单个目标。设备独立密钥存于 Android Keystore，无需注册。
+Android 优先的本地网络客户端与私人节点协议。全设备配置通过系统 VPN 转发 DNS、TCP 和 UDP。旧配置继续支持单目标 VPN 与本机 TCP 端口。设备独立密钥存于 Android Keystore，无需注册。开发分支的验证状态见交接记录。
 
 - [Android 构建、导入和使用](docs/ANDROID.md)
 - [工程架构](ARCHITECTURE.md) · [协议规范](PROTOCOL_SPEC.md) · [威胁模型](SECURITY.md)

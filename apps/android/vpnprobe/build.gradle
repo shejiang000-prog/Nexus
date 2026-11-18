@@ -1,0 +1,7 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'dev.nexus.vpnprobe'
+    compileSdk 36
+    defaultConfig { applicationId 'dev.nexus.vpnprobe'; minSdk 26; targetSdk 36 }
+}

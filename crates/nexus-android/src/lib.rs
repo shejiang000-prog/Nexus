@@ -70,6 +70,17 @@ impl Signer for Key {
     }
 }
 impl Device {
+    fn path(&self, ms: i64, lost: i64, sent: i64) -> io::Result<()> {
+        let mut env = self.vm.attach_current_thread().map_err(io::Error::other)?;
+        env.call_method(
+            &self.callback,
+            "onPath",
+            "(JJJ)V",
+            &[JValue::Long(ms), JValue::Long(lost), JValue::Long(sent)],
+        )
+        .map_err(io::Error::other)?;
+        Ok(())
+    }
     fn ready(&self, port: u16) -> io::Result<()> {
         let mut env = self.vm.attach_current_thread().map_err(io::Error::other)?;
         env.call_method(
@@ -102,12 +113,38 @@ async fn serve(
     target: SocketAddr,
     device: Arc<Device>,
     tun: Option<OwnedFd>,
-    route: std::net::IpAddr,
+    route: Option<std::net::IpAddr>,
+    dns: Option<std::net::IpAddr>,
 ) -> io::Result<()> {
     let connector = Arc::new(connector);
-    drop(open(&connector, &Mode::Auto, Flow::Tcp, target).await?);
+    let (flow, probe) = match (tun.is_some(), dns) {
+        (true, Some(resolver)) => (Flow::Udp, SocketAddr::new(resolver, 53)),
+        _ => (Flow::Tcp, target),
+    };
+    drop(open(&connector, &Mode::Auto, flow, probe).await?);
     if let Some(fd) = tun {
-        return vpn::forward(fd, route, target, connector, device).await;
+        let forward = vpn::forward(fd, route, target, connector.clone(), device.clone());
+        let metrics = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Some(stats) = connector.active_path_stats() {
+                    device.path(
+                        stats.rtt.as_millis() as i64,
+                        stats.lost_packets as i64,
+                        stats.sent_packets as i64,
+                    )?;
+                } else {
+                    device.path(-1, 0, 0)?;
+                }
+            }
+        };
+        let health = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                drop(open(&connector, &Mode::Auto, flow, probe).await?);
+            }
+        };
+        return tokio::select! { result = forward => result, result = health => result, result = metrics => result };
     }
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let mut active = JoinSet::new();
@@ -131,6 +168,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
     tun_fd: i32,
     network_handle: i64,
     route: JString,
+    dns: JString,
     server: JString,
     name: JString,
     target: JString,
@@ -151,7 +189,9 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
         let server = server.parse()?;
         let target = target.parse()?;
         let route: String = env.get_string(&route)?.into();
-        let route = route.parse()?;
+        let route = (!route.is_empty()).then(|| route.parse()).transpose()?;
+        let dns: String = env.get_string(&dns)?.into();
+        let dns = (!dns.is_empty()).then(|| dns.parse()).transpose()?;
         let mut roots = RootCertStore::empty();
         roots.add(env.convert_byte_array(ca)?.into())?;
         let device = Arc::new(Device {
@@ -165,8 +205,30 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
         let tls = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .with_root_certificates(roots)
             .with_client_cert_resolver(Arc::new(SingleCertAndKey::from(key)));
-        let connector =
-            Connector::from_config(server, &name, tls)?.with_android_network(network_handle as u64);
+        let socket_owner = device.clone();
+        let connector = Connector::from_config(server, &name, tls)?.with_android_network(
+            network_handle as u64,
+            move |fd| {
+                let mut env = socket_owner
+                    .vm
+                    .attach_current_thread()
+                    .map_err(io::Error::other)?;
+                let protected = env
+                    .call_method(
+                        &socket_owner.callback,
+                        "protectTransport",
+                        "(I)Z",
+                        &[JValue::Int(fd)],
+                    )
+                    .and_then(|value| value.z())
+                    .map_err(io::Error::other)?;
+                if protected {
+                    Ok(())
+                } else {
+                    Err(io::ErrorKind::PermissionDenied.into())
+                }
+            },
+        );
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -176,7 +238,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
             socket.set_nonblocking(true)?;
             let mut stop=UnixStream::from_std(socket)?;
             let mut byte=[0u8];
-            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device,tun,route)=>outcome}
+            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device,tun,route,dns)=>outcome}
         })?;
         Ok(())
     };

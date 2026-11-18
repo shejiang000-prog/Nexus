@@ -16,6 +16,8 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 const ALPN: &[u8] = b"nexus/1";
+const MULTIPLEX: &[u8] = b"nexus/mux1";
+const DATAGRAM: &[u8] = b"nexus/udp1";
 pub const SETUP: Duration = Duration::from_secs(8);
 pub const LIFETIME: Duration = Duration::from_secs(3600);
 pub const MAX_CONNECTIONS: usize = 64;
@@ -25,10 +27,102 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
 
 pub struct Channel {
     pub stream: Box<dyn Duplex>,
+    pub peer_certificate: Option<CertificateDer<'static>>,
     // Keep the connection alive until the peer drains the final stream bytes.
     connection: Option<Connection>,
 }
+fn negotiated(conn: &Connection, protocol: &[u8]) -> bool {
+    conn.handshake_data()
+        .and_then(|h| h.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .is_some_and(|h| h.protocol.as_deref() == Some(protocol))
+}
+
+pub struct PacketReader {
+    input: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    _readers: tokio::task::JoinSet<()>,
+}
+impl PacketReader {
+    pub async fn recv(&mut self) -> io::Result<Vec<u8>> {
+        self.input
+            .recv()
+            .await
+            .ok_or(io::ErrorKind::UnexpectedEof)?
+    }
+}
+pub struct PacketWriter {
+    stream: tokio::io::WriteHalf<Box<dyn Duplex>>,
+    connection: Option<Connection>,
+    native: bool,
+}
+impl PacketWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > nexus_protocol::MAX_PACKET {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if let Some(conn) = self.connection.as_ref().filter(|_| self.native) {
+            if conn
+                .max_datagram_size()
+                .is_some_and(|max| payload.len() <= max)
+            {
+                match conn.send_datagram(payload.to_vec().into()) {
+                    Ok(()) => return Ok(()),
+                    Err(quinn::SendDatagramError::TooLarge) => {}
+                    Err(e) => return Err(err(e)),
+                }
+            }
+        }
+        nexus_protocol::write_packet(&mut self.stream, payload).await
+    }
+}
 impl Channel {
+    pub fn packets(self) -> (PacketReader, PacketWriter) {
+        let (mut reader, stream) = tokio::io::split(self.stream);
+        let (tx, input) = tokio::sync::mpsc::channel(16);
+        let mut readers = tokio::task::JoinSet::new();
+        let native = self
+            .connection
+            .as_ref()
+            .is_some_and(|c| negotiated(c, DATAGRAM));
+        if let Some(conn) = self.connection.as_ref().filter(|_| native).cloned() {
+            let native_tx = tx.clone();
+            readers.spawn(async move {
+                while let Ok(data) = conn.read_datagram().await {
+                    if data.len() <= nexus_protocol::MAX_PACKET
+                        && native_tx.send(Ok(data.to_vec())).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+        readers.spawn(async move {
+            let mut buf = [0; nexus_protocol::MAX_PACKET];
+            loop {
+                match nexus_protocol::read_packet(&mut reader, &mut buf).await {
+                    Ok(size) => {
+                        if tx.send(Ok(buf[..size].to_vec())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        break;
+                    }
+                }
+            }
+        });
+        (
+            PacketReader {
+                input,
+                _readers: readers,
+            },
+            PacketWriter {
+                stream,
+                connection: self.connection,
+                native,
+            },
+        )
+    }
     pub async fn drain(self) {
         if let Some(conn) = self.connection {
             let _ = timeout(Duration::from_secs(3), conn.closed()).await;
@@ -60,10 +154,15 @@ fn key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
 #[derive(Clone)]
 pub struct ServerTls {
     tls: Arc<ServerConfig>,
-    device: CertificateDer<'static>,
+    device: Option<CertificateDer<'static>>,
 }
 impl ServerTls {
     pub fn load(ca: &str, identity: &str, secret: &str, device: &str) -> io::Result<Self> {
+        let mut tls = Self::for_device_registry(ca, identity, secret)?;
+        tls.device = Some(cert(device)?);
+        Ok(tls)
+    }
+    pub fn for_device_registry(ca: &str, identity: &str, secret: &str) -> io::Result<Self> {
         let verifier = WebPkiClientVerifier::builder(Arc::new(roots(ca)?))
             .build()
             .map_err(err)?;
@@ -75,47 +174,76 @@ impl ServerTls {
         tls.send_tls13_tickets = 0;
         Ok(Self {
             tls: Arc::new(tls),
-            device: cert(device)?,
+            device: None,
         })
     }
     pub fn endpoint(&self, addr: SocketAddr) -> io::Result<Endpoint> {
-        let crypto = QuicServerConfig::try_from(self.tls.as_ref().clone()).map_err(err)?;
+        let mut tls = self.tls.as_ref().clone();
+        tls.alpn_protocols = vec![MULTIPLEX.to_vec(), DATAGRAM.to_vec(), ALPN.to_vec()];
+        let crypto = QuicServerConfig::try_from(tls).map_err(err)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
         let mut limits = quinn::TransportConfig::default();
         limits
-            .max_concurrent_bidi_streams(1u32.into())
+            .max_concurrent_bidi_streams(32u32.into())
             .max_concurrent_uni_streams(0u32.into())
             .stream_receive_window(65536u32.into())
-            .receive_window(131072u32.into())
-            .datagram_receive_buffer_size(None);
+            .receive_window(1048576u32.into())
+            .datagram_receive_buffer_size(Some(65536))
+            .datagram_send_buffer_size(65536);
         config.transport_config(Arc::new(limits));
         Endpoint::server(config, addr)
     }
     pub async fn tcp(&self, socket: TcpStream) -> io::Result<Channel> {
         let stream = TlsAcceptor::from(self.tls.clone()).accept(socket).await?;
         let peer = stream.get_ref().1;
+        let leaf = peer
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .cloned()
+            .ok_or_else(denied)?;
         if peer.alpn_protocol() != Some(ALPN)
-            || peer.peer_certificates().and_then(|c| c.first()) != Some(&self.device)
+            || self.device.as_ref().is_some_and(|device| device != &leaf)
         {
             return Err(denied());
         }
         Ok(Channel {
+            peer_certificate: Some(leaf),
             stream: Box::new(stream),
             connection: None,
         })
     }
-    pub async fn quic(&self, incoming: quinn::Incoming) -> io::Result<Channel> {
+    pub async fn quic(&self, incoming: quinn::Incoming) -> io::Result<QuicSession> {
         let conn = incoming.await.map_err(err)?;
         let chain = conn
             .peer_identity()
             .and_then(|p| p.downcast::<Vec<CertificateDer<'static>>>().ok());
-        if chain.as_ref().and_then(|c| c.first()) != Some(&self.device) {
+        let leaf = chain
+            .as_ref()
+            .and_then(|c| c.first())
+            .cloned()
+            .ok_or_else(denied)?;
+        if self.device.as_ref().is_some_and(|device| device != &leaf) {
             return Err(denied());
         }
-        let (send, recv) = conn.accept_bi().await.map_err(err)?;
+        Ok(QuicSession {
+            multiplex: negotiated(&conn, MULTIPLEX),
+            conn,
+            leaf,
+        })
+    }
+}
+pub struct QuicSession {
+    conn: Connection,
+    leaf: CertificateDer<'static>,
+    pub multiplex: bool,
+}
+impl QuicSession {
+    pub async fn accept(&self) -> io::Result<Channel> {
+        let (send, recv) = self.conn.accept_bi().await.map_err(err)?;
         Ok(Channel {
+            peer_certificate: Some(self.leaf.clone()),
             stream: Box::new(tokio::io::join(recv, send)),
-            connection: Some(conn),
+            connection: (!self.multiplex).then(|| self.conn.clone()),
         })
     }
 }
@@ -139,13 +267,24 @@ impl std::str::FromStr for Mode {
 
 pub struct Connector {
     #[cfg(target_os = "android")]
+    protect: Option<Arc<dyn Fn(i32) -> io::Result<()> + Send + Sync>>,
+    #[cfg(target_os = "android")]
     network_handle: u64,
     tls: Arc<ClientConfig>,
     quic: tokio::sync::OnceCell<Endpoint>,
+    pooled: tokio::sync::Mutex<Option<Connection>>,
     server: SocketAddr,
     name: ServerName<'static>,
 }
 impl Connector {
+    #[cfg(target_os = "android")]
+    pub fn active_path_stats(&self) -> Option<quinn::PathStats> {
+        let pool = self.pooled.try_lock().ok()?;
+        pool.as_ref()
+            .filter(|c| c.close_reason().is_none())
+            .map(|c| c.stats().path)
+    }
+
     pub fn new(
         server: SocketAddr,
         name: &str,
@@ -165,15 +304,23 @@ impl Connector {
         Ok(Self {
             tls: Arc::new(tls),
             quic: tokio::sync::OnceCell::new(),
+            pooled: tokio::sync::Mutex::new(None),
             #[cfg(target_os = "android")]
             network_handle: 0,
+            #[cfg(target_os = "android")]
+            protect: None,
             server,
             name: ServerName::try_from(name.to_owned()).map_err(err)?,
         })
     }
     #[cfg(target_os = "android")]
-    pub fn with_android_network(mut self, handle: u64) -> Self {
+    pub fn with_android_network(
+        mut self,
+        handle: u64,
+        protect: impl Fn(i32) -> io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
         self.network_handle = handle;
+        self.protect = Some(Arc::new(protect));
         self
     }
     #[cfg(target_os = "android")]
@@ -183,6 +330,11 @@ impl Connector {
             fn android_setsocknetwork(network: u64, fd: i32) -> i32;
         }
         // NDK API 23+, socket owns the descriptor throughout this synchronous call.
+        if self.network_handle != 0 {
+            if let Some(protect) = &self.protect {
+                protect(socket.as_raw_fd())?;
+            }
+        }
         if self.network_handle != 0
             && unsafe { android_setsocknetwork(self.network_handle, socket.as_raw_fd()) } != 0
         {
@@ -211,30 +363,52 @@ impl Connector {
         })();
         #[cfg(not(target_os = "android"))]
         let endpoint = Endpoint::client(local);
-        let mut quic = endpoint.map_err(|e| io::Error::new(io::ErrorKind::AddrNotAvailable, e))?;
-        quic.set_default_client_config(quinn::ClientConfig::new(Arc::new(
-            QuicClientConfig::try_from(self.tls.as_ref().clone()).map_err(err)?,
-        )));
-        Ok(quic)
+        endpoint.map_err(|e| io::Error::new(io::ErrorKind::AddrNotAvailable, e))
     }
-    async fn quic(&self) -> io::Result<Channel> {
-        let conn = self
+    async fn new_connection(&self, protocol: &[u8]) -> io::Result<Connection> {
+        let endpoint = self
             .quic
             .get_or_try_init(|| async { self.endpoint() })
-            .await?
-            .connect(self.server, &self.name.to_str())
+            .await?;
+        let mut tls = self.tls.as_ref().clone();
+        tls.alpn_protocols = vec![protocol.to_vec(), ALPN.to_vec()];
+        let mut cfg =
+            quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls).map_err(err)?));
+        let mut transport = quinn::TransportConfig::default();
+        transport
+            .keep_alive_interval(Some(Duration::from_secs(10)))
+            .datagram_receive_buffer_size(Some(65536))
+            .datagram_send_buffer_size(65536);
+        cfg.transport_config(Arc::new(transport));
+        endpoint
+            .connect_with(cfg, self.server, &self.name.to_str())
             .map_err(err)?
             .await
-            .map_err(err)?;
+            .map_err(err)
+    }
+    async fn quic(&self, udp: bool) -> io::Result<Channel> {
+        let conn = if udp {
+            self.new_connection(DATAGRAM).await?
+        } else {
+            let mut cached = self.pooled.lock().await;
+            if let Some(c) = cached.as_ref().filter(|c| c.close_reason().is_none()) {
+                c.clone()
+            } else {
+                let c = self.new_connection(MULTIPLEX).await?;
+                *cached = negotiated(&c, MULTIPLEX).then(|| c.clone());
+                c
+            }
+        };
         let (send, recv) = conn.open_bi().await.map_err(err)?;
         Ok(Channel {
+            peer_certificate: None,
             stream: Box::new(tokio::io::join(recv, send)),
-            connection: Some(conn),
+            connection: (!negotiated(&conn, MULTIPLEX)).then_some(conn),
         })
     }
-    pub async fn connect(&self, mode: &Mode) -> io::Result<Channel> {
+    pub async fn connect(&self, mode: &Mode, udp: bool) -> io::Result<Channel> {
         if !matches!(mode, Mode::Tls) {
-            match timeout(SETUP, self.quic()).await {
+            match timeout(SETUP, self.quic(udp)).await {
                 Ok(Err(e))
                     if matches!(mode, Mode::Auto)
                         && e.kind() == io::ErrorKind::AddrNotAvailable => {}
@@ -264,6 +438,7 @@ impl Connector {
                 return Err(denied());
             }
             Ok(Channel {
+                peer_certificate: None,
                 stream: Box::new(stream),
                 connection: None,
             })

@@ -9,7 +9,7 @@ pub async fn open(
     flow: Flow,
     target: SocketAddr,
 ) -> io::Result<Channel> {
-    let mut ch = connector.connect(mode).await?;
+    let mut ch = connector.connect(mode, flow == Flow::Udp).await?;
     timeout(SETUP, async {
         write_open(&mut ch.stream, flow, target).await?;
         match ch.stream.read_u8().await? {

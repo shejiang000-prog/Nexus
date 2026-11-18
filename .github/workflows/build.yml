@@ -14,17 +14,28 @@ jobs:
       - run: cargo +1.100.0 clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo +1.100.0 build --locked --workspace && cargo +1.100.0 test --locked --workspace
       - run: python3 tools/test_tunnel.py
+      - run: python3 tools/test_node_registry.py --bin-dir target/debug
   android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {persist-credentials: false}
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with: {distribution: temurin, java-version: '21'}
       - run: rustup toolchain install 1.100.0 --profile minimal --target aarch64-linux-android,x86_64-linux-android
+      - run: cargo +1.100.0 install cargo-ndk --version 4.1.2 --locked
+      - name: Build both Linux node binaries for private deployment
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          rustup target add --toolchain 1.100.0 aarch64-unknown-linux-gnu
+          cargo +1.100.0 build --release --locked -p nexus-server
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo +1.100.0 build --release --locked -p nexus-server --target aarch64-unknown-linux-gnu
+          install -D target/release/nexus-server apps/android/app/build/linuxNodes/x86_64/nexus-server
+          install -D target/aarch64-unknown-linux-gnu/release/nexus-server apps/android/app/build/linuxNodes/aarch64/nexus-server
       - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "ndk;28.2.13676358" "build-tools;35.0.0"'
-      - run: bash gradlew :app:assembleDebug
+      - run: bash gradlew :app:assembleDebug :app:assembleDebugAndroidTest :vpnprobe:assembleDebug
         working-directory: apps/android
         env: {RUSTUP_TOOLCHAIN: '1.100.0', NEXUS_PYTHON: python3}
   desktop-bootstrap:
