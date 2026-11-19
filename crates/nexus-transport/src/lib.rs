@@ -93,15 +93,22 @@ fn negotiated(conn: &Connection, protocol: &[u8]) -> bool {
 
 pub struct PacketReader {
     input: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    datagrams: Option<tokio::sync::mpsc::Receiver<mux::Queued>>,
     _association: Option<Association>,
     _readers: tokio::task::JoinSet<()>,
 }
 impl PacketReader {
     pub async fn recv(&mut self) -> io::Result<Vec<u8>> {
-        self.input
-            .recv()
-            .await
-            .ok_or(io::ErrorKind::UnexpectedEof)?
+        let packet = match self.datagrams.as_mut() {
+            // Datagrams and stream frames are not mutually ordered. Dropping the permit returns
+            // this payload's share of the connection budget.
+            Some(datagrams) => tokio::select! {
+                Some((data, _permit)) = datagrams.recv() => return Ok(data),
+                packet = self.input.recv() => packet,
+            },
+            None => self.input.recv().await,
+        };
+        packet.ok_or(io::ErrorKind::UnexpectedEof)?
     }
 }
 pub struct PacketWriter {
@@ -153,10 +160,8 @@ impl Channel {
     pub fn packets(mut self) -> (PacketReader, PacketWriter) {
         let (mut reader, stream) = tokio::io::split(self.stream);
         let id = self.association.as_ref().map(|a| a.id);
-        let (tx, input) = match self.association.as_mut() {
-            Some(a) => a.queue.take().expect("registered channel consumed once"),
-            None => tokio::sync::mpsc::channel(16),
-        };
+        let datagrams = self.association.as_mut().and_then(|a| a.queue.take());
+        let (tx, input) = tokio::sync::mpsc::channel(16);
         let mut readers = tokio::task::JoinSet::new();
         let native = self
             .connection
@@ -193,6 +198,7 @@ impl Channel {
         (
             PacketReader {
                 input,
+                datagrams,
                 _association: self.association,
                 _readers: readers,
             },
