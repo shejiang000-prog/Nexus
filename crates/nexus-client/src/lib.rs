@@ -9,15 +9,21 @@ pub async fn open(
     flow: Flow,
     target: SocketAddr,
 ) -> io::Result<Channel> {
-    // DNS is a short request/response exchange. Carrying it as a framed stream on the pooled,
-    // already authenticated connection avoids a full QUIC handshake and device signature per
-    // lookup. Other UDP keeps its own connection so QUIC DATAGRAM avoids head-of-line delay.
+    // Select the compatible legacy ALPN when the peer cannot negotiate mux2.
     let dedicated = flow == Flow::Udp && target.port() != 53;
     let mut ch = connector.connect(mode, dedicated).await?;
     timeout(SETUP, async {
         write_open(&mut ch.stream, flow, target).await?;
         match ch.stream.read_u8().await? {
-            OK => Ok(()),
+            OK => {
+                if flow == Flow::Udp
+                    && ch.mux2()
+                    && ch.stream.read_u32().await? != ch.register_udp()?
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                Ok(())
+            }
             DENIED => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "destination denied",

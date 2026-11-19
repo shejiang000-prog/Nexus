@@ -62,12 +62,13 @@ struct Lease {
 
 impl Lease {
     fn authorized(&self) -> io::Result<bool> {
+        let held = self.available.lock().map_err(|_| unavailable())?;
         self.registry
             .lock()?
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM devices WHERE cert=?1 AND revoked=0 \
-                 AND expires>unixepoch() AND (quota IS NULL OR used<quota))",
-                [&*self.cert],
+                 AND expires>unixepoch() AND (quota IS NULL OR used-?2<quota))",
+                params![&*self.cert, *held as i64],
                 |r| r.get(0),
             )
             .map_err(io::Error::other)
@@ -153,28 +154,26 @@ impl Device {
             return if allowed { Ok(()) } else { Err(denied()) };
         }
         let bytes = bytes as u64;
-        let held = {
-            let mut available = self.lease.available.lock().map_err(|_| unavailable())?;
-            if *available >= bytes {
-                *available -= bytes;
-                return Ok(());
+        loop {
+            if let Ok(mut available) = lease.available.try_lock() {
+                if *available >= bytes {
+                    *available -= bytes;
+                    return Ok(());
+                }
             }
-            std::mem::take(&mut *available)
-        };
-        let need = bytes - held;
-        let granted = tokio::task::spawn_blocking(move || lease.reserve(need, need.max(LEASE)))
+            // A cancelled relay can abandon this database task. Reserve into the shared
+            // refundable balance here; only the live caller above can spend that balance.
+            let refill = lease.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut available = refill.available.lock().map_err(|_| unavailable())?;
+                if *available < bytes {
+                    let need = bytes - *available;
+                    *available += refill.reserve(need, need.max(LEASE))?;
+                }
+                Ok::<_, io::Error>(())
+            })
             .await
-            .map_err(io::Error::other)?;
-        let mut available = self.lease.available.lock().map_err(|_| unavailable())?;
-        match granted {
-            Ok(grant) => {
-                *available += grant - need;
-                Ok(())
-            }
-            Err(error) => {
-                *available += held;
-                Err(error)
-            }
+            .map_err(io::Error::other)??;
         }
     }
     /// Returns the unused part of the lease to the device quota.
@@ -298,6 +297,26 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("lease was not refunded on drop: {}", used(&registry));
+    }
+
+    #[tokio::test]
+    async fn shared_associations_charge_once_and_refund_on_close() {
+        let (_db, registry) = registry(Some(8192));
+        let d = registry.device(&[1]);
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..64 {
+            let d = d.clone();
+            tasks.spawn(async move {
+                d.charge(21).await.unwrap();
+                d.charge(21).await.unwrap();
+            });
+        }
+        while let Some(r) = tasks.join_next().await {
+            r.unwrap();
+        }
+        d.charge(0).await.unwrap();
+        d.settle().await;
+        assert_eq!(used(&registry), 64 * 42);
     }
 
     #[tokio::test]

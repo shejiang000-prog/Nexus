@@ -17,6 +17,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 const ALPN: &[u8] = b"nexus/1";
 const MULTIPLEX: &[u8] = b"nexus/mux1";
+const MUX2: &[u8] = b"nexus/mux2";
 const DATAGRAM: &[u8] = b"nexus/udp1";
 pub const SETUP: Duration = Duration::from_secs(8);
 pub const LIFETIME: Duration = Duration::from_secs(3600);
@@ -45,7 +46,40 @@ fn tuned_transport() -> quinn::TransportConfig {
 pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
 
+mod mux;
+use mux::{Association, Router};
+
+#[derive(Clone)]
+struct Peer {
+    conn: Connection,
+    mux: Option<Arc<Router>>,
+    pooled: bool,
+}
+impl Peer {
+    fn new(conn: Connection) -> Self {
+        let mux = negotiated(&conn, MUX2).then(|| Router::new(conn.clone()));
+        let pooled = mux.is_some() || negotiated(&conn, MULTIPLEX);
+        Self { conn, mux, pooled }
+    }
+    fn channel(
+        &self,
+        send: quinn::SendStream,
+        recv: quinn::RecvStream,
+        cert: Option<CertificateDer<'static>>,
+    ) -> Channel {
+        Channel {
+            peer_certificate: cert,
+            mux: self.mux.clone().map(|router| (router, send.id().index())),
+            association: None,
+            stream: Box::new(tokio::io::join(recv, send)),
+            connection: (!self.pooled || self.mux.is_some()).then(|| self.conn.clone()),
+        }
+    }
+}
+
 pub struct Channel {
+    mux: Option<(Arc<Router>, u64)>,
+    association: Option<Association>,
     pub stream: Box<dyn Duplex>,
     pub peer_certificate: Option<CertificateDer<'static>>,
     // Keep the connection alive until the peer drains the final stream bytes.
@@ -59,6 +93,7 @@ fn negotiated(conn: &Connection, protocol: &[u8]) -> bool {
 
 pub struct PacketReader {
     input: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    _association: Option<Association>,
     _readers: tokio::task::JoinSet<()>,
 }
 impl PacketReader {
@@ -73,18 +108,27 @@ pub struct PacketWriter {
     stream: tokio::io::WriteHalf<Box<dyn Duplex>>,
     connection: Option<Connection>,
     native: bool,
+    id: Option<u32>,
 }
 impl PacketWriter {
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
         if payload.len() > nexus_protocol::MAX_PACKET {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        if let Some(conn) = self.connection.as_ref().filter(|_| self.native) {
+        if let Some(conn) = self
+            .connection
+            .as_ref()
+            .filter(|_| self.native || self.id.is_some() && !payload.is_empty())
+        {
             if conn
                 .max_datagram_size()
-                .is_some_and(|max| payload.len() <= max)
+                .is_some_and(|max| payload.len() + if self.id.is_some() { 4 } else { 0 } <= max)
             {
-                match conn.send_datagram(payload.to_vec().into()) {
+                let data = match self.id {
+                    Some(id) => mux::encode(id, payload)?,
+                    None => payload.to_vec(),
+                };
+                match conn.send_datagram(data.into()) {
                     Ok(()) => return Ok(()),
                     Err(quinn::SendDatagramError::TooLarge) => {}
                     Err(e) => return Err(err(e)),
@@ -95,9 +139,24 @@ impl PacketWriter {
     }
 }
 impl Channel {
-    pub fn packets(self) -> (PacketReader, PacketWriter) {
+    pub fn mux2(&self) -> bool {
+        self.mux.is_some()
+    }
+
+    /// Stream indices are unique for the lifetime of a connection. Reject exhaustion instead of wrapping.
+    pub fn register_udp(&mut self) -> io::Result<u32> {
+        let (router, index) = self.mux.as_ref().ok_or(io::ErrorKind::InvalidInput)?;
+        let id = u32::try_from(*index).map_err(err)?;
+        self.association = Some(router.register(id)?);
+        Ok(id)
+    }
+    pub fn packets(mut self) -> (PacketReader, PacketWriter) {
         let (mut reader, stream) = tokio::io::split(self.stream);
-        let (tx, input) = tokio::sync::mpsc::channel(16);
+        let id = self.association.as_ref().map(|a| a.id);
+        let (tx, input) = match self.association.as_mut() {
+            Some(a) => a.queue.take().expect("registered channel consumed once"),
+            None => tokio::sync::mpsc::channel(16),
+        };
         let mut readers = tokio::task::JoinSet::new();
         let native = self
             .connection
@@ -134,16 +193,21 @@ impl Channel {
         (
             PacketReader {
                 input,
+                _association: self.association,
                 _readers: readers,
             },
             PacketWriter {
                 stream,
                 connection: self.connection,
                 native,
+                id,
             },
         )
     }
     pub async fn drain(self) {
+        if self.mux2() {
+            return;
+        }
         if let Some(conn) = self.connection {
             let _ = timeout(Duration::from_secs(3), conn.closed()).await;
         }
@@ -199,7 +263,12 @@ impl ServerTls {
     }
     pub fn endpoint(&self, addr: SocketAddr) -> io::Result<Endpoint> {
         let mut tls = self.tls.as_ref().clone();
-        tls.alpn_protocols = vec![MULTIPLEX.to_vec(), DATAGRAM.to_vec(), ALPN.to_vec()];
+        tls.alpn_protocols = vec![
+            MUX2.to_vec(),
+            MULTIPLEX.to_vec(),
+            DATAGRAM.to_vec(),
+            ALPN.to_vec(),
+        ];
         let crypto = QuicServerConfig::try_from(tls).map_err(err)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
         let mut limits = tuned_transport();
@@ -226,6 +295,8 @@ impl ServerTls {
             peer_certificate: Some(leaf),
             stream: Box::new(stream),
             connection: None,
+            mux: None,
+            association: None,
         })
     }
     pub async fn quic(&self, incoming: quinn::Incoming) -> io::Result<QuicSession> {
@@ -242,25 +313,31 @@ impl ServerTls {
             return Err(denied());
         }
         Ok(QuicSession {
-            multiplex: negotiated(&conn, MULTIPLEX),
-            conn,
+            peer: Peer::new(conn),
             leaf,
         })
     }
 }
 pub struct QuicSession {
-    conn: Connection,
+    peer: Peer,
     leaf: CertificateDer<'static>,
-    pub multiplex: bool,
 }
 impl QuicSession {
+    pub fn multiplex(&self) -> bool {
+        self.peer.pooled
+    }
+    pub fn mux2(&self) -> bool {
+        self.peer.mux.is_some()
+    }
+    pub fn certificate(&self) -> &[u8] {
+        self.leaf.as_ref()
+    }
+    pub fn close(&self) {
+        self.peer.conn.close(0u32.into(), b"session ended");
+    }
     pub async fn accept(&self) -> io::Result<Channel> {
-        let (send, recv) = self.conn.accept_bi().await.map_err(err)?;
-        Ok(Channel {
-            peer_certificate: Some(self.leaf.clone()),
-            stream: Box::new(tokio::io::join(recv, send)),
-            connection: (!self.multiplex).then(|| self.conn.clone()),
-        })
+        let (send, recv) = self.peer.conn.accept_bi().await.map_err(err)?;
+        Ok(self.peer.channel(send, recv, Some(self.leaf.clone())))
     }
 }
 
@@ -288,7 +365,8 @@ pub struct Connector {
     network_handle: u64,
     tls: Arc<ClientConfig>,
     quic: tokio::sync::OnceCell<Endpoint>,
-    pooled: tokio::sync::Mutex<Option<Connection>>,
+    pooled: tokio::sync::Mutex<Option<Peer>>,
+    legacy_udp: std::sync::atomic::AtomicBool,
     retry_quic: std::sync::Mutex<Option<std::time::Instant>>,
     server: SocketAddr,
     name: ServerName<'static>,
@@ -298,8 +376,8 @@ impl Connector {
     pub fn active_path_stats(&self) -> Option<quinn::PathStats> {
         let pool = self.pooled.try_lock().ok()?;
         pool.as_ref()
-            .filter(|c| c.close_reason().is_none())
-            .map(|c| c.stats().path)
+            .filter(|c| c.conn.close_reason().is_none())
+            .map(|c| c.conn.stats().path)
     }
 
     pub fn new(
@@ -321,6 +399,7 @@ impl Connector {
         Ok(Self {
             tls: Arc::new(tls),
             quic: tokio::sync::OnceCell::new(),
+            legacy_udp: false.into(),
             pooled: tokio::sync::Mutex::new(None),
             retry_quic: std::sync::Mutex::new(None),
             #[cfg(target_os = "android")]
@@ -389,7 +468,7 @@ impl Connector {
             .get_or_try_init(|| async { self.endpoint() })
             .await?;
         let mut tls = self.tls.as_ref().clone();
-        tls.alpn_protocols = vec![protocol.to_vec(), ALPN.to_vec()];
+        tls.alpn_protocols = vec![MUX2.to_vec(), protocol.to_vec(), ALPN.to_vec()];
         let mut cfg =
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls).map_err(err)?));
         let mut transport = tuned_transport();
@@ -406,24 +485,37 @@ impl Connector {
             .map_err(err)
     }
     async fn quic(&self, udp: bool) -> io::Result<Channel> {
-        let conn = if udp {
-            self.new_connection(DATAGRAM).await?
-        } else {
-            let mut cached = self.pooled.lock().await;
-            if let Some(c) = cached.as_ref().filter(|c| c.close_reason().is_none()) {
-                c.clone()
-            } else {
-                let c = self.new_connection(MULTIPLEX).await?;
-                *cached = negotiated(&c, MULTIPLEX).then(|| c.clone());
-                c
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut cache = self.pooled.lock().await;
+        let peer = if let Some(peer) = cache
+            .as_ref()
+            .filter(|p| p.conn.close_reason().is_none() && (!udp || p.mux.is_some()))
+        {
+            peer.clone()
+        } else if udp && self.legacy_udp.load(Relaxed) {
+            // Old servers require separate handshakes. Do not serialize those behind the pool lock.
+            drop(cache);
+            let peer = Peer::new(self.new_connection(DATAGRAM).await?);
+            if peer.pooled {
+                *self.pooled.lock().await = Some(peer.clone());
+                self.legacy_udp.store(false, Relaxed);
             }
+            let (send, recv) = peer.conn.open_bi().await.map_err(err)?;
+            return Ok(peer.channel(send, recv, None));
+        } else {
+            let peer = Peer::new(
+                self.new_connection(if udp { DATAGRAM } else { MULTIPLEX })
+                    .await?,
+            );
+            self.legacy_udp.store(peer.mux.is_none(), Relaxed);
+            if peer.pooled {
+                *cache = Some(peer.clone());
+            }
+            peer
         };
-        let (send, recv) = conn.open_bi().await.map_err(err)?;
-        Ok(Channel {
-            peer_certificate: None,
-            stream: Box::new(tokio::io::join(recv, send)),
-            connection: (!negotiated(&conn, MULTIPLEX)).then_some(conn),
-        })
+        drop(cache);
+        let (send, recv) = peer.conn.open_bi().await.map_err(err)?;
+        Ok(peer.channel(send, recv, None))
     }
     pub async fn connect(&self, mode: &Mode, udp: bool) -> io::Result<Channel> {
         let cooling_down = matches!(mode, Mode::Auto)
@@ -471,6 +563,8 @@ impl Connector {
                 peer_certificate: None,
                 stream: Box::new(stream),
                 connection: None,
+                mux: None,
+                association: None,
             })
         })
         .await??;

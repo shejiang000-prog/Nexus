@@ -6,6 +6,8 @@ import queue
 import socket
 import ssl
 import struct
+import sqlite3
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -61,7 +63,51 @@ def post(port):
     finally:
         conn.close()
 
-def run(binaries, identity):
+def dual_port():
+    # TCP and UDP have different excluded ranges on Windows hosts running Hyper-V.
+    for _ in range(32):
+        with socket.socket(type=socket.SOCK_DGRAM) as udp, socket.socket() as tcp:
+            port = 20000 + secrets.randbelow(28000)
+            try:
+                udp.bind((LOOPBACK,port))
+                tcp.bind((LOOPBACK,port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("no local port available for both protocols")
+
+@contextmanager
+def count_quic_connections(server_port):
+    # Observe the server SCID on v1 Initial packets, including retransmissions. No keys required.
+    ids = set()
+    with socket.socket(type=socket.SOCK_DGRAM) as sock:
+        sock.bind((LOOPBACK, 0))
+        sock.settimeout(.1)
+        stop = threading.Event()
+        def forward():
+            client = None
+            while not stop.is_set():
+                try:
+                    data, peer = sock.recvfrom(65535)
+                except (TimeoutError, ConnectionResetError):
+                    continue
+                if peer == (LOOPBACK, server_port):
+                    if data[0] & 0xb0 == 0x80 and data[1:5] == bytes.fromhex("00000001"):
+                        offset = 6 + data[5]
+                        ids.add(data[offset+1:offset+1+data[offset]])
+                    sock.sendto(data, client)
+                else:
+                    client = peer
+                    sock.sendto(data, (LOOPBACK,server_port))
+        thread = threading.Thread(target=forward,daemon=True)
+        thread.start()
+        try:
+            yield sock.getsockname()[1], ids
+        finally:
+            stop.set()
+            thread.join(2)
+
+def run(binaries, identity, baseline=None):
     suffix = ".exe" if os.name == "nt" else ""
     server = binaries / ("nexus-server" + suffix)
     client = binaries / ("nexus-client" + suffix)
@@ -88,7 +134,7 @@ def run(binaries, identity):
         web = endpoint(http.server_port)
         dns = endpoint(udp.getsockname()[1])
         def server_at(port, device="device"):
-            return process([server, endpoint(port), "ca.der", "server.der", "server.key.der",
+            return process([server, endpoint(port or dual_port()), "ca.der", "server.der", "server.key.der",
                             device + ".der", web, dns], identity)
         def listener(port, mode, flow, target, device="device", name="nexus.test"):
             return process([client, mode, endpoint(port), name, "ca.der", device + ".der",
@@ -137,6 +183,57 @@ def run(binaries, identity):
                 with listener(port, "auto", "tcp", web) as local:
                     post(local)
                 passed("automatic transport with QUIC available")
+            driver = binaries / "examples" / ("udp_associations" + suffix)
+            if not driver.exists():
+                raise RuntimeError("build the matching UDP driver: cargo build --example udp_associations")
+            with server_at(0) as port, count_quic_connections(port) as (proxy, ids):
+                out = subprocess.check_output([driver,endpoint(proxy),dns,"64","4","check"],cwd=identity,text=True,timeout=40)
+                assert len(out.splitlines()) == 255 and len(ids) == 1, (len(out.splitlines()),len(ids))
+            passed("mux2: 64 concurrent associations on one QUIC connection; empty/1472 frames; siblings survive close")
+
+            if baseline:
+                for older in ("server","client"):
+                    srv = baseline / server.name if older=="server" else server
+                    cli = baseline / client.name if older=="client" else client
+                    with process([srv,endpoint(dual_port()),"ca.der","server.der","server.key.der","device.der",dns],identity) as port:
+                        with process([cli,"quic",endpoint(port),"nexus.test","ca.der","device.der","device.key.der","udp",dns,endpoint(0)],identity) as local:
+                            with socket.socket(type=socket.SOCK_DGRAM) as probe:
+                                probe.settimeout(10)
+                                for data in (b"legacy",bytes(1472),b""):
+                                    probe.sendto(data,(LOOPBACK,local))
+                                    assert probe.recv(2048)==data
+                    passed("udp1 interoperability with baseline "+older)
+            else:
+                print("SKIP baseline binary compatibility (set NEXUS_BASELINE_BIN or --baseline-dir)")
+
+            with sqlite3.connect(identity/"mux.db") as db:
+                db.execute("CREATE TABLE devices(cert BLOB PRIMARY KEY, expires INTEGER, quota INTEGER, used INTEGER, revoked INTEGER)")
+                db.execute("INSERT INTO devices VALUES(?,unixepoch()+600,16384,0,0)",((identity/"device.der").read_bytes(),))
+                db.commit()
+                with process([server,endpoint(dual_port()),"ca.der","server.der","server.key.der","registry:mux.db",dns,web],identity) as port:
+                    with subprocess.Popen([driver,endpoint(port),dns,"16","1","revoke",web],cwd=identity,stdout=subprocess.PIPE,text=True) as child:
+                        try:
+                            lines = queue.Queue()
+                            def collect():
+                                for line in child.stdout: lines.put(line)
+                                lines.put("")
+                            threading.Thread(target=collect,daemon=True).start()
+                            active=0
+                            while active<17:
+                                line=lines.get(timeout=12)
+                                assert line, "premature exit"
+                                active+=line.startswith("ACTIVE ")
+                            db.execute("UPDATE devices SET revoked=1")
+                            db.commit()
+                            assert child.wait(timeout=10)==0
+                        finally:
+                            if child.poll() is None: child.kill()
+                    for _ in range(100):
+                        if db.execute("SELECT used FROM devices").fetchone()[0]==2048: break
+                        time.sleep(.03)
+                    assert db.execute("SELECT used FROM devices").fetchone()==(2048,)
+            db.close()
+            passed("mux2 registry: 16 live associations and TCP stream revoked; exact 2048 payload bytes after refund")
             # Keep the client alive through a server restart and replacement of the authorized leaf.
             with listener(port, "tls", "tcp", web) as original:
                 refused(original)
@@ -150,7 +247,7 @@ def run(binaries, identity):
             # TCP bridge to the real server; an unserviced UDP socket on the same port drops QUIC.
             import select
             with server_at(0) as upstream, socket.socket() as bridge, socket.socket(type=socket.SOCK_DGRAM) as drop:
-                bridge.bind((LOOPBACK, 0))
+                bridge.bind((LOOPBACK, dual_port()))
                 bridge.listen()
                 blocked = bridge.getsockname()[1]
                 drop.bind((LOOPBACK, blocked))
@@ -185,8 +282,9 @@ def run(binaries, identity):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", type=Path, default=Path("target/debug"))
+    parser.add_argument("--baseline-dir",type=Path,default=os.environ.get("NEXUS_BASELINE_BIN"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory() as tmp:
         identity = Path(tmp) / "identity"
         generate(identity)
-        run(args.bin_dir.resolve(), identity)
+        run(args.bin_dir.resolve(), identity, args.baseline_dir.resolve() if args.baseline_dir else None)

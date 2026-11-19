@@ -79,6 +79,25 @@ def benchmark(args):
             run(*prefix,"ip","addr","add",addr,"dev",dev)
             run(*prefix,"ip","link","set",dev,"up")
         run(*peer,"ip","link","set","lo","up")
+        if args.udp:
+            port=stack.enter_context(process(peer+[sys.executable,Path(__file__).resolve(),"--udp-echo"],identity))
+            target=f"127.0.0.1:{port}"
+            with args.output.open("x", newline="") as out:
+                writer=csv.writer(out)
+                writer.writerow(["version","rtt_ms","loss_percent_each_direction","association","sequence","packet_ms","since_open_ms","result"])
+                for delay in args.rtt:
+                    for loss in args.loss:
+                        for prefix,dev in [([],"nxl0"),(peer,"nxr0")]:
+                            run(*prefix,"tc","qdisc","replace","dev",dev,"root","netem","delay",f"{delay/2}ms","loss",f"{loss}%")
+                        for version,folder in [("baseline",args.baseline_dir.resolve()),("mux2",binary)]:
+                            with process(peer+[folder/"nexus-server","192.0.2.2:0","ca.der","server.der","server.key.der","device.der",target],identity) as server:
+                                rows=subprocess.check_output([folder/"examples/udp_associations",f"192.0.2.2:{server}",target,
+                                    str(args.parallel),str(args.count),"bench"],cwd=identity,text=True,timeout=180).splitlines()
+                            assert len(rows)==args.parallel*args.count
+                            for row in csv.reader(rows):writer.writerow((version,delay,loss,*row))
+                            out.flush()
+                            print(version,delay,loss,len(rows),"samples",flush=True)
+            return
         port=stack.enter_context(process(peer+[sys.executable,Path(__file__).resolve(),"--echo"],identity))
         target=f"127.0.0.1:{port}"
         server=stack.enter_context(process(peer+[binary/"nexus-server","192.0.2.2:0","ca.der","server.der","server.key.der","device.der",target],identity))
@@ -116,6 +135,9 @@ def benchmark(args):
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
+    p.add_argument("--baseline-dir",type=Path)
+    p.add_argument("--udp",action="store_true")
+    p.add_argument("--udp-echo",action="store_true")
     p.add_argument("--echo",action="store_true")
     p.add_argument("--bin-dir",type=Path)
     p.add_argument("--shoes",type=Path,help="optional upstream Linux shoes binary for reference peers")
@@ -126,7 +148,15 @@ if __name__=="__main__":
     p.add_argument("--count",type=int,default=12)
     p.add_argument("--parallel",type=int,default=4)
     args=p.parse_args()
-    if args.echo:
+    if args.udp_echo:
+        import socket
+        with socket.socket(type=socket.SOCK_DGRAM) as sock:
+            sock.bind(("127.0.0.1",0))
+            print(f"READY 127.0.0.1:{sock.getsockname()[1]}",flush=True)
+            while True:
+                packet,peer=sock.recvfrom(2048)
+                sock.sendto(packet,peer)
+    elif args.echo:
         with ThreadingHTTPServer(("127.0.0.1",0),EchoHttp) as http:
             http.received=deque(maxlen=0)
             print(f"READY 127.0.0.1:{http.server_port}",flush=True)

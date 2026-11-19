@@ -1,5 +1,9 @@
 # Nexus · Android 优先
 
+## 2026-11-22 自研协议 UDP 关联复用
+
+[协议改动、兼容矩阵、基准与雷电验收](2026-11-22-udp-mux.md)。Windows 和 Linux 均验证了 64 个关联共用一条 QUIC 连接，以及基线二进制双向互通。
+
 ## 2026-11-21 Android 节点真实连通测试
 
 [批量 HTTPS 真连、节点质量排序与雷电验收](2026-11-21-node-real-test.md)。Airport-Test 支持 41/41，实际通过 37 个。

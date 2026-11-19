@@ -3,10 +3,9 @@ use access::{Device, Registry};
 use nexus_protocol::{read_open, Flow, DENIED, INVALID, MAX_PACKET, OK, UNREACHABLE};
 use nexus_transport::{Channel, ServerTls, LIFETIME, SETUP};
 
-// Every Android UDP association and every TLS/TCP fallback flow is its own connection, so
-// connection slots must cover several devices that share one node.
+// Legacy UDP and TLS fallback can still consume a connection per flow.
 const MAX_SESSIONS: usize = 512;
-// Multiplexed TCP flows and DNS streams across all devices.
+// All open flows across devices and carriers.
 const MAX_FLOWS: usize = 4096;
 use std::{
     collections::HashSet,
@@ -96,9 +95,39 @@ async fn relay(mut ch: Channel, allowed: &Policy, device: Option<&Device>) -> io
                 })
                 .await?;
                 socket.connect(addr).await?;
-                stream.write_u8(OK).await?;
-                stream.flush().await?;
+                let mux = ch.mux2();
+                if mux {
+                    let id = ch.register_udp()?;
+                    ch.stream.write_u8(OK).await?;
+                    ch.stream.write_u32(id).await?;
+                } else {
+                    ch.stream.write_u8(OK).await?;
+                }
+                ch.stream.flush().await?;
                 let (mut r, mut w) = ch.packets();
+                if mux {
+                    let idle = Duration::from_secs(if addr.port() == 53 { 10 } else { 60 });
+                    let mut buf = [0; MAX_PACKET + 1];
+                    loop {
+                        timeout(idle, async {
+                            tokio::select! {
+                                packet=r.recv()=> {
+                                    let data=packet?;
+                                    if let Some(d)=device.filter(|_| !data.is_empty()) {d.charge(data.len()).await?;}
+                                    socket.send(&data).await?;
+                                }
+                                n=socket.recv(&mut buf)=> {
+                                    let n=n?;
+                                    if n<=MAX_PACKET {
+                                        if let Some(d)=device.filter(|_| n>0) { d.charge(n).await?; }
+                                        w.send(&buf[..n]).await?;
+                                    }
+                                }
+                            }
+                            Ok::<_,io::Error>(())
+                        }).await??;
+                    }
+                }
                 let outbound = async {
                     loop {
                         let packet = r.recv().await?;
@@ -219,8 +248,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !incoming.remote_address_validated() && incoming.may_retry() {let _=incoming.retry(); continue;}
                 tokio::spawn(async move {let _permit=permit;
                     if let Ok(Ok(conn))=timeout(SETUP,tls.quic(incoming)).await {
+                        let device = registry.as_ref().filter(|_|conn.mux2()).map(|registry|registry.device(conn.certificate()));
+                        if let Some(d)=&device { if d.charge(0).await.is_err(){conn.close();return;} }
+                        let mut active = tokio::task::JoinSet::new();
                         let serve = async {
-                            let mut active = tokio::task::JoinSet::new();
                             let mut idle = SETUP;
                             loop {
                                 tokio::select! {
@@ -230,15 +261,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let Ok(flow) = flows.clone().try_acquire_owned() else { continue };
                                         let allowed = allowed.clone();
                                         let registry = registry.clone();
-                                        active.spawn(async move { let _flow = flow; let _ = timeout(LIFETIME, session(ch, &allowed, registry.as_ref())).await; });
-                                        if !conn.multiplex { let _ = active.join_next().await; break }
+                                        let shared = device.clone();
+                                        active.spawn(async move { let _flow = flow;
+                                            if let Some(d)=shared {let _=timeout(LIFETIME,relay(ch,&allowed,Some(&d))).await;}
+                                            else {let _=timeout(LIFETIME,session(ch,&allowed,registry.as_ref())).await;}
+                                        });
+                                        if !conn.multiplex() { let _ = active.join_next().await; break }
                                     }
                                     Some(_) = active.join_next() => {}
                                     _ = tokio::time::sleep(idle), if active.is_empty() => break,
                                 }
                             }
                         };
-                        let _ = timeout(LIFETIME, serve).await;
+                        if let Some(d) = &device {
+                            tokio::select! { _=timeout(LIFETIME, serve)=>{}, _=d.until_revoked()=>{} }
+                            conn.close();
+                            active.shutdown().await;
+                            d.settle().await;
+                        } else { let _ = timeout(LIFETIME, serve).await; }
                     }
                 });
             }
