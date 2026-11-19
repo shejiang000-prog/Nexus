@@ -13,9 +13,13 @@ internal fun Usage.traffic() = if (used == null && total == null && remaining ==
     else "已用 ${amount(used)} / 总量 ${amount(total)} · 剩余 ${amount(remaining)}"
 
 @Composable
-internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRow>, problems: Map<String,String>?, store: Subscriptions) {
+internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRow>, problems: Map<String,String>?, store: Subscriptions,
+                                  results: Map<String,ProbeResult>, now: Long) {
     val theme = MaterialTheme.colorScheme
-    val now = System.currentTimeMillis()
+    fun tested(nodes: List<NodeRow>): String {
+        val recent = nodes.mapNotNull { results[it.favorite] }.filter { it.recent(86400000,now) }
+        return if (recent.isEmpty()) "未测试" else "真连通过 "+recent.count { it.ok }
+    }
     val available = problems?.let { verdicts -> rows.filter { it.favorite !in verdicts }.groupingBy { it.source.id }.eachCount() }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("订阅总览", style = MaterialTheme.typography.titleLarge)
@@ -23,7 +27,7 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
             val usage = source.allowance
             val fraction = usage.total?.let { total -> usage.remaining?.toDouble()?.div(total) }
             val trafficColor = if (fraction != null && fraction < 0.1) theme.error else theme.onSurface
-            Text(source.label + " · 可用 " + (available?.getOrDefault(source.id,0) ?: "…") + " / " + source.nodes.length(), style = MaterialTheme.typography.titleMedium)
+            Text(source.label + " · 支持 " + (available?.getOrDefault(source.id,0) ?: "…") + " / " + source.nodes.length() + " · " + tested(rows.filter { it.source.id == source.id }), style = MaterialTheme.typography.titleMedium)
             Text(usage.traffic(), color = trafficColor)
             if (fraction != null) LinearProgressIndicator(progress = { (1-fraction).toFloat() },
                 modifier = Modifier.fillMaxWidth(), color = if (fraction < 0.1) theme.error else theme.primary)
@@ -38,7 +42,7 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
                 style = MaterialTheme.typography.bodySmall, color = if (reason != null) theme.error else theme.onSurfaceVariant)
             HorizontalDivider()
         }
-        Text("合计 · ${sources.size} 个来源 · 可用 ${available?.values?.sum() ?: "…"} / ${rows.size} 个节点",
+        Text("合计 · ${sources.size} 个来源 · 支持 ${available?.values?.sum() ?: "…"} / ${rows.size} 个节点 · " + tested(rows),
             style = MaterialTheme.typography.titleMedium)
         fun subtotal(field: (Usage) -> Long?): String {
             val values = sources.mapNotNull { field(it.allowance) }

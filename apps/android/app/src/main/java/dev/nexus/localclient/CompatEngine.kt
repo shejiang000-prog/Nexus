@@ -1,5 +1,6 @@
 package dev.nexus.localclient
 
+import kotlin.concurrent.withLock
 import android.net.Network
 import android.net.Uri
 import android.net.VpnService
@@ -15,9 +16,11 @@ object CompatEngine {
     val types = setOf("vless","vmess","trojan","ss","hy2","hysteria2") + ShoesEngine.types
     private var registered = false
     @Volatile private var socketProtection: ((Int) -> Boolean)? = null
+    @Volatile private var probing = false
+    private val listener = DialerController { fd -> probing || socketProtection?.invoke(fd.toInt()) == true }
     private val controller = DialerController { fd -> socketProtection?.invoke(fd.toInt()) == true }
 
-    private fun invoke(method: String, payload: JSONObject = JSONObject()): JSONObject {
+    internal fun invoke(method: String, payload: JSONObject = JSONObject()): JSONObject {
         val result = JSONObject(LibXray.invoke(JSONObject().put("apiVersion",3).put("method",method).put("payload",payload).toString()))
         check(result.optBoolean("success")) { "节点参数不受支持" }
         return result
@@ -107,8 +110,21 @@ object CompatEngine {
         return copy
     }
 
-    @Synchronized fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
-                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, ready: () -> Unit): Int {
+    internal val engineLock = java.util.concurrent.locks.ReentrantLock()
+
+    // libXray retains its registered controllers after a VPN session.
+    internal fun probeSockets(bind: ((Int) -> Boolean)?) {
+        probing = bind != null
+        socketProtection = bind
+        if (bind != null && !registered) {
+            LibXray.registerDialerController(controller)
+            LibXray.registerListenerController(listener)
+            registered = true
+        }
+    }
+
+    fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
+                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, ready: () -> Unit): Int = engineLock.withLock {
         socketProtection = { fd ->
             runCatching {
                 check(service.protect(fd))
@@ -123,7 +139,7 @@ object CompatEngine {
             }
             if (!registered) {
                 LibXray.registerDialerController(controller)
-                LibXray.registerListenerController(controller)
+                LibXray.registerListenerController(listener)
                 registered = true
             }
             LibXray.setDNS(controller, systemDns)

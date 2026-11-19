@@ -12,6 +12,8 @@ import org.json.JSONArray
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -91,6 +93,7 @@ class CatalogCheck : Instrumentation() {
             ctx.startForegroundService(request)
             started = true
             waitVpn(true)
+            if (args.getString("mode") == "probe-vpn") checkProbeDisabled(result)
             SubscriptionRefresh.updateDue(store,fixtures(),retry+86400000)
             check(downloads == 4 && store.get(backup.id).updated == backup.updated)
             ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
@@ -200,6 +203,85 @@ class CatalogCheck : Instrumentation() {
      * Each node of one imported source, through the app's own conversion and engine, fetches
      * https://example.com with normal certificate checks. Reports time per node; prints no credentials.
      */
+    private fun checkProbeDisabled(result: Bundle) {
+        fun nodes(n: android.view.accessibility.AccessibilityNodeInfo): Sequence<android.view.accessibility.AccessibilityNodeInfo> =
+            sequence {
+                yield(n)
+                for (i in 0 until n.childCount) n.getChild(i)?.let { yieldAll(nodes(it)) }
+            }
+        val seen = mutableSetOf<String>()
+        repeat(28) {
+            val tree = uiAutomation.rootInActiveWindow?.let(::nodes)?.toList().orEmpty()
+            val label = tree.firstOrNull { it.text?.toString() == "测试筛选结果的真实连通" }
+            if (label != null && tree.any { it.text?.toString() == "请先断开 VPN" }) {
+                check(generateSequence(label) { it.parent }.any { !it.isEnabled })
+                check(TunnelService.state.value.vpn)
+                result.putString("vpn","active VPN: real-test button disabled, disconnect hint visible")
+                return
+            }
+            tree.firstOrNull()?.packageName?.let { seen.add(it.toString()) }
+            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加订阅","仅收藏","请先断开 VPN","测试筛选结果的真实连通","连接","收藏") }.forEach(seen::add)
+            result.putString("seen",seen.joinToString())
+            val metrics = targetContext.resources.displayMetrics
+            val x = metrics.widthPixels / 2
+            val y = metrics.heightPixels
+            uiAutomation.executeShellCommand("input swipe $x ${y*8/10} $x ${y*4/10} 500").use {
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes()
+            }
+            Thread.sleep(250)
+        }
+        error("probe button not found")
+    }
+
+    private fun batchProbe(result: Bundle, lab: Boolean) = runBlocking {
+        val ctx = targetContext
+        val fixture = if (lab) JSONObject(File(ctx.noBackupFilesDir,"qa-interop").readText()) else null
+        val source = if (fixture != null) Subscription("qa-lab","QA","",fixture.getJSONArray("nodes"),"",0)
+            else Subscriptions(ctx).all().single { it.label == args.getString("source") }
+        val rows = (0 until source.nodes.length()).map { NodeRow(source,it,source.nodes.getJSONObject(it)) }
+        val outcomes = java.util.concurrent.ConcurrentHashMap<Int,ProbeResult>()
+        val start = android.os.SystemClock.elapsedRealtime()
+        val report = { row: NodeRow, value: ProbeResult -> outcomes[row.index] = value }
+        val peak = if (fixture == null) NodeProbe.run(ctx,rows,onResult=report) else {
+            val trust = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply {
+                load(null)
+                setCertificateEntry("lab",java.security.cert.CertificateFactory.getInstance("X.509")
+                    .generateCertificate(fixture.getString("ca").byteInputStream()))
+            }
+            val managers = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+            managers.init(trust)
+            val factory = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null,managers.trustManagers,null) }.socketFactory
+            fun stopped(ports: List<Int>) {
+                check(!com.shoesproxy.ShoesNative.isRunning())
+                check(ports.size == rows.size && ports.all { port ->
+                    runCatching { java.net.Socket("127.0.0.1",port).use {} }.exceptionOrNull() is java.net.ConnectException
+                })
+            }
+            val opened = kotlinx.coroutines.CompletableDeferred<List<Int>>()
+            val cancellation = launch {
+                NodeProbe.run(ctx,rows,listOf(ProbeSite("nexus.test","/slow",200)),factory,{ opened.complete(it) },report)
+            }
+            val firstPorts = withTimeout(15000) { opened.await() }
+            kotlinx.coroutines.delay(200)
+            cancellation.cancelAndJoin()
+            stopped(firstPorts)
+            check(outcomes.isEmpty())
+            var ports = emptyList<Int>()
+            val n = NodeProbe.run(ctx,rows,listOf(ProbeSite("nexus.test","/missing",204),ProbeSite("nexus.test","/check",200)),
+                factory,{ ports=it },report)
+            stopped(ports)
+            result.putString("lifecycle","normal and cancelled batches released all listeners; shoes stopped")
+            n
+        }
+        val failed = rows.filter { outcomes[it.index]?.ok == false }
+        result.putString("batch","${outcomes.values.count { it.ok }} / ${outcomes.size} passed, peak $peak, ${android.os.SystemClock.elapsedRealtime()-start} ms")
+        result.putString("failed",failed.joinToString { it.node.getString("name")+" "+outcomes[it.index]?.reason })
+        if (lab) {
+            check(peak in 1..8 && outcomes.size == rows.size && failed.isEmpty())
+            check(outcomes.values.all { "HTTP 404" in it.detail && "HTTP 200" in it.detail })
+        }
+    }
+
     private fun probeSource(result: Bundle) {
         val label = requireNotNull(args.getString("source"))
         require(!TunnelService.state.value.active) { "disconnect the VPN first" }
@@ -345,7 +427,7 @@ class CatalogCheck : Instrumentation() {
                     check(listOf("节点 剩余流量：1 GB","套餐到期：2026-02-31","距离下次重置剩余：12 天 US").none(Usage::isInfo))
                     result.putString("usage","3 metadata formats, strict negatives and header precedence passed")
                 }
-                "refresh" -> checkRefresh(result)
+                "refresh", "probe-vpn" -> checkRefresh(result)
                 "refresh-source" -> {
                     val store = Subscriptions(targetContext)
                     val source = store.all().single { it.label == args.getString("source") }
@@ -354,6 +436,7 @@ class CatalogCheck : Instrumentation() {
                     check(updated.updated > source.updated && updated.nodes.length() > 0)
                     result.putString("refresh", "${updated.nodes.length()} nodes; ${updated.allowance.traffic()}")
                 }
+                "probe-lab", "probe-batch" -> batchProbe(result, args.getString("mode") == "probe-lab")
                 "probe-source" -> probeSource(result)
                 "remove-formats" -> {
                     val store = Subscriptions(targetContext)

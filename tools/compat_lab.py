@@ -17,6 +17,9 @@ from lab_identity import generate
 
 class Receipt(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/slow":
+            import time
+            time.sleep(3)
         if self.path != "/check":
             return self.send_error(404)
         data = ("Nexus interop " + secrets.token_hex(8)).encode()
@@ -104,6 +107,11 @@ def run(args):
         root = Path(tmp)
         keys = root/"keys"
         generate(keys)
+        if args.probe:
+            import ssl
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls.load_cert_chain(keys/"server.pem", keys/"server.key")
+            http.socket = tls.wrap_socket(http.socket, server_side=True)
         threading.Thread(target=http.serve_forever,daemon=True).start()
         ident = str(uuid.uuid4())
         password = secrets.token_urlsafe(20)
@@ -175,7 +183,7 @@ def run(args):
                         sock.bind((args.host,0))
                         port = sock.getsockname()[1]
                     peer=f"{args.host}:{port}"
-                    rule=dict(mask="192.0.2.5:80",action="allow",override_address=f"127.0.0.1:{http.server_port}",client_chain="direct")
+                    rule=dict(mask="nexus.test:443" if args.probe else "192.0.2.5:80",action="allow",override_address=f"127.0.0.1:{http.server_port}",client_chain="direct")
                     listener=dict(address=peer,rules=[rule,{"masks":"0.0.0.0/0","action":"block"}])
                     cert=dict(cert=str(keys/"server.pem"),key=str(keys/"server.key"))
                     if typ=="tuic":
@@ -186,7 +194,7 @@ def run(args):
                         listener.update(protocol=dict(type="tls",tls_targets={"nexus.test":tls}))
                         auth=password
                     settings.append(listener)
-                    nodes.append(dict(type=typ,name=typ,config=f"{typ}://{auth}@{peer}?sni=nexus.test" + (f"&pcs={pin}" if args.full_device else "") +("&alpn=h3" if typ=="tuic" else "")))
+                    nodes.append(dict(type=typ,name=typ,config=f"{typ}://{auth}@{peer}?sni=nexus.test" + (f"&pcs={pin}" if args.full_device or args.probe else "") +("&alpn=h3" if typ=="tuic" else "")))
                 path=root/"shoes.yaml"
                 path.write_text(json.dumps(settings))
                 if args.full_device:
@@ -199,7 +207,7 @@ def run(args):
                 if any(proc.poll() is not None for proc in peers):
                     raise RuntimeError("fixture failed to start")
                 with args.fixture.open("x") as f:
-                    json.dump(dict(target=http.server_port,nodes=nodes,pin=pin),f)
+                    json.dump(dict(target=http.server_port,nodes=nodes,pin=pin,ca=(keys/"ca.pem").read_text() if args.probe else ""),f)
                 print(f"{len(nodes)} authenticated fixtures ready; press Enter to stop.",flush=True)
                 input()
             finally:
@@ -214,6 +222,7 @@ if __name__=="__main__":
     parser.add_argument("--xray",required=True,type=Path)
     parser.add_argument("--shoes",type=Path)
     parser.add_argument("--fixture",required=True,type=Path)
+    parser.add_argument("--probe", action="store_true", help="serve a lab-CA HTTPS response for batch probes")
     parser.add_argument("--full-device",action="store_true")
     parser.add_argument("--variants",action="store_true",
                         help="add REALITY, CDN transports, SS-2022, Hysteria2 obfs and structured nodes")

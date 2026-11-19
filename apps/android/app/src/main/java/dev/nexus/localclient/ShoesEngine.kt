@@ -83,12 +83,17 @@ object ShoesEngine {
         } else client.put("protocol",tls.put("type","tls").put("protocol",proto))
         return JSONObject().put("shoesClient",client).put("bootstrap",host)
     }
-    fun run(out: JSONObject, physical: Network, tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor,
-            protect: (Int) -> Boolean, health: (() -> Boolean)?, ready: () -> Unit): Int {
+    internal fun resolvedClient(out: JSONObject, physical: Network): JSONObject {
         val client = JSONObject(out.getJSONObject("shoesClient").toString())
         val ip = physical.getAllByName(out.getString("bootstrap")).first().hostAddress!!
         val port = client.getString("address").substringAfterLast(':')
         client.put("address",(if (':' in ip) "[$ip]" else ip)+":"+port)
+        return client
+    }
+
+    fun run(out: JSONObject, physical: Network, tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor,
+            protect: (Int) -> Boolean, health: (() -> Boolean)?, ready: () -> Unit): Int {
+        val client = resolvedClient(out, physical)
         val rule = JSONObject().put("masks",JSONArray().put("0.0.0.0/0").put("::/0")).put("action","allow").put("client_chain",client)
         val settings = JSONObject().put("device_fd",tun.fd).put("mtu",1500).put("tcp_enabled",true).put("udp_enabled",true)
             .put("icmp_enabled",false).put("rules",JSONArray().put(rule))

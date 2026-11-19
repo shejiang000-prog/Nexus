@@ -1,5 +1,10 @@
 # Nexus · Android 优先
 
+## 2026-11-21 Android 节点真实连通测试
+
+[批量 HTTPS 真连、节点质量排序与雷电验收](2026-11-21-node-real-test.md)。Airport-Test 支持 41/41，实际通过 37 个。
+
+
 ## 2026-11-20 Android 订阅刷新与总览
 
 [自动更新、VPN 来源保护、首页流量总览与雷电验证](2026-11-20-subscription-refresh.md)。

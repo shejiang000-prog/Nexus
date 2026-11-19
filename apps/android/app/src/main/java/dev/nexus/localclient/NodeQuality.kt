@@ -19,7 +19,14 @@ internal class NodeQuality(context: Context, network: Network?) {
     private fun read(node: String, metric: String) = history.getLong(key(node, metric), 0)
     private fun fresh(at: Long) = System.currentTimeMillis() - at in 0L..86_400_000L
 
-    fun record(node: String, ok: Boolean, ms: Long) {
+    fun lastProbe(node: String): ProbeResult? {
+        val time = read(node, "probeTime")
+        if (time == 0L) return null
+        return ProbeResult(read(node,"probeMs"), history.getString(key(node,"reason"),"").orEmpty(),
+            history.getString(key(node,"detail"),"").orEmpty(), time)
+    }
+
+    fun record(node: String, ok: Boolean, ms: Long, probe: ProbeResult? = null) {
         val prior = fresh(read(node, "time"))
         val before = if (prior) read(node, "success") else 500
         val edit = history.edit().putLong(key(node, "time"), System.currentTimeMillis())
@@ -29,6 +36,8 @@ internal class NodeQuality(context: Context, network: Network?) {
             edit.putLong(key(node, "latency"), ms)
                 .putLong(key(node, "jitter"), if (previous > 0) (read(node, "jitter") * 3 + abs(ms - previous)) / 4 else 0)
         }
+        if (probe != null) edit.putLong(key(node,"probeTime"),probe.at).putLong(key(node,"probeMs"),probe.ms)
+            .putString(key(node,"reason"),probe.reason).putString(key(node,"detail"),probe.detail)
         edit.apply()
     }
 

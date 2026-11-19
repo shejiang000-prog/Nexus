@@ -19,9 +19,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Job
+import android.net.ConnectivityManager
+import android.net.Network
 import java.text.DateFormat
 import java.util.Date
 import org.json.JSONObject
@@ -47,7 +47,7 @@ private fun rankedNodes(context: android.content.Context, rows: List<NodeRow>): 
     val store = Subscriptions(context)
     val quality = NodeQuality(context, context.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
     return rows.filter { it.type in CompatEngine.types && store.appearance.getBoolean("auto/"+it.source.id,false) &&
-        it.source.hasAllowance() && CompatEngine.problem(it.node) == null }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
+        it.source.hasAllowance() && quality.lastProbe(it.favorite)?.let { p -> !p.ok && p.recent(3600000) } != true && CompatEngine.problem(it.node) == null }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
             .thenByDescending { quality.score(it.favorite) })
 }
 
@@ -92,7 +92,10 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     var sort by remember { mutableStateOf("默认") }
     var filterMenu by remember { mutableStateOf("") }
     var detail by remember { mutableStateOf<NodeRow?>(null) }
-    var metrics by remember { mutableStateOf(emptyMap<String,Long>()) }
+    var probeJob by remember { mutableStateOf<Job?>(null) }
+    var tested by remember { mutableIntStateOf(0) }
+    var total by remember { mutableIntStateOf(0) }
+    var probeRevision by remember { mutableIntStateOf(0) }
     var chosen by remember { mutableStateOf<NodeRow?>(null) }
     var dns by remember { mutableStateOf("1.1.1.1") }
     var smart by remember { mutableStateOf(false) }
@@ -106,7 +109,21 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     }
     val tunnel by TunnelService.state.collectAsState()
     val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
-    val quality = NodeQuality(context, tunnel.physical ?: connectivity.activeNetwork)
+    var physical by remember { mutableStateOf(NodeProbe.physical(connectivity)) }
+    DisposableEffect(connectivity) {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) { physical = NodeProbe.physical(connectivity) }
+            override fun onLost(network: Network) { physical = NodeProbe.physical(connectivity) }
+        }
+        connectivity.registerDefaultNetworkCallback(callback)
+        onDispose { connectivity.unregisterNetworkCallback(callback) }
+    }
+    val quality = remember(tunnel.physical,physical) { NodeQuality(context, tunnel.physical ?: physical) }
+    val metrics = remember(allRows,quality,probeRevision) { allRows.mapNotNull { row ->
+        quality.lastProbe(row.favorite)?.let { row.favorite to it }
+    }.toMap() }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(60000) } }
     var speedResult by remember(tunnel.connectedAt) { mutableStateOf("") }
     fun connect(row: NodeRow) {
         prefs.edit().putLong("recent/"+row.favorite,System.currentTimeMillis()).apply()
@@ -172,39 +189,30 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                 (row.node.getString("name").contains(search,true) || row.node.getString("type").contains(search,true))
         }
         when (sort) {
-            "端口延迟" -> rows.sortedBy { metrics[it.favorite]?.takeIf { ms -> ms >= 0 } ?: Long.MAX_VALUE }
+            "真连延迟" -> rows.sortedBy { metrics[it.favorite]?.takeIf { r -> r.ok }?.ms ?: Long.MAX_VALUE }
             "最近选择" -> rows.sortedByDescending { prefs.getLong("recent/"+it.favorite,0) }
             "收藏优先" -> rows.sortedByDescending { it.favorite in favorites }
             "网络质量" -> rows.sortedByDescending { quality.score(it.favorite) }
             else -> rows
         }
     }
+    val eligible = remember(visible,problems) { problems?.let { map -> visible.filter { it.favorite !in map } }.orEmpty() }
     fun measure() {
-        if (busy || tunnel.active) return
+        if (busy || tunnel.active || physical == null || eligible.isEmpty()) return
         busy = true
+        val batch = eligible
+        tested = 0
+        total = batch.size
         errorMessage = ""
-        scope.launch {
+        probeJob = scope.launch {
             try {
-                val results = mutableMapOf<String,Long>()
-                val tcp = visible.filter { !Usage.isInfo(it.node.optString("name")) && it.type !in setOf("hy2","hysteria2","tuic") }
-                for (batch in tcp.chunked(6)) {
-                    val values = coroutineScope { batch.map { row -> async(Dispatchers.IO) {
-                        val time = runCatching {
-                            val raw = row.node.get("config")
-                            val addr = if (raw is JSONObject) raw.getString("server") to raw.optInt("port",raw.optInt("server_port"))
-                                else android.net.Uri.parse(raw.toString()).let { requireNotNull(it.host) to it.port }
-                            require(addr.second in 1..65535)
-                            val start = android.os.SystemClock.elapsedRealtime()
-                            java.net.Socket().use { it.connect(java.net.InetSocketAddress(addr.first,addr.second),1800) }
-                            android.os.SystemClock.elapsedRealtime()-start
-                        }.getOrDefault(-1)
-                        row.favorite to time
-                    } }.awaitAll() }
-                    results.putAll(values)
-                    metrics = metrics + values
+                NodeProbe.run(context,batch) { _,_ ->
+                    scope.launch(Dispatchers.Main.immediate) { tested++; probeRevision++ }
                 }
-                message = "TCP 端口可达 ${results.values.count { it>=0 }} / ${results.size}，UDP 协议需连接后验证"
-            } finally { busy = false }
+                message = "已测 $tested / $total"
+            } catch (e: kotlinx.coroutines.CancellationException) { message = "测试已停止"; throw e }
+            catch (_: Exception) { errorMessage = "测试引擎未就绪，请检查网络后重试" }
+            finally { busy = false; probeJob = null }
         }
     }
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
@@ -238,7 +246,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             if (sources.isEmpty() && !busy) Text("添加订阅后，可以按来源查看节点。")
         }
         if (sources.isNotEmpty()) item {
-            SubscriptionOverview(sources, allRows, problems, store)
+            SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L))
         }
         items(sources, key = { it.id }) { source ->
             Column {
@@ -295,7 +303,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                         DropdownMenu(expanded = filterMenu==tag,onDismissRequest = { filterMenu="" }) {
                             val choices = when(tag) { "协议" -> listOf("") + allRows.map { it.type }.distinct().sorted()
                                 "地区" -> listOf("") + allRows.map { it.region }.distinct().sorted()
-                                else -> listOf("默认","端口延迟","网络质量","最近选择","收藏优先") }
+                                else -> listOf("默认","真连延迟","网络质量","最近选择","收藏优先") }
                             choices.forEach { choice -> DropdownMenuItem(text = { Text(choice.ifEmpty { "全部" }) },onClick = {
                                 when(tag) { "协议" -> protocol=choice; "地区" -> region=choice; else -> sort=choice }
                                 filterMenu=""
@@ -312,7 +320,14 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                     else { smart=true; chosen=best }
                 }
             }) { Text("按当前网络质量选择节点") }
-            TextButton(enabled = !tunnel.active && !busy && visible.isNotEmpty(),onClick = { measure() }) { Text("检测筛选结果的 TCP 端口") }
+            if (probeJob != null) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("已测 $tested / $total")
+                    TextButton(onClick = { probeJob?.cancel() }) { Text("取消测试") }
+                }
+            } else TextButton(enabled = !tunnel.active && physical != null && !busy && eligible.isNotEmpty(),
+                onClick = { measure() }) { Text("测试筛选结果的真实连通") }
+            if (tunnel.vpn || connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) Text("请先断开 VPN")
             FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") })
         }
         items(visible) { row ->
@@ -321,6 +336,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             ListItem(headlineContent = { TextButton(onClick = { detail = row }) { Text(row.node.getString("name")) } },
                 supportingContent = { Column {
                     Text("${type.uppercase()} · ${row.source.label}")
+                    metrics[row.favorite]?.let { Text(it.label,color = if (it.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
                     if (problem != null) Text(if (problem == "信息") "信息" else "无法使用：$problem", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 } },
@@ -329,7 +345,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                         favorites = if (row.favorite in favorites) favorites - row.favorite else favorites + row.favorite
                         prefs.edit().putStringSet("items",favorites).apply()
                     }) { Text(if (row.favorite in favorites) "已收藏" else "收藏") }
-                    TextButton(enabled = !tunnel.active && type in CompatEngine.types && problems != null && problem == null, onClick = {
+                    TextButton(enabled = !busy && !tunnel.active && type in CompatEngine.types && problems != null && problem == null, onClick = {
                         if (context.getSharedPreferences("local",0).contains("pinned")) message = "请先解除固定出口"
                         else { smart=false; chosen = row }
                     }) { Text(if (type in CompatEngine.types && problem == null) "连接" else "仅导入") }
@@ -338,7 +354,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     }
     detail?.let { row -> AlertDialog(onDismissRequest = { detail = null },title = { Text(row.node.getString("name")) },
         text = { Text(listOfNotNull(row.source.label,row.type.uppercase(),"地区 · "+row.region,
-            metrics[row.favorite]?.let { if (it>=0) "TCP 端口 · $it ms" else "TCP 端口未连通" } ?: "尚无 TCP 端口检测结果",
+            metrics[row.favorite]?.let { it.label + "\n" + DateFormat.getDateTimeInstance().format(Date(it.at)) + "\n" + it.detail } ?: "尚无真连测试结果",
             problems?.get(row.favorite)?.let { "无法使用：$it" }).joinToString("\n")) },
         confirmButton = { TextButton(onClick = { detail = null }) { Text("关闭") } }) }
     chosen?.let { row -> AlertDialog(onDismissRequest = { chosen = null }, title = { Text("使用订阅节点连接 VPN？") },

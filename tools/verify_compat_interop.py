@@ -17,6 +17,8 @@ def main(args):
     fixture = subprocess.check_output(wsl + ["mktemp", "-u", "/tmp/nexus-interop-XXXXXX.json"], text=True).strip()
     command = wsl + ["python3", "-u", "tools/compat_lab.py", "--host", args.host, "--xray", args.xray,
                      "--fixture", fixture, "--variants"]
+    if args.probe:
+        command.append("--probe")
     if args.shoes:
         command += ["--shoes", args.shoes]
     lab = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
@@ -31,7 +33,7 @@ def main(args):
         data = subprocess.check_output(wsl + ["cat", fixture])
         subprocess.run(adb + ["shell", "run-as", PACKAGE, "sh", "-c", "'cat > no_backup/qa-interop'"],
                        input=data, check=True, timeout=20)
-        output = subprocess.run(adb + ["shell", "am", "instrument", "-w", "-e", "mode", "interop", RUNNER],
+        output = subprocess.run(adb + ["shell", "am", "instrument", "-w", "-e", "mode", "probe-lab" if args.probe else "interop", RUNNER],
                                 capture_output=True, text=True, encoding="utf8", errors="replace", timeout=600).stdout
         print(output.strip(), flush=True)
         return 0 if "INSTRUMENTATION_CODE: -1" in output else 1
@@ -45,6 +47,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--probe", action="store_true", help="verify the batch HTTPS probe")
     parser.add_argument("--serial", required=True)
     parser.add_argument("--distro", default="NexusLab")
     parser.add_argument("--host", required=True, help="WSL address the emulator can reach")
