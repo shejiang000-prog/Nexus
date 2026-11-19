@@ -1,7 +1,13 @@
 mod access;
 use access::{Device, Registry};
 use nexus_protocol::{read_open, Flow, DENIED, INVALID, MAX_PACKET, OK, UNREACHABLE};
-use nexus_transport::{Channel, ServerTls, LIFETIME, MAX_CONNECTIONS, SETUP};
+use nexus_transport::{Channel, ServerTls, LIFETIME, SETUP};
+
+// Every Android UDP association and every TLS/TCP fallback flow is its own connection, so
+// connection slots must cover several devices that share one node.
+const MAX_SESSIONS: usize = 512;
+// Multiplexed TCP flows and DNS streams across all devices.
+const MAX_FLOWS: usize = 4096;
 use std::{
     collections::HashSet,
     env, io,
@@ -68,6 +74,8 @@ async fn relay(mut ch: Channel, allowed: &Policy, device: Option<&Device>) -> io
         match flow {
             Flow::Tcp => match timeout(SETUP, TcpStream::connect(addr)).await {
                 Ok(Ok(mut target)) => {
+                    // Interactive protocols (SSH, TLS handshakes) should not wait on Nagle.
+                    let _ = target.set_nodelay(true);
                     stream.write_u8(OK).await?;
                     stream.flush().await?;
                     if let Some(device) = device {
@@ -94,7 +102,8 @@ async fn relay(mut ch: Channel, allowed: &Policy, device: Option<&Device>) -> io
                 let outbound = async {
                     loop {
                         let packet = r.recv().await?;
-                        if let Some(device) = device {
+                        // An empty datagram costs nothing; charge(0) would query the registry.
+                        if let Some(device) = device.filter(|_| !packet.is_empty()) {
                             device.charge(packet.len()).await?;
                         }
                         socket.send(&packet).await?;
@@ -107,7 +116,7 @@ async fn relay(mut ch: Channel, allowed: &Policy, device: Option<&Device>) -> io
                     loop {
                         let n = socket.recv(&mut buf).await?;
                         if n <= MAX_PACKET {
-                            if let Some(device) = device {
+                            if let Some(device) = device.filter(|_| n > 0) {
                                 device.charge(n).await?;
                             }
                             w.send(&buf[..n]).await?;
@@ -133,7 +142,13 @@ async fn session(ch: Channel, allowed: &Policy, registry: Option<&Registry>) -> 
             .ok_or(io::ErrorKind::PermissionDenied)?;
         let device = registry.device(cert.as_ref());
         device.charge(0).await?;
-        tokio::select! { r = device.until_revoked() => r, r = relay(ch, allowed, Some(&device)) => r }
+        let relayed = relay(ch, allowed, Some(&device));
+        tokio::pin!(relayed);
+        let result = tokio::select! { r = device.until_revoked() => r, r = &mut relayed => r };
+        // Return the unused byte lease before the channel closes, so the owner sees settled
+        // usage as soon as the peer observes the end of the session.
+        device.settle().await;
+        result
     } else {
         relay(ch, allowed, None).await
     }
@@ -170,8 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let tcp = TcpListener::bind(addr).await?;
     let endpoint = tls.endpoint(tcp.local_addr()?)?;
-    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let flows = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let slots = Arc::new(Semaphore::new(MAX_SESSIONS));
+    let flows = Arc::new(Semaphore::new(MAX_FLOWS));
     println!("READY {}", tcp.local_addr()?);
     loop {
         let permit = slots.clone().acquire_owned().await?;
@@ -183,7 +198,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_millis(10)).await;
         tokio::select! {
             res=tcp.accept()=> {
-                let (socket,_) = res?;
+                // Aborted handshakes and descriptor exhaustion are transient. Returning here
+                // would end every active session on the node.
+                let socket = match res {
+                    Ok((socket, _)) => socket,
+                    Err(error) => {
+                        eprintln!("accept failed: {error}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
+                let _ = socket.set_nodelay(true);
                 tokio::spawn(async move {let _permit=permit;
                     if let Ok(Ok(ch))=timeout(SETUP,tls.tcp(socket)).await {
                         if let Ok(_flow) = flows.try_acquire() { let _=timeout(LIFETIME,session(ch,&allowed,registry.as_ref())).await; }

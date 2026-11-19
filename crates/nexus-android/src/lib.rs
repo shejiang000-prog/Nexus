@@ -138,10 +138,25 @@ async fn serve(
                 }
             }
         };
+        // One lost probe on a weak link must not reset every active flow. Recover only after
+        // two consecutive failures; a real outage is still detected within about a minute.
         let health = async {
+            let mut missed = 0;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                drop(open(&connector, &Mode::Auto, flow, probe).await?);
+                tokio::time::sleep(std::time::Duration::from_secs(if missed == 0 {
+                    30
+                } else {
+                    5
+                }))
+                .await;
+                match open(&connector, &Mode::Auto, flow, probe).await {
+                    Ok(channel) => {
+                        drop(channel);
+                        missed = 0;
+                    }
+                    Err(error) if missed >= 1 => return Err::<(), io::Error>(error),
+                    Err(_) => missed += 1,
+                }
             }
         };
         return tokio::select! { result = forward => result, result = health => result, result = metrics => result };

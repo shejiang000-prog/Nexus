@@ -66,7 +66,7 @@ def test(binaries):
             def denied(port):
                 try:
                     assert exchange(port,b"denied")==b""
-                except ConnectionResetError:
+                except (ConnectionResetError, ConnectionAbortedError):
                     pass
             with forward("friend") as guest, forward("owner") as own:
                 payload = secrets.token_bytes(64)

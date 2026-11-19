@@ -21,6 +21,26 @@ const DATAGRAM: &[u8] = b"nexus/udp1";
 pub const SETUP: Duration = Duration::from_secs(8);
 pub const LIFETIME: Duration = Duration::from_secs(3600);
 pub const MAX_CONNECTIONS: usize = 64;
+/// Concurrent multiplexed flows a peer may open on one QUIC connection.
+pub const MAX_STREAMS: u32 = 256;
+// A stream window bounds one flow to window/RTT. 2 MiB keeps a single download above
+// 80 Mbit/s at 200 ms RTT; the connection window caps the aggregate buffered per peer.
+const STREAM_WINDOW: u32 = 2 * 1024 * 1024;
+const CONNECTION_WINDOW: u32 = 16 * 1024 * 1024;
+
+/// Shared QUIC tuning. BBR keeps throughput on lossy long-distance paths where loss-based
+/// Cubic collapses, which is the main weak-network case for a private node.
+fn tuned_transport() -> quinn::TransportConfig {
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .stream_receive_window(STREAM_WINDOW.into())
+        .receive_window(CONNECTION_WINDOW.into())
+        .send_window(u64::from(CONNECTION_WINDOW))
+        .datagram_receive_buffer_size(Some(512 * 1024))
+        .datagram_send_buffer_size(512 * 1024)
+        .congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    transport
+}
 
 pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
@@ -182,14 +202,10 @@ impl ServerTls {
         tls.alpn_protocols = vec![MULTIPLEX.to_vec(), DATAGRAM.to_vec(), ALPN.to_vec()];
         let crypto = QuicServerConfig::try_from(tls).map_err(err)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        let mut limits = quinn::TransportConfig::default();
+        let mut limits = tuned_transport();
         limits
-            .max_concurrent_bidi_streams(32u32.into())
-            .max_concurrent_uni_streams(0u32.into())
-            .stream_receive_window(65536u32.into())
-            .receive_window(1048576u32.into())
-            .datagram_receive_buffer_size(Some(65536))
-            .datagram_send_buffer_size(65536);
+            .max_concurrent_bidi_streams(MAX_STREAMS.into())
+            .max_concurrent_uni_streams(0u32.into());
         config.transport_config(Arc::new(limits));
         Endpoint::server(config, addr)
     }
@@ -376,11 +392,12 @@ impl Connector {
         tls.alpn_protocols = vec![protocol.to_vec(), ALPN.to_vec()];
         let mut cfg =
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls).map_err(err)?));
-        let mut transport = quinn::TransportConfig::default();
+        let mut transport = tuned_transport();
         transport
             .keep_alive_interval(Some(Duration::from_secs(10)))
-            .datagram_receive_buffer_size(Some(65536))
-            .datagram_send_buffer_size(65536);
+            // The server never opens streams towards the client.
+            .max_concurrent_bidi_streams(0u32.into())
+            .max_concurrent_uni_streams(0u32.into());
         cfg.transport_config(Arc::new(transport));
         endpoint
             .connect_with(cfg, self.server, &self.name.to_str())

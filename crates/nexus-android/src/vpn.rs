@@ -24,6 +24,15 @@ type UdpFlow = (SocketAddr, SocketAddr);
 
 type TcpFlow = (SocketAddr, SocketAddr);
 
+// Browsers keep many idle keep-alive connections open. A low cap silently drops new SYNs
+// and shows up as pages that never load. Both caps stay below the server's per-connection
+// stream limit (nexus_transport::MAX_STREAMS).
+const MAX_TCP_FLOWS: usize = 192;
+const MAX_UDP_FLOWS: usize = 64;
+// DNS uses a fresh source port per query; release those associations quickly.
+const DNS_IDLE: Duration = Duration::from_secs(10);
+const UDP_IDLE: Duration = Duration::from_secs(60);
+
 fn initial_syn(bytes: &[u8]) -> Option<(TcpFlow, u32)> {
     let packet = SlicedPacket::from_ip(bytes).ok()?;
     let Some(TransportSlice::Tcp(tcp)) = packet.transport else {
@@ -86,6 +95,11 @@ async fn udp_flow(
 ) -> io::Result<()> {
     let channel = nexus_client::open(&connector, &Mode::Auto, Flow::Udp, remote).await?;
     let (mut reader, mut writer) = channel.packets();
+    let idle = if remote.port() == 53 {
+        DNS_IDLE
+    } else {
+        UDP_IDLE
+    };
     loop {
         tokio::select! {
             reply = reader.recv() => {
@@ -95,7 +109,7 @@ async fn udp_flow(
                 let Some(payload) = payload else { return Ok(()) };
                 timeout(SETUP, writer.send(&payload)).await??;
             }
-            _ = tokio::time::sleep(Duration::from_secs(60)) => return Ok(()),
+            _ = tokio::time::sleep(idle) => return Ok(()),
         }
     }
 }
@@ -114,8 +128,8 @@ async fn udp_flows(
                 let (payload, local, remote) = packet.ok_or(io::ErrorKind::BrokenPipe)?;
                 if payload.len() > MAX_PACKET { continue }
                 let key = (local, remote);
-                if !sessions.contains_key(&key) && sessions.len() < 32 {
-                    let (tx, rx) = mpsc::channel(16);
+                if !sessions.contains_key(&key) && sessions.len() < MAX_UDP_FLOWS {
+                    let (tx, rx) = mpsc::channel(64);
                     sessions.insert(key, tx);
                     let connector = connector.clone();
                     let replies = replies.clone();
@@ -164,7 +178,7 @@ pub(super) async fn forward(
                     if size == 0 { return Err(io::ErrorKind::UnexpectedEof.into()); }
                     let packet = buf[..size].to_vec();
                     let Some((key, ack)) = initial_syn(&packet) else { sink.send(packet).await?; continue };
-                    if sessions.contains_key(&key) || sessions.len() >= 32 { continue; }
+                    if sessions.contains_key(&key) || sessions.len() >= MAX_TCP_FLOWS { continue; }
                     let destination = if let Some(alias) = route {
                         if key.1 != SocketAddr::new(alias, target.port()) { continue; }
                         target

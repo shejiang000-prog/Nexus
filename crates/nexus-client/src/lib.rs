@@ -9,7 +9,11 @@ pub async fn open(
     flow: Flow,
     target: SocketAddr,
 ) -> io::Result<Channel> {
-    let mut ch = connector.connect(mode, flow == Flow::Udp).await?;
+    // DNS is a short request/response exchange. Carrying it as a framed stream on the pooled,
+    // already authenticated connection avoids a full QUIC handshake and device signature per
+    // lookup. Other UDP keeps its own connection so QUIC DATAGRAM avoids head-of-line delay.
+    let dedicated = flow == Flow::Udp && target.port() != 53;
+    let mut ch = connector.connect(mode, dedicated).await?;
     timeout(SETUP, async {
         write_open(&mut ch.stream, flow, target).await?;
         match ch.stream.read_u8().await? {
