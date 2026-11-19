@@ -34,3 +34,11 @@
 按前一篇交接的环境运行三个 Debug 构建目标和默认、formats、refresh 回归。CatalogCheck 新增 `probe-batch`（使用 `-e source` 选择已导入来源）、`probe-vpn` 和 `probe-lab`。分别运行原 `tools/verify_compat_interop.py` 命令及其 `--probe` 变体；脚本创建一次性对端，结束后删除 fixture。
 
 未等待一小时或 24 小时自然过期。VPN 按钮实屏检查使用订阅 VPN，未单独启动私人 VPN 或第三方 VPN 验收。未操作真机、发布环境或远端分支。Rust、协议、TunnelService、依赖和 Manifest 均无改动。Codex Security 差异扫描预检未识别该工作树，返回 `Review changes requires a non-bare Git worktree with a resolvable HEAD.`，未生成扫描报告。
+
+## 审查与修正（Claude）
+
+在雷电上重跑（复测前确认没有 singbox_tun 路由）：三个 APK 构建；默认 CatalogCheck、formats、refresh 返回 -1；`verify_compat_interop.py` 16 项回执通过，`--probe` 输出 `16 / 16 passed, peak 8, 3740 ms` 和资源回收通过；`probe-batch -e source Airport-Test` 输出 `37 / 41 passed, peak 8, 21413 ms`，失败名单与之前一致；`probe-vpn` 通过，结束后无 TUN。从界面按钮实际运行一次：进度显示「已测 31 / 41」，节点行逐个出现「真连 … ms」，总览为「支持 41 / 41 个节点 · 真连通过 36」。马来西亚-高速这次超时，本轮审查中该节点在 probe-source 也超时过一次，随后官方 Xray CLI 与重测均通过，属节点间歇性问题。
+
+修正一处：界面原本每收到一个节点结果，就为全部节点重新读取 NodeQuality（每节点 4 个拼接键），2048 个节点的订阅一次测试约在主线程拼接一千六百万个字符串。现在已存结果按列表和网络只读一次，测试中只合并刚完成的节点。
+
+已确认无问题：VPN 会话整段持有引擎锁，真连无法与 VPN 并发；VPN 启动时 150 ms 内中止批次并释放引擎；ReentrantLock 在同一线程加解锁；超时或取消会关闭套接字，阻塞读取随之结束；测试监听端口只在本次批次有效并使用临时凭据；实验室临时 CA 只用于 instrumentation。

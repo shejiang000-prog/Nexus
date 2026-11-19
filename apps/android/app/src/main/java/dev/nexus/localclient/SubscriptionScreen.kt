@@ -95,7 +95,6 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     var probeJob by remember { mutableStateOf<Job?>(null) }
     var tested by remember { mutableIntStateOf(0) }
     var total by remember { mutableIntStateOf(0) }
-    var probeRevision by remember { mutableIntStateOf(0) }
     var chosen by remember { mutableStateOf<NodeRow?>(null) }
     var dns by remember { mutableStateOf("1.1.1.1") }
     var smart by remember { mutableStateOf(false) }
@@ -119,9 +118,13 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
         onDispose { connectivity.unregisterNetworkCallback(callback) }
     }
     val quality = remember(tunnel.physical,physical) { NodeQuality(context, tunnel.physical ?: physical) }
-    val metrics = remember(allRows,quality,probeRevision) { allRows.mapNotNull { row ->
+    // Stored results load once per list and network; a running batch adds only the node that just
+    // finished, so large subscriptions do not reread every node on the main thread per result.
+    val stored = remember(allRows,quality) { allRows.mapNotNull { row ->
         quality.lastProbe(row.favorite)?.let { row.favorite to it }
     }.toMap() }
+    var live by remember(quality) { mutableStateOf(emptyMap<String,ProbeResult>()) }
+    val metrics = remember(stored,live) { if (live.isEmpty()) stored else stored + live }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(60000) } }
     var speedResult by remember(tunnel.connectedAt) { mutableStateOf("") }
@@ -206,8 +209,8 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
         errorMessage = ""
         probeJob = scope.launch {
             try {
-                NodeProbe.run(context,batch) { _,_ ->
-                    scope.launch(Dispatchers.Main.immediate) { tested++; probeRevision++ }
+                NodeProbe.run(context,batch) { row,value ->
+                    scope.launch(Dispatchers.Main.immediate) { tested++; live = live + (row.favorite to value) }
                 }
                 message = "已测 $tested / $total"
             } catch (e: kotlinx.coroutines.CancellationException) { message = "测试已停止"; throw e }
