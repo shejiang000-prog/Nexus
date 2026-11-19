@@ -48,6 +48,64 @@ class CatalogCheck : Instrumentation() {
             finish(code,result)
         }
     }
+    private fun checkRefresh(result: Bundle) {
+        val ctx = targetContext
+        var fail = false
+        var downloads = 0
+        val store = Subscriptions(ctx) {
+            downloads++
+            if (fail) throw java.io.IOException()
+            FormatSamples.clash to "download=20;total=100"
+        }
+        val prefix = "Nexus-QA-" + UUID.randomUUID().toString().take(8)
+        val home = startActivitySync(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        var started = false
+        fun waitVpn(active: Boolean) = runBlocking {
+            withTimeout(12000) { TunnelService.state.first { it.vpn == active } }
+        }
+        try {
+            check(!TunnelService.state.value.active && android.net.VpnService.prepare(ctx) == null)
+            for (suffix in listOf("A","B")) store.import("$prefix-$suffix","https://fixture.test/sub")
+            fun fixtures() = store.all().filter { it.label.startsWith(prefix) }
+            val sources = fixtures()
+            val first = sources.first()
+            val due = sources.maxOf { it.updated } + 12*3600000L
+            val key = nodeKey(first.id,first.nodes.getJSONObject(0))
+            SubscriptionRefresh.updateDue(store,sources,due-3600000)
+            check(downloads == 2)
+            fail = true
+            SubscriptionRefresh.updateDue(store,listOf(first),due)
+            check(store.get(first.id).json().toString() == first.json().toString())
+            check(store.appearance.getString("error/"+first.id,null) == "网络请求失败")
+            SubscriptionRefresh.updateDue(store,listOf(first),due+60000)
+            check(downloads == 3)
+            fail = false
+            val retry = due+15*60000
+            SubscriptionRefresh.updateDue(store,listOf(first),retry)
+            val updated = store.get(first.id)
+            check(updated.updated > first.updated && nodeKey(updated.id,updated.nodes.getJSONObject(0)) == key)
+            val backup = sources.last()
+            val refs = JSONArray().put(JSONObject().put("source",backup.id).put("index",0).put("updated",backup.updated))
+            val request = subscriptionRequest(ctx,NodeRow(updated,0,updated.nodes.getJSONObject(0)),emptyList(),"1.1.1.1",false)
+                .putExtra("alternates",refs.toString())
+            ctx.startForegroundService(request)
+            started = true
+            waitVpn(true)
+            SubscriptionRefresh.updateDue(store,fixtures(),retry+86400000)
+            check(downloads == 4 && store.get(backup.id).updated == backup.updated)
+            ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+            waitVpn(false)
+            started = false
+            SubscriptionRefresh.updateDue(store,fixtures(),retry+86400000)
+            check(downloads == 6)
+            result.putString("refresh","failure preserved snapshot; backoff, id, nodeKey, VPN primary/backup skip and disconnect catch-up passed")
+        } finally {
+            if (started) ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+            store.all().filter { it.label.startsWith(prefix) }.forEach { store.remove(it.id) }
+            runOnMainSync { home.finish() }
+        }
+    }
+
     private fun checkFailover(result: Bundle) {
         val ctx = targetContext
         val good = requireNotNull(Profile.load(ctx))
@@ -272,7 +330,27 @@ class CatalogCheck : Instrumentation() {
                     }
                 }
                 "failover" -> checkFailover(result)
-                "formats" -> checkFormats(result)
+                "formats" -> {
+                    checkFormats(result)
+                    fun names(vararg names: String) = JSONArray().apply { names.forEach { put(JSONObject().put("name",it)) } }
+                    val meta = names("剩余流量：123.45 GB","套餐到期：2026-12-31","距离下次重置剩余：12 天")
+                    check((0 until meta.length()).all { CompatEngine.problem(meta.getJSONObject(it)) == "信息" })
+                    val parsed = Usage.parse("",meta)
+                    check(parsed.remaining == (123.45*1073741824).toLong() && parsed.total == null && parsed.used == null)
+                    check(parsed.expires == java.time.LocalDate.of(2026,12,31).atStartOfDay(java.time.ZoneId.systemDefault()).toEpochSecond())
+                    check(Usage.parse("total=100;download=25",meta).remaining == 75L)
+                    check(listOf("节点 剩余流量：1 GB","套餐到期：2026-02-31","距离下次重置剩余：12 天 US").none(Usage::isInfo))
+                    result.putString("usage","3 metadata formats, strict negatives and header precedence passed")
+                }
+                "refresh" -> checkRefresh(result)
+                "refresh-source" -> {
+                    val store = Subscriptions(targetContext)
+                    val source = store.all().single { it.label == args.getString("source") }
+                    check(SubscriptionRefresh.refresh(store,source,force=true))
+                    val updated = store.get(source.id)
+                    check(updated.updated > source.updated && updated.nodes.length() > 0)
+                    result.putString("refresh", "${updated.nodes.length()} nodes; ${updated.allowance.traffic()}")
+                }
                 "probe-source" -> probeSource(result)
                 "remove-formats" -> {
                     val store = Subscriptions(targetContext)

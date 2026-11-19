@@ -38,6 +38,7 @@ object CompatEngine {
 
     /** Converts a subscription node into one Xray outbound, or throws [UnsupportedNode] with a reason. */
     fun outbound(node: JSONObject): JSONObject = try {
+        if (Usage.isInfo(node.optString("name"))) throw UnsupportedNode("信息")
         convert(node)
     } catch (e: UnsupportedNode) {
         throw e

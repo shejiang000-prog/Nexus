@@ -43,18 +43,6 @@ internal fun bytes(n: Long): String = when {
     else -> String.format(java.util.Locale.ROOT, "%.0f MB", n / 1048576.0)
 }
 
-internal fun Subscription.hasAllowance(): Boolean {
-    val usage = usage.split(';').mapNotNull { field ->
-        val parts = field.trim().split('=',limit=2)
-        val amount = parts.getOrNull(1)?.toLongOrNull()?.takeIf { it >= 0 } ?: return@mapNotNull null
-        parts[0] to amount
-    }.toMap()
-    val expires = usage["expire"] ?: 0
-    val quota = usage["total"] ?: 0
-    return (expires == 0L || expires > System.currentTimeMillis()/1000) &&
-        (quota == 0L || (usage["download"] ?: 0) < quota - (usage["upload"] ?: 0))
-}
-
 private fun rankedNodes(context: android.content.Context, rows: List<NodeRow>): List<NodeRow> {
     val store = Subscriptions(context)
     val quality = NodeQuality(context, context.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
@@ -110,7 +98,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     var smart by remember { mutableStateOf(false) }
     val allRows = remember(sources) { sources.flatMap { s -> (0 until s.nodes.length()).map { NodeRow(s,it,s.nodes.getJSONObject(it)) } } }
     // Reasons a node cannot be used, keyed by NodeRow.favorite. Conversion runs off the main thread.
-    var problems by remember { mutableStateOf<Map<String,String>?>(null) }
+    var problems by remember(allRows) { mutableStateOf<Map<String,String>?>(null) }
     LaunchedEffect(allRows) {
         problems = withContext(Dispatchers.Default) {
             allRows.mapNotNull { row -> CompatEngine.problem(row.node)?.let { row.favorite to it } }.toMap()
@@ -142,7 +130,8 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             finally { busy = false }
         }
     }
-    LaunchedEffect(Unit) { update {} }
+    val revision by SubscriptionRefresh.revision.collectAsState()
+    LaunchedEffect(revision) { sources = withContext(Dispatchers.IO) { store.all() } }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
             adding = false
@@ -197,7 +186,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
         scope.launch {
             try {
                 val results = mutableMapOf<String,Long>()
-                val tcp = visible.filter { it.type !in setOf("hy2","hysteria2","tuic") }
+                val tcp = visible.filter { !Usage.isInfo(it.node.optString("name")) && it.type !in setOf("hy2","hysteria2","tuic") }
                 for (batch in tcp.chunked(6)) {
                     val values = coroutineScope { batch.map { row -> async(Dispatchers.IO) {
                         val time = runCatching {
@@ -248,6 +237,9 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             }
             if (sources.isEmpty() && !busy) Text("添加订阅后，可以按来源查看节点。")
         }
+        if (sources.isNotEmpty()) item {
+            SubscriptionOverview(sources, allRows, problems, store)
+        }
         items(sources, key = { it.id }) { source ->
             Column {
                 var folded by remember { mutableStateOf(store.appearance.getBoolean("fold/"+source.id,false)) }
@@ -271,19 +263,12 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                 Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
                     " · ${DateFormat.getDateTimeInstance().format(Date(source.updated))}",
                     style = MaterialTheme.typography.bodySmall)
-                val fields = source.usage.split(';').mapNotNull { field ->
-                    field.substringAfter('=', "").toLongOrNull()?.takeIf { it >= 0 }?.let { field.substringBefore('=').trim() to it }
-                }.toMap()
-                val used = (fields["upload"] ?: 0) + (fields["download"] ?: 0)
-                val total = fields["total"]?.takeIf { it > 0 }
-                val usage = listOfNotNull(
-                    if (total != null) "已用 ${bytes(used)} / ${bytes(total)} · 剩余 ${bytes((total - used).coerceAtLeast(0))}"
-                        else if (fields.containsKey("upload") || fields.containsKey("download")) "已用 ${bytes(used)}" else null,
-                    fields["expire"]?.takeIf { it in 1..253402300799 }?.let { "到期 " + DateFormat.getDateInstance().format(Date(it * 1000)) })
-                Text(usage.takeIf { it.isNotEmpty() }?.joinToString(" · ") ?: "流量与到期时间未提供", style = MaterialTheme.typography.bodySmall)
+                Text(listOfNotNull(source.allowance.traffic(), source.allowance.expires?.let {
+                    "到期 " + DateFormat.getDateInstance().format(Date(it * 1000))
+                }).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                 Row {
-                    if (source.url.isNotEmpty()) TextButton(enabled = !busy,
-                        onClick = { update { store.import(source.label, source.url, source) } }) { Text("更新") }
+                    if (source.url.isNotEmpty()) TextButton(enabled = !busy && synchronized(SubscriptionRefresh) { source.id !in SubscriptionRefresh.protectedSources },
+                        onClick = { update { SubscriptionRefresh.refresh(store, source, force = true) } }) { Text("更新") }
                     TextButton(enabled = !busy, onClick = { deleting = source }) { Text("删除") }
                     TextButton(enabled = !busy, onClick = { exporting = source; exportConsent = true }) { Text("导出") }
                 }
@@ -336,7 +321,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             ListItem(headlineContent = { TextButton(onClick = { detail = row }) { Text(row.node.getString("name")) } },
                 supportingContent = { Column {
                     Text("${type.uppercase()} · ${row.source.label}")
-                    if (problem != null) Text("无法使用：$problem", color = MaterialTheme.colorScheme.error,
+                    if (problem != null) Text(if (problem == "信息") "信息" else "无法使用：$problem", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 } },
                 trailingContent = { Row {
@@ -344,7 +329,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                         favorites = if (row.favorite in favorites) favorites - row.favorite else favorites + row.favorite
                         prefs.edit().putStringSet("items",favorites).apply()
                     }) { Text(if (row.favorite in favorites) "已收藏" else "收藏") }
-                    TextButton(enabled = !tunnel.active && type in CompatEngine.types && problem == null, onClick = {
+                    TextButton(enabled = !tunnel.active && type in CompatEngine.types && problems != null && problem == null, onClick = {
                         if (context.getSharedPreferences("local",0).contains("pinned")) message = "请先解除固定出口"
                         else { smart=false; chosen = row }
                     }) { Text(if (type in CompatEngine.types && problem == null) "连接" else "仅导入") }
@@ -378,6 +363,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             update { store.import(name, data) }; adding = false; input = ""
         }) { Text("导入") } }, dismissButton = { TextButton(onClick = { adding = false; input = "" }) { Text("取消") } })
     editSource?.let { source ->
+        var interval by remember(source.id) { mutableIntStateOf(store.interval(source)) }
         var mark by remember(source.id) { mutableStateOf(store.appearance.getString("mark/"+source.id,"").orEmpty()) }
         var color by remember(source.id) { mutableStateOf(store.appearance.getInt("color/"+source.id,0)) }
         var pin by remember(source.id) { mutableStateOf(store.appearance.getBoolean("pin/"+source.id,false)) }
@@ -388,13 +374,24 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                 FilterChip(selected=color==idx,onClick={color=idx},label={Text(label)}) } }
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) { Checkbox(pin,{pin=it}); Text("置顶") }
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) { Checkbox(auto,{auto=it}); Text("参与自动选择") }
+            if (source.url.isEmpty()) Text("本地来源无法自动更新") else {
+                var expanded by remember { mutableStateOf(false) }
+                Box {
+                    fun caption(hours: Int) = if (hours == 0) "关闭" else "$hours 小时"
+                    TextButton(onClick = { expanded=true }) { Text("自动更新 · "+caption(interval)) }
+                    DropdownMenu(expanded, { expanded=false }) {
+                        listOf(0,6,12,24).forEach { hours -> DropdownMenuItem(text={ Text(caption(hours)) },
+                            onClick={ interval=hours; expanded=false }) }
+                    }
+                }
+            }
             Row { for ((name,step) in listOf("上移" to -1,"下移" to 1)) TextButton(onClick={
                 update { store.move(sources,source.id,step) };editSource=null
             }) { Text(name) } }
         } },confirmButton = { TextButton(onClick = {
             val layout=store.appearance
             update { check(layout.edit().putString("mark/"+source.id,mark).putInt("color/"+source.id,color)
-                .putBoolean("pin/"+source.id,pin).putBoolean("auto/"+source.id,auto).commit()) }
+                .putInt("refresh/"+source.id,interval).putBoolean("pin/"+source.id,pin).putBoolean("auto/"+source.id,auto).commit()) }
             editSource=null
         }) { Text("保存") } })
     }

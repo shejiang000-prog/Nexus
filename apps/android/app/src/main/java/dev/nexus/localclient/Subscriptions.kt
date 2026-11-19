@@ -62,11 +62,13 @@ private fun decode64(s: String): String = runCatching { Base64.decode(s, Base64.
 
 data class Subscription(val id: String, val label: String, val url: String, val nodes: JSONArray,
                         val usage: String, val updated: Long) {
+    internal val allowance by lazy { Usage.parse(usage, nodes) }
     fun json() = JSONObject().put("label", label).put("url", url).put("nodes", nodes)
         .put("usage", usage).put("updated", updated)
 }
 
-class Subscriptions(context: Context) {
+class Subscriptions(context: Context, private val download: ((String) -> Pair<String,String>)? = null) {
+    internal fun interval(source: Subscription) = if (source.url.isEmpty()) 0 else appearance.getInt("refresh/"+source.id,12)
     private val prefs = context.getSharedPreferences("subscriptions", Context.MODE_PRIVATE)
     internal val appearance = context.getSharedPreferences("subscription-layout",Context.MODE_PRIVATE)
     private val resolver = context.contentResolver
@@ -111,10 +113,10 @@ class Subscriptions(context: Context) {
         check(edit.commit())
     }
 
-    fun remove(id: String) {
+    fun remove(id: String) = synchronized(SubscriptionRefresh) {
         check(prefs.edit().remove(id).commit())
         val edit = appearance.edit()
-        for (field in listOf("pin/","order/","fold/","mark/","color/","auto/")) edit.remove(field+id)
+        for (field in listOf("pin/","order/","fold/","mark/","color/","auto/","refresh/","attempt/","error/","failures/")) edit.remove(field+id)
         edit.apply()
     }
 
@@ -143,9 +145,16 @@ class Subscriptions(context: Context) {
         val source = input.trim()
         val url = if (!source.contains('\n') && source.startsWith("https://")) source else ""
         var usage = ""
-        val content = if (url.isEmpty()) source else fetch(url).let { (body, info) -> usage = info; body }
+        val content = if (url.isEmpty()) source else (download?.invoke(url) ?: fetch(url)).let { (body, info) -> usage = info; body }
         val nodes = parse(content)
-        save(Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage, System.currentTimeMillis()))
+        synchronized(SubscriptionRefresh) {
+            if (previous != null) {
+                check(previous.id !in SubscriptionRefresh.protectedSources)
+                check(get(previous.id).updated == previous.updated)
+            }
+            save(Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage,
+                maxOf(System.currentTimeMillis(), (previous?.updated ?: 0) + 1)))
+        }
     }
 
     /** Downloads a subscription. Providers commonly redirect to a CDN; only HTTPS hops are followed. */

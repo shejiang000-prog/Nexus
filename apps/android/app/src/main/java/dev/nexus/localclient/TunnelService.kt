@@ -71,14 +71,20 @@ class TunnelService : VpnService() {
             if (compat) {
                 check(!getSharedPreferences("local",0).contains("pinned"))
                 val index = intent!!.getIntExtra("index",-1)
+                val refs = intent.getStringExtra("alternates")?.let { org.json.JSONArray(it) }
+                require((refs?.length() ?: 0) <= 7)
+                synchronized(SubscriptionRefresh) {
+                    SubscriptionRefresh.protectedSources = buildSet {
+                        add(requireNotNull(intent.getStringExtra("source")))
+                        if (refs != null) for (i in 0 until refs.length()) add(refs.getJSONObject(i).getString("source"))
+                    }
+                }
                 val source = Subscriptions(this).get(requireNotNull(intent.getStringExtra("source")))
                 check(source.updated == intent.getLongExtra("updated",-1))
                 val node = source.nodes.getJSONObject(index)
                 val dns = requireNotNull(intent.getStringExtra("dns"))
                 require(dns.split('.').let { parts -> parts.size == 4 && parts.all { p -> p.toIntOrNull() in 0..255 && p == p.toIntOrNull().toString() } })
-                val refs = intent.getStringExtra("alternates")?.let { org.json.JSONArray(it) }
                 if (refs!=null) {
-                    require(refs.length()<=7)
                     for (i in 0 until refs.length()) alternates.addLast(refs.getJSONObject(i))
                     alternates.addLast(JSONObject().put("source",source.id).put("updated",source.updated).put("index",index))
                 }
@@ -332,6 +338,12 @@ class TunnelService : VpnService() {
         cancelWorker()
         tun?.close()
         tun = null
+        synchronized(SubscriptionRefresh) {
+            if (SubscriptionRefresh.protectedSources.isNotEmpty()) {
+                SubscriptionRefresh.protectedSources = emptySet()
+                SubscriptionRefresh.enqueue(this)
+            }
+        }
         if (state.value.active) state.value = TunnelState()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }

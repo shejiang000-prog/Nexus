@@ -46,6 +46,11 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         readInvitation(intent)
     }
+    override fun onResume() {
+        super.onResume()
+        SubscriptionRefresh.schedule(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState==null) readInvitation(intent)

@@ -10,6 +10,7 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 
 - [libXray v26.11.9](https://github.com/XTLS/libXray/tree/v26.11.9) 使用 MIT，其 Android 库内记录的 [Xray-core 676eaf66f8f0](https://github.com/XTLS/Xray-core/tree/676eaf66f8f0) 使用 MPL-2.0。APK 的 `assets/licenses/xray/` 包含两份上游许可和对应的源码地址。
 - [shoes v0.3.8](https://github.com/cfal/shoes/tree/v0.3.8) 使用 MIT，构建同时打包上游 LICENSE、THIRD_PARTY_NOTICES.md 及 licenses 目录。
+- AndroidX WorkManager（androidx.work:work-runtime-ktx 2.10.1）使用 Apache-2.0。
 - JSch 2.28.8 使用 BSD-3-Clause，SnakeYAML 2.6、ZXing Core 3.5.4 和 ZXing Android Embedded 4.3.0 使用 Apache-2.0。rusqlite 0.43 使用 MIT，SQLite 核心为公有领域。
 
 | 包 | 版本 | 上游许可 | 依赖树 |

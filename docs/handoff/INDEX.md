@@ -1,5 +1,9 @@
 # Nexus · Android 优先
 
+## 2026-11-20 Android 订阅刷新与总览
+
+[自动更新、VPN 来源保护、首页流量总览与雷电验证](2026-11-20-subscription-refresh.md)。
+
 ## 2026-11-19 订阅兼容性
 
 [问题清单、改动与复验命令](2026-11-19-subscription-compat.md)。Clash/mihomo 与 sing-box 的 VLESS REALITY、HTTPUpgrade、XHTTP、Hysteria2 混淆与端口跳跃、SS-2022 可用；不可用的节点在列表里写明原因并排除出自动选择。雷电上 25 项格式检查、16 个节点的实连回执，以及 VLESS、TUIC 全设备 VPN 验收通过。
