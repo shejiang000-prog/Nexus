@@ -34,9 +34,11 @@ def verify(serial, ld_shell=None, ld_index=0):
             time.sleep(0.25)
         raise RuntimeError("Nexus did not show " + " / ".join(labels))
 
-    before = wait_page("VPN 已连接")
-    full_device = any(s and s.startswith("全设备 VPN") for s in before)
-    address = "default" if full_device else next(s.rsplit(":", 1)[0] for s in before if s and s.count(":") == 1)
+    wait_page("已连接 · 网络受保护")
+    initial = shell("ip", "-o", "route", "show", "table", "all").splitlines()
+    routes = [line.split()[0] for line in initial if " dev tun" in line and not line.startswith(("local ", "broadcast "))]
+    full_device = "default" in routes
+    address = "default" if full_device else next(r for r in routes if r != "192.0.2.2")
     def check_route():
         routes = shell("ip", "-o", "route", "show", "table", "all").splitlines()
         assert any(line.startswith(address + " dev tun") for line in routes), "VPN route missing"
@@ -63,7 +65,7 @@ def verify(serial, ld_shell=None, ld_index=0):
             shell("svc", "wifi", "enable")
         finally:
             shell("svc", "data", "enable")
-    wait_page("VPN 已连接")
+    wait_page("已连接 · 网络受保护")
     check_route()
     print("Recovered: private node authenticated and VPN ready")
 

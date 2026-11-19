@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Nexus 连接</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+.nx{--bg:#0A0D11;--s1:#12171D;--s2:#1A2129;--line:#263039;--ink:#EEF2F6;--ink2:#A9B4BF;--ink3:#8592A0;--sig:#3EE6A3;--sigText:#3EE6A3;--onSig:#03140C;--sigSoft:rgba(62,230,163,.14);--glow:rgba(62,230,163,.20);--amber:#FFB547;--danger:#FF7A7A;--nav:rgba(10,13,17,.88);font-family:'Noto Sans SC',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.nx.light{--bg:#F3F5F8;--s1:#FFFFFF;--s2:#E9EDF1;--line:#D8DFE6;--ink:#0A0D11;--ink2:#47525E;--ink3:#5F6B78;--sig:#2BD394;--sigText:#0A7F55;--onSig:#03140C;--sigSoft:rgba(43,211,148,.18);--glow:rgba(43,211,148,.22);--amber:#9A5B00;--danger:#C42B2B;--nav:rgba(255,255,255,.92)}
+.num{font-family:'Space Grotesk',system-ui,sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+a{color:inherit;text-decoration:none}
+.press{transition:transform .2s cubic-bezier(.2,0,0,1)}
+.press:active{transform:scale(.96)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes spinr{to{transform:rotate(-360deg)}}
+@keyframes ripple{0%{transform:scale(.55);opacity:.6}100%{transform:scale(1.5);opacity:0}}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes blink{50%{opacity:.3}}
+.arc{transform-box:fill-box;transform-origin:center;fill:none;stroke-linecap:round;transition:stroke .45s cubic-bezier(.2,0,0,1)}
+.a1{animation:spin 14s linear infinite}
+.a2{animation:spinr 20s linear infinite}
+.a3{animation:spin 28s linear infinite}
+.ph-off .arc{stroke:var(--ink3);animation-play-state:paused}
+.ph-connecting .arc{stroke:var(--amber)}
+.ph-connecting .a1{animation-duration:1.1s}
+.ph-connecting .a2{animation-duration:1.6s}
+.ph-connecting .a3{animation-duration:2.3s}
+.ph-on .arc{stroke:var(--sig)}
+.core{transition:background-color .45s cubic-bezier(.2,0,0,1),color .45s,box-shadow .6s}
+.ph-off .core{background:var(--s2);color:var(--ink)}
+.ph-connecting .core{background:var(--s2);color:var(--amber)}
+.ph-on .core{background:var(--sig);color:var(--onSig);box-shadow:0 0 0 10px var(--sigSoft),0 20px 64px var(--glow);animation:breathe 3.2s ease-in-out infinite}
+.ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--sig);opacity:0;pointer-events:none}
+.ph-on .ring{animation:ripple 2.8s cubic-bezier(.05,.7,.1,1) infinite}
+.ph-on .ring.r2{animation-delay:1.4s}
+.glow{opacity:0;transition:opacity .8s}
+.ph-on .glow{opacity:1}
+.sdot{width:8px;height:8px;border-radius:50%;background:var(--ink3)}
+.ph-connecting .sdot{background:var(--amber);animation:blink 1s ease-in-out infinite}
+.ph-on .sdot{background:var(--sig)}
+.ph-on .stat{animation:rise .5s cubic-bezier(.05,.7,.1,1) both}
+.ph-on .stat.d2{animation-delay:.06s}
+.thumb{transition:transform .38s cubic-bezier(.2,0,0,1)}
+.thumb.right{transform:translateX(100%)}
+.seg{transition:color .3s;color:var(--ink2)}
+.seg.sel{color:var(--bg)}
+.headline{animation:rise .35s cubic-bezier(.05,.7,.1,1) both}
+</style>
+</helmet>
+<main class="nx {{themeClass}} ph-{{phase}}" style="position: relative; width: 390px; height: 844px; overflow: hidden; background: var(--bg); box-sizing: border-box">
+<div class="glow" aria-hidden="true" style="position: absolute; left: -60px; top: -40px; width: 510px; height: 520px; background: radial-gradient(circle at 50% 46%, var(--glow), transparent 58%); pointer-events: none"></div>
+
+<header style="position: relative; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 0 20px; height: 50px">
+<div style="display: flex; align-items: center; gap: 10px">
+<svg width="26" height="26" viewBox="0 0 40 40" aria-hidden="true"><path d="M0 34 L12 5.2 L21.2 5.2 L28.4 20.4 L34.8 5.2 L40 5.2 L28 34.8 L20.4 34.8 L12.8 18.8 L6.8 34 Z" fill="currentColor"></path></svg>
+<span class="num" style="font-size: 21px; font-weight: 700">Nexus</span>
+</div>
+<button class="press" aria-label="设置" style="width: 44px; height: 44px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: var(--ink2)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>
+</button>
+</header>
+
+<section style="position: relative; display: flex; justify-content: center; margin-top: 18px">
+<button class="press" onClick="{{toggle}}" aria-label="{{coreLabel}}" style="position: relative; width: 248px; height: 248px; border-radius: 50%">
+<div class="ring" aria-hidden="true"></div>
+<div class="ring r2" aria-hidden="true"></div>
+<svg width="248" height="248" viewBox="0 0 260 260" aria-hidden="true" style="position: absolute; inset: 0">
+<circle cx="130" cy="130" r="126" fill="none" stroke="var(--line)" stroke-width="1.5"></circle>
+<circle cx="130" cy="130" r="108" fill="none" stroke="var(--line)" stroke-width="1.5"></circle>
+<circle cx="130" cy="130" r="90" fill="none" stroke="var(--line)" stroke-width="1.5"></circle>
+<circle class="arc a1" cx="130" cy="130" r="126" stroke-width="3" stroke-dasharray="96 696"></circle>
+<circle class="arc a2" cx="130" cy="130" r="108" stroke-width="3" stroke-dasharray="54 625"></circle>
+<circle class="arc a3" cx="130" cy="130" r="90" stroke-width="3" stroke-dasharray="150 416"></circle>
+</svg>
+<div class="core" style="position: absolute; left: 58px; top: 58px; width: 132px; height: 132px; border-radius: 50%; display: flex; align-items: center; justify-content: center">
+<svg width="46" height="46" viewBox="0 0 40 40" aria-hidden="true"><path d="M0 34 L12 5.2 L21.2 5.2 L28.4 20.4 L34.8 5.2 L40 5.2 L28 34.8 L20.4 34.8 L12.8 18.8 L6.8 34 Z" fill="currentColor"></path></svg>
+</div>
+</button>
+</section>
+
+<section style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 18px; height: 86px">
+<div style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border-radius: 14px; background: var(--s1); border: 1px solid var(--line)">
+<span class="sdot"></span>
+<span style="font-size: 15px; font-weight: 500">{{statusText}}</span>
+</div>
+<sc-if value="{{isOn}}" hint-placeholder-val="{{ true }}">
+<div class="num" style="font-size: 46px; font-weight: 600; line-height: 52px">{{timer}}</div>
+</sc-if>
+<sc-if value="{{isIdle}}" hint-placeholder-val="{{ false }}">
+<div class="headline" style="font-size: 26px; font-weight: 600; line-height: 52px">点按圆环即可连接</div>
+</sc-if>
+<sc-if value="{{isBusy}}" hint-placeholder-val="{{ false }}">
+<div class="headline" style="font-size: 26px; font-weight: 600; line-height: 52px">正在连接…</div>
+</sc-if>
+</section>
+
+<a class="press" href="Nodes.dc.html" style="position: relative; display: flex; align-items: center; gap: 14px; margin: 22px 20px 0; padding: 14px 14px 14px 14px; height: 76px; box-sizing: border-box; border-radius: 20px; background: var(--s1); border: 1px solid var(--line)">
+<div class="num" style="width: 44px; height: 44px; border-radius: 14px; background: var(--s2); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700">HK</div>
+<div style="flex: 1; min-width: 0">
+<div style="font-size: 17px; font-weight: 600; line-height: 24px">香港 01</div>
+<div style="font-size: 14px; color: var(--ink2); line-height: 20px">我的机场 · 自动选最快</div>
+</div>
+<div style="display: flex; align-items: baseline; gap: 2px">
+<span class="num" style="font-size: 18px; font-weight: 600; color: var(--sigText)">42</span>
+<span style="font-size: 13px; color: var(--ink2)">ms</span>
+</div>
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+
+<section style="position: relative; margin: 14px 20px 0">
+<div role="radiogroup" aria-label="分流模式" style="position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 52px; padding: 4px; box-sizing: border-box; border-radius: 16px; background: var(--s2)">
+<div class="thumb {{thumbClass}}" aria-hidden="true" style="position: absolute; left: 4px; top: 4px; bottom: 4px; width: calc(50% - 4px); border-radius: 12px; background: var(--ink)"></div>
+<button class="seg {{bypassSel}}" role="radio" aria-checked="{{bypassOn}}" onClick="{{pickBypass}}" style="position: relative; font-size: 16px; font-weight: 600">绕过大陆</button>
+<button class="seg {{globalSel}}" role="radio" aria-checked="{{globalOn}}" onClick="{{pickGlobal}}" style="position: relative; font-size: 16px; font-weight: 600">全局代理</button>
+</div>
+<div style="margin-top: 8px; text-align: center; font-size: 14px; line-height: 20px; color: var(--ink2)">{{modeHint}}</div>
+</section>
+
+<section style="position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 20px 0">
+<div class="stat" style="padding: 12px 14px; border-radius: 18px; background: var(--s1); border: 1px solid var(--line)">
+<div style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink2)">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"></path></svg>下载</div>
+<div style="display: flex; align-items: baseline; gap: 4px; margin-top: 2px"><span class="num" style="font-size: 24px; font-weight: 600">{{down}}</span><span style="font-size: 13px; color: var(--ink2)">{{unit}}</span></div>
+<svg width="132" height="26" viewBox="0 0 132 26" aria-hidden="true" style="display: block; margin-top: 4px"><polyline points="{{downPts}}" fill="none" stroke="var(--sig)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
+</div>
+<div class="stat d2" style="padding: 12px 14px; border-radius: 18px; background: var(--s1); border: 1px solid var(--line)">
+<div style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink2)">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"></path></svg>上传</div>
+<div style="display: flex; align-items: baseline; gap: 4px; margin-top: 2px"><span class="num" style="font-size: 24px; font-weight: 600">{{up}}</span><span style="font-size: 13px; color: var(--ink2)">{{unit}}</span></div>
+<svg width="132" height="26" viewBox="0 0 132 26" aria-hidden="true" style="display: block; margin-top: 4px"><polyline points="{{upPts}}" fill="none" stroke="var(--ink3)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline></svg>
+</div>
+</section>
+
+<nav aria-label="主导航" style="position: absolute; left: 0; right: 0; bottom: 0; height: 80px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--nav); border-top: 1px solid var(--line); backdrop-filter: blur(16px)">
+<a href="Main.dc.html" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px">
+<span style="width: 60px; height: 32px; border-radius: 16px; background: var(--sigSoft); display: flex; align-items: center; justify-content: center; color: var(--sigText)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4.5"></circle><circle cx="12" cy="12" r="1" fill="currentColor"></circle></svg></span>
+<span style="font-size: 13px; font-weight: 600">连接</span></a>
+<a href="Nodes.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px; color: var(--ink2)">
+<span style="width: 60px; height: 32px; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"></path></svg></span>
+<span style="font-size: 13px; font-weight: 500">节点</span></a>
+<a href="Server.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px; color: var(--ink2)">
+<span style="width: 60px; height: 32px; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"></rect><rect x="4" y="13" width="16" height="7" rx="2"></rect><path d="M8 7.5h.01M8 16.5h.01"></path></svg></span>
+<span style="font-size: 13px; font-weight: 500">我的服务器</span></a>
+</nav>
+</main>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"phase":{"editor":"enum","options":["off","connecting","on"],"default":"on"},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = {}; }
+  componentDidMount() {
+    this._tick = setInterval(() => this.setState({ now: Date.now(), k: ((this.state && this.state.k) || 0) + 1 }), 1000);
+  }
+  componentDidUpdate(prev) {
+    if (prev.phase !== this.props.phase) this.setState({ phase: this.props.phase, since: Date.now() - 768000 });
+  }
+  componentWillUnmount() { clearInterval(this._tick); clearTimeout(this._wait); }
+  renderVals() {
+    const s = this.state || {};
+    const phase = s.phase || this.props.phase || 'on';
+    const bypass = s.bypass !== false;
+    const now = s.now || Date.now();
+    const since = s.since || (now - 768000);
+    const k = s.k || 0;
+    const sec = Math.max(0, Math.floor((now - since) / 1000));
+    const pad = (n) => String(n).padStart(2, '0');
+    const f = (i) => 9.6 + 3.8 * Math.sin(i * 0.55) + 2.1 * Math.sin(i * 1.7 + 1) + 1.2 * Math.sin(i * 3.1);
+    const g = (i) => 1.1 + 0.6 * Math.sin(i * 0.8 + 2) + 0.35 * Math.sin(i * 2.3);
+    const pts = (fn) => {
+      const v = []; for (let i = k - 23; i <= k; i++) v.push(fn(i));
+      const lo = Math.min(...v), hi = Math.max(...v);
+      return v.map((y, j) => (j * 132 / 23).toFixed(1) + ',' + (23 - (y - lo) / ((hi - lo) || 1) * 20).toFixed(1)).join(' ');
+    };
+    const on = phase === 'on';
+    const flat = '0,13 132,13';
+    return {
+      themeClass: (this.props.theme || 'dark') === 'light' ? 'light' : '',
+      phase,
+      isOn: on, isIdle: phase === 'off', isBusy: phase === 'connecting',
+      statusText: on ? '已连接 · 网络受保护' : phase === 'connecting' ? '正在建立加密连接' : '未连接',
+      coreLabel: on ? '断开连接' : phase === 'connecting' ? '取消连接' : '连接',
+      timer: pad(Math.floor(sec / 3600)) + ':' + pad(Math.floor(sec / 60) % 60) + ':' + pad(sec % 60),
+      down: on ? f(k).toFixed(1) : '—', up: on ? g(k).toFixed(1) : '—', unit: on ? 'MB/s' : '',
+      downPts: on ? pts(f) : flat, upPts: on ? pts(g) : flat,
+      thumbClass: bypass ? '' : 'right',
+      bypassSel: bypass ? 'sel' : '', globalSel: bypass ? '' : 'sel',
+      bypassOn: bypass ? 'true' : 'false', globalOn: bypass ? 'false' : 'true',
+      modeHint: bypass ? '国内网站直接访问，其余走加密通道' : '所有网站都走加密通道',
+      pickBypass: () => this.setState({ bypass: true }),
+      pickGlobal: () => this.setState({ bypass: false }),
+      toggle: () => {
+        clearTimeout(this._wait);
+        if (phase === 'off') {
+          this.setState({ phase: 'connecting' });
+          this._wait = setTimeout(() => this.setState({ phase: 'on', since: Date.now() }), 1900);
+        } else {
+          this.setState({ phase: 'off' });
+        }
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -4,6 +4,7 @@
 |---|---|
 | Rust 核心 | Rust 1.100.0，workspace Cargo.lock。Tokio、Quinn、rustls 和 tokio-rustls。关闭默认 TLS 提供器，仅启用 ring 与 TLS 1.3 |
 | Android | JDK 21、Java/Kotlin 字节码 17、Gradle 8.14.3（wrapper 校验 SHA-256）、AGP 8.13.0、Kotlin/Compose 编译器 2.2.20、Compose BOM 2025.12.01、Material3 1.4.0、Activity Compose 1.10.1、WorkManager work-runtime-ktx 2.10.1（订阅周期更新），minSdk 26、target/compileSdk 36 |
+| Android 数字字体 | Space Grotesk（google/fonts），OFL-1.1；随 APK 分发，中文使用系统字体 |
 | Android native | NDK 28.2.13676358、Rust arm64-v8a 与 x86_64、jni 0.21.1。Gradle 调用 tools/build_android.py 同步构建本次源码 |
 | Windows 工程 | Tauri 2、系统 WebView2、MSVC 与 Windows SDK，自有桌面 Cargo.lock。桌面 Debug 构建已验证 |
 | Linux | Debian 13 x86_64 WSL2，普通用户启动服务，Rust 原生二进制。其他发行版/架构须另验 |

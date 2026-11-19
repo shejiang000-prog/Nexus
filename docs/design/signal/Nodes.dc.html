@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Nexus 节点</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+.nx{--bg:#0A0D11;--s1:#12171D;--s2:#1A2129;--line:#263039;--ink:#EEF2F6;--ink2:#A9B4BF;--ink3:#8592A0;--sig:#3EE6A3;--sigText:#3EE6A3;--onSig:#03140C;--sigSoft:rgba(62,230,163,.14);--amber:#FFB547;--danger:#FF7A7A;--nav:rgba(10,13,17,.88);font-family:'Noto Sans SC',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.nx.light{--bg:#F3F5F8;--s1:#FFFFFF;--s2:#E9EDF1;--line:#D8DFE6;--ink:#0A0D11;--ink2:#47525E;--ink3:#5F6B78;--sig:#2BD394;--sigText:#0A7F55;--onSig:#03140C;--sigSoft:rgba(43,211,148,.18);--amber:#9A5B00;--danger:#C42B2B;--nav:rgba(255,255,255,.92)}
+.num{font-family:'Space Grotesk',system-ui,sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer;text-align:left;-webkit-tap-highlight-color:transparent}
+a{color:inherit;text-decoration:none}
+.press{transition:transform .2s cubic-bezier(.2,0,0,1),background-color .2s}
+.press:active{transform:scale(.97)}
+.scroll{scrollbar-width:none}
+.scroll::-webkit-scrollbar{display:none}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes pulse{50%{opacity:.25}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.row{animation:rise .42s cubic-bezier(.05,.7,.1,1) both}
+.row:active{background:var(--s2)}
+.lat.good{color:var(--sigText)}
+.lat.ok{color:var(--amber)}
+.lat.bad{color:var(--ink3)}
+.bars rect{fill:var(--line);transition:fill .3s}
+.bars.good rect{fill:var(--sig)}
+.bars.ok rect.b1,.bars.ok rect.b2{fill:var(--amber)}
+.testing .lat,.testing .bars{animation:pulse .9s ease-in-out infinite}
+.check{transform:scale(.4);opacity:0;transition:transform .32s cubic-bezier(.2,1.6,.4,1),opacity .2s}
+.check.on{transform:scale(1);opacity:1}
+.sw{transition:background-color .25s}
+.sw.on{background:var(--sig)}
+.knob{transition:transform .32s cubic-bezier(.2,1.4,.4,1),background-color .25s}
+.sw.on .knob{transform:translateX(20px);background:var(--onSig)}
+.autocard{transition:border-color .3s}
+.autocard.on{border-color:var(--sig)}
+.spinning{animation:spin .8s linear infinite}
+</style>
+</helmet>
+<main class="nx {{themeClass}} {{testingClass}}" style="position: relative; width: 390px; height: 844px; overflow: hidden; background: var(--bg)">
+<header style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 0 20px; height: 58px">
+<h1 style="margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.5px">节点</h1>
+<div style="display: flex; gap: 8px">
+<button class="press" onClick="{{test}}" aria-label="全部测速" style="width: 44px; height: 44px; border-radius: 14px; background: var(--s2); display: flex; align-items: center; justify-content: center; color: var(--ink)">
+<svg class="{{spinClass}}" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"></path><path d="M20 4v4.5h-4.5"></path></svg>
+</button>
+<button class="press" aria-label="添加订阅或服务器" style="width: 44px; height: 44px; border-radius: 14px; background: var(--s2); display: flex; align-items: center; justify-content: center; color: var(--ink)">
+<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+</button>
+</div>
+</header>
+
+<div class="scroll" style="position: absolute; top: 72px; left: 0; right: 0; bottom: 80px; overflow-y: auto; padding: 8px 20px 24px; box-sizing: border-box">
+
+<div class="autocard {{autoClass}}" style="display: flex; align-items: center; gap: 14px; padding: 14px 14px 14px 16px; border-radius: 20px; background: var(--s1); border: 1.5px solid var(--line)">
+<div style="width: 44px; height: 44px; border-radius: 14px; background: var(--sigSoft); color: var(--sigText); display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6L13 3z"></path></svg>
+</div>
+<div style="flex: 1; min-width: 0">
+<div style="font-size: 17px; font-weight: 600; line-height: 24px">自动选最快</div>
+<div style="font-size: 14px; color: var(--ink2); line-height: 20px">{{autoSub}}</div>
+</div>
+<button class="sw {{autoClass}}" role="switch" aria-checked="{{autoOn}}" aria-label="自动选最快" onClick="{{toggleAuto}}" style="position: relative; width: 52px; height: 32px; border-radius: 16px; background: var(--line); flex: none">
+<span class="knob" style="position: absolute; left: 4px; top: 4px; width: 24px; height: 24px; border-radius: 12px; background: var(--ink)"></span>
+</button>
+</div>
+
+<div style="display: flex; align-items: baseline; justify-content: space-between; margin: 24px 4px 10px">
+<h2 style="margin: 0; font-size: 17px; font-weight: 600">我的机场</h2>
+<span style="font-size: 13px; color: var(--ink2)">7 个节点 · 2 小时前更新</span>
+</div>
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); overflow: hidden">
+<sc-for list="{{nodes}}" as="n" hint-placeholder-count="7">
+<button class="row press" onClick="{{n.pick}}" aria-pressed="{{n.pressed}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 62px; padding: 0 14px; box-sizing: border-box; border-top: {{n.divider}}; animation-delay: {{n.delay}}">
+<span class="num" style="width: 38px; height: 38px; border-radius: 12px; background: var(--s2); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex: none">{{n.code}}</span>
+<span style="flex: 1; min-width: 0">
+<span style="display: block; font-size: 16px; font-weight: 600; line-height: 22px">{{n.name}}</span>
+<span style="display: block; font-size: 13px; color: var(--ink2); line-height: 18px">{{n.proto}}</span>
+</span>
+<svg class="bars {{n.level}}" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect class="b1" x="0" y="9" width="4" height="5" rx="1"></rect><rect class="b2" x="6" y="5" width="4" height="9" rx="1"></rect><rect class="b3" x="12" y="0" width="4" height="14" rx="1"></rect></svg>
+<span class="lat num {{n.level}}" style="width: 52px; text-align: right; font-size: 15px; font-weight: 600">{{n.lat}}</span>
+<span class="check {{n.checkClass}}" aria-hidden="true" style="width: 24px; height: 24px; border-radius: 12px; background: var(--sig); color: var(--onSig); display: flex; align-items: center; justify-content: center; flex: none">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+</span>
+</button>
+</sc-for>
+</div>
+
+<div style="display: flex; align-items: baseline; justify-content: space-between; margin: 24px 4px 10px">
+<h2 style="margin: 0; font-size: 17px; font-weight: 600">我的服务器</h2>
+<a href="Server.dc.html" style="font-size: 14px; font-weight: 600; color: var(--sigText); padding: 10px 0">管理</a>
+</div>
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); overflow: hidden">
+<button class="row press" onClick="{{pickOwn}}" aria-pressed="{{own.pressed}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 62px; padding: 0 14px; box-sizing: border-box; animation-delay: 240ms">
+<span class="num" style="width: 38px; height: 38px; border-radius: 12px; background: var(--sigSoft); color: var(--sigText); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex: none">SG</span>
+<span style="flex: 1; min-width: 0">
+<span style="display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; line-height: 22px">我的 VPS<span style="font-size: 12px; font-weight: 600; color: var(--sigText); border: 1px solid var(--sig); border-radius: 6px; padding: 0 5px; line-height: 18px">私人</span></span>
+<span style="display: block; font-size: 13px; color: var(--ink2); line-height: 18px">新加坡 · Nexus 加密协议</span>
+</span>
+<svg class="bars {{own.level}}" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect class="b1" x="0" y="9" width="4" height="5" rx="1"></rect><rect class="b2" x="6" y="5" width="4" height="9" rx="1"></rect><rect class="b3" x="12" y="0" width="4" height="14" rx="1"></rect></svg>
+<span class="lat num {{own.level}}" style="width: 52px; text-align: right; font-size: 15px; font-weight: 600">{{own.lat}}</span>
+<span class="check {{own.checkClass}}" aria-hidden="true" style="width: 24px; height: 24px; border-radius: 12px; background: var(--sig); color: var(--onSig); display: flex; align-items: center; justify-content: center; flex: none">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+</span>
+</button>
+</div>
+</div>
+
+<nav aria-label="主导航" style="position: absolute; left: 0; right: 0; bottom: 0; height: 80px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--nav); border-top: 1px solid var(--line); backdrop-filter: blur(16px)">
+<a href="Main.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px; color: var(--ink2)">
+<span style="width: 60px; height: 32px; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4.5"></circle><circle cx="12" cy="12" r="1" fill="currentColor"></circle></svg></span>
+<span style="font-size: 13px; font-weight: 500">连接</span></a>
+<a href="Nodes.dc.html" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px">
+<span style="width: 60px; height: 32px; border-radius: 16px; background: var(--sigSoft); display: flex; align-items: center; justify-content: center; color: var(--sigText)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"></path></svg></span>
+<span style="font-size: 13px; font-weight: 600">节点</span></a>
+<a href="Server.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 10px; color: var(--ink2)">
+<span style="width: 60px; height: 32px; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"></rect><rect x="4" y="13" width="16" height="7" rx="2"></rect><path d="M8 7.5h.01M8 16.5h.01"></path></svg></span>
+<span style="font-size: 13px; font-weight: 500">我的服务器</span></a>
+</nav>
+</main>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { auto: true, picked: 'JP', round: 0 }; }
+  componentWillUnmount() { clearTimeout(this._t); }
+  renderVals() {
+    const s = this.state;
+    const base = [
+      ['JP', '东京 03', 'Hysteria2', 86], ['HK', '香港 01', 'VLESS · Reality', 42], ['KR', '首尔 01', 'VLESS · Reality', 64],
+      ['SG', '新加坡 02', 'Trojan', 118], ['US', '洛杉矶 05', 'Hysteria2', 172], ['DE', '法兰克福 01', 'Shadowsocks', 248], ['TW', '台北 02', 'VLESS', null]
+    ];
+    const jitter = (ms, i) => ms == null ? null : Math.max(20, Math.round(ms + 9 * Math.sin(s.round * 2.3 + i)));
+    const level = (ms) => ms == null ? 'bad' : ms < 150 ? 'good' : ms < 300 ? 'ok' : 'bad';
+    const fastest = base.filter((b) => b[3] != null).sort((a, b) => a[3] - b[3])[0];
+    const current = s.auto ? fastest[0] : s.picked;
+    const nodes = base.map((b, i) => {
+      const ms = jitter(b[3], i);
+      const sel = current === b[0];
+      return {
+        code: b[0], name: b[1], proto: b[2], level: level(ms),
+        lat: ms == null ? '超时' : ms + ' ms',
+        checkClass: sel ? 'on' : '', pressed: sel ? 'true' : 'false',
+        divider: i ? '1px solid var(--line)' : '0', delay: (i * 30) + 'ms',
+        pick: () => this.setState({ picked: b[0], auto: false })
+      };
+    });
+    const ownMs = jitter(72, 9);
+    const fastName = base.find((b) => b[0] === fastest[0])[1];
+    return {
+      themeClass: (this.props.theme || 'dark') === 'light' ? 'light' : '',
+      testingClass: s.testing ? 'testing' : '', spinClass: s.testing ? 'spinning' : '',
+      autoClass: s.auto ? 'on' : '', autoOn: s.auto ? 'true' : 'false',
+      autoSub: s.auto ? '当前 ' + fastName + ' · 网络变化时自动切换' : '已关闭，正在使用你选的节点',
+      nodes,
+      own: { level: level(ownMs), lat: ownMs + ' ms', checkClass: current === 'OWN' ? 'on' : '', pressed: current === 'OWN' ? 'true' : 'false' },
+      pickOwn: () => this.setState({ picked: 'OWN', auto: false }),
+      toggleAuto: () => this.setState({ auto: !s.auto }),
+      test: () => {
+        if (s.testing) return;
+        this.setState({ testing: true });
+        this._t = setTimeout(() => this.setState({ testing: false, round: s.round + 1 }), 1500);
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

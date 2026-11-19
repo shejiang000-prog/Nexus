@@ -1,5 +1,7 @@
 # 第三方许可证清单
 
+Android 数字字体 Space Grotesk 依 SIL Open Font License 1.1 分发。版权与完整许可见 `assets/licenses/space-grotesk/OFL.txt`。[官方字体文件](https://github.com/google/fonts/tree/main/ofl/spacegrotesk)
+
 以下为两个 Cargo.lock 解析的注册包，包含构建依赖及非当前目标的条件分支。版本、SPDX 或上游许可文件来自对应 Cargo 包元数据。
 
 核心采用 Quinn（MIT/Apache-2.0）、Tokio（MIT）、rustls（多许可选择）、JNI（MIT/Apache-2.0）。ring 涵盖 ISC、Apache-2.0 与随附源码许可，发行时保留 LICENSE、LICENSE-BoringSSL、LICENSE-other-bits 及嵌入来源声明。PC WebView 使用平台运行时。

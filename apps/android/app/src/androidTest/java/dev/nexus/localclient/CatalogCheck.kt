@@ -204,6 +204,8 @@ class CatalogCheck : Instrumentation() {
      * https://example.com with normal certificate checks. Reports time per node; prints no credentials.
      */
     private fun checkProbeDisabled(result: Bundle) {
+        clickSplitLabel("节点")
+        clickSplitLabel("筛选与测速",true)
         fun nodes(n: android.view.accessibility.AccessibilityNodeInfo): Sequence<android.view.accessibility.AccessibilityNodeInfo> =
             sequence {
                 yield(n)
@@ -220,7 +222,7 @@ class CatalogCheck : Instrumentation() {
                 return
             }
             tree.firstOrNull()?.packageName?.let { seen.add(it.toString()) }
-            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加订阅","仅收藏","请先断开 VPN","测试筛选结果的真实连通","连接","收藏") }.forEach(seen::add)
+            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加节点","仅收藏","请先断开 VPN","测试筛选结果的真实连通","连接","收藏") }.forEach(seen::add)
             result.putString("seen",seen.joinToString())
             val metrics = targetContext.resources.displayMetrics
             val x = metrics.widthPixels / 2
@@ -350,6 +352,7 @@ class CatalogCheck : Instrumentation() {
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
                 "split-lab", "split-public" -> splitCheck(args,result)
                 "migration-crypto" -> {
                     val data = JSONObject().put("format","nexus-migration/1").put("probe",UUID.randomUUID().toString())
@@ -503,7 +506,7 @@ class CatalogCheck : Instrumentation() {
                 "deploy" -> {
                     val host = args.getString("host")!!
                     val manager = NodeManager(targetContext,host,args.getString("ssh")!!.toInt(),"root","",args.getString("pin")!!,privateKey.readBytes())
-                    val p = manager.deploy("Nexus QA",args.getString("dns")!!,28443,28444)
+                    val p = manager.deploy("Nexus QA",args.getString("dns")!!,args.getString("nodePort")?.toInt() ?: 28443,args.getString("claimPort")?.toInt() ?: 28444)
                     p.save(targetContext)
                     val rows = JSONArray(manager.owner("devices"))
                     check(rows.length()==1 && rows.getJSONObject(0).getInt("revoked")==0)
@@ -535,6 +538,10 @@ class CatalogCheck : Instrumentation() {
                     check(verifier.verify(Identity.sign(data,profile.signingAlias)))
                     check(Profile.load(targetContext)?.signingAlias==profile.signingAlias)
                     result.putString("rotation","new public key; existing profile still signs with its original non-exportable key")
+                    if(args.getString("restore")=="yes") {
+                        val alias=requireNotNull(Identity.owner(new));check(alias.startsWith("nexus-device-v1-"))
+                        java.security.KeyStore.getInstance("AndroidKeyStore").apply {load(null);deleteEntry(alias)}
+                    }
                 }
                 "packets" -> {
                     val p = requireNotNull(Profile.load(targetContext))

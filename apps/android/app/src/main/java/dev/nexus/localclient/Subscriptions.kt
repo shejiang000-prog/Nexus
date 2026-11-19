@@ -139,7 +139,7 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
         } finally { bitmap.recycle() }
     }
 
-    fun import(label: String, input: String, previous: Subscription? = null) {
+    fun import(label: String, input: String, previous: Subscription? = null): Subscription {
         require(label.isNotBlank() && label.length <= 64 && input.toByteArray().size <= MAX_BYTES)
         require(previous != null || prefs.all.size < 32)
         val source = input.trim()
@@ -152,8 +152,8 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
                 check(previous.id !in SubscriptionRefresh.protectedSources)
                 check(get(previous.id).updated == previous.updated)
             }
-            save(Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage,
-                maxOf(System.currentTimeMillis(), (previous?.updated ?: 0) + 1)))
+            return Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage,
+                maxOf(System.currentTimeMillis(), (previous?.updated ?: 0) + 1)).also(::save)
         }
     }
 

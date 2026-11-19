@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Nexus 设计规范</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+.nx{--bg:#0A0D11;--s1:#12171D;--s2:#1A2129;--line:#263039;--ink:#EEF2F6;--ink2:#A9B4BF;--ink3:#8592A0;--sig:#3EE6A3;--sigText:#3EE6A3;--onSig:#03140C;--sigSoft:rgba(62,230,163,.14);font-family:'Noto Sans SC',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.nx .light,.nx.light{--bg:#F3F5F8;--s1:#FFFFFF;--s2:#E9EDF1;--line:#D8DFE6;--ink:#0A0D11;--ink2:#47525E;--ink3:#5F6B78;--sig:#2BD394;--sigText:#0A7F55;--onSig:#03140C;--sigSoft:rgba(43,211,148,.18)}
+.num{font-family:'Space Grotesk',system-ui,sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.mono{font-family:'Space Grotesk',ui-monospace,monospace;font-size:13px}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+@keyframes move{from{transform:translateX(0)}to{transform:translateX(148px)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes ripple{0%{transform:scale(.55);opacity:.6}100%{transform:scale(1.5);opacity:0}}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+.dot{animation:move 1.6s infinite alternate}
+.spinDemo{animation:spin 1.1s linear infinite}
+.rip{animation:ripple 2.8s cubic-bezier(.05,.7,.1,1) infinite}
+.br{animation:breathe 3.2s ease-in-out infinite}
+.press{transition:transform .2s cubic-bezier(.2,0,0,1)}
+.press:active{transform:scale(.96)}
+</style>
+</helmet>
+<main class="nx" style="width: 1600px; height: 1180px; box-sizing: border-box; padding: 56px; background: var(--bg)">
+<div style="display: flex; align-items: flex-end; justify-content: space-between">
+<div>
+<h1 class="num" style="margin: 0; font-size: 44px; font-weight: 700; letter-spacing: -1px">Nexus Signal</h1>
+<p style="margin: 8px 0 0; font-size: 17px; color: var(--ink2)">墨黑底 + 一种信号绿。绿色只表示「可以点」和「已保护」，不做装饰。</p>
+</div>
+<p style="margin: 0; font-size: 14px; color: var(--ink2)">对比度均按 WCAG 2.1 计算 · 全部 ≥ 4.5:1</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 520px 440px minmax(0, 1fr); gap: 32px; margin-top: 40px">
+
+<section>
+<h2 style="margin: 0 0 14px; font-size: 18px; font-weight: 600">颜色</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); padding: 14px">
+<div style="font-size: 14px; font-weight: 600; margin-bottom: 8px">深色</div>
+<sc-for list="{{dark}}" as="c" hint-placeholder-count="10">
+<div style="display: flex; align-items: center; gap: 10px; height: 40px">
+<span style="width: 28px; height: 28px; border-radius: 8px; background: {{c.hex}}; box-shadow: inset 0 0 0 1px rgba(128,128,128,.35); flex: none"></span>
+<span style="flex: 1; min-width: 0; font-size: 14px; line-height: 18px">{{c.name}}<span class="mono" style="display: block; color: var(--ink2)">{{c.hex}}</span></span>
+<span class="num" style="font-size: 13px; color: var(--ink2)">{{c.cr}}</span>
+</div>
+</sc-for>
+</div>
+<div class="light" style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); padding: 14px; color: var(--ink)">
+<div style="font-size: 14px; font-weight: 600; margin-bottom: 8px">浅色</div>
+<sc-for list="{{light}}" as="c" hint-placeholder-count="10">
+<div style="display: flex; align-items: center; gap: 10px; height: 40px">
+<span style="width: 28px; height: 28px; border-radius: 8px; background: {{c.hex}}; box-shadow: inset 0 0 0 1px rgba(128,128,128,.35); flex: none"></span>
+<span style="flex: 1; min-width: 0; font-size: 14px; line-height: 18px">{{c.name}}<span class="mono" style="display: block; color: var(--ink2)">{{c.hex}}</span></span>
+<span class="num" style="font-size: 13px; color: var(--ink2)">{{c.cr}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</section>
+
+<section>
+<h2 style="margin: 0 0 14px; font-size: 18px; font-weight: 600">字体</h2>
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); padding: 6px 18px">
+<sc-for list="{{type}}" as="t" hint-placeholder-count="7">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: {{t.divider}}">
+<span class="{{t.cls}}" style="font-size: {{t.size}}; font-weight: {{t.weight}}; line-height: 1.25">{{t.sample}}</span>
+<span style="text-align: right; flex: none"><span style="display: block; font-size: 14px">{{t.role}}</span><span class="mono" style="color: var(--ink2)">{{t.spec}}</span></span>
+</div>
+</sc-for>
+</div>
+<p style="margin: 12px 4px 0; font-size: 14px; line-height: 21px; color: var(--ink2)">中文用系统字体（思源黑体 / Noto Sans CJK）。数字、速度、时长、延迟用 Space Grotesk（OFL 许可，打包进 App），等宽数字防止跳动。</p>
+</section>
+
+<section>
+<h2 style="margin: 0 0 14px; font-size: 18px; font-weight: 600">组件</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+<div style="border-radius: 20px; background: var(--bg); border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 10px">
+<button class="press" style="height: 52px; border-radius: 16px; background: var(--sig); color: var(--onSig); font-size: 16px; font-weight: 700">主要按钮</button>
+<button class="press" style="height: 52px; border-radius: 16px; border: 1.5px solid var(--line); font-size: 16px; font-weight: 600">次要按钮</button>
+<button disabled style="height: 52px; border-radius: 16px; background: var(--s2); color: var(--ink2); font-size: 16px; font-weight: 600; cursor: not-allowed">部署</button>
+<div style="font-size: 13px; color: var(--ink2); margin-top: -4px">不可点时写原因：先填写服务器 IP</div>
+<div style="position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 46px; padding: 4px; box-sizing: border-box; border-radius: 14px; background: var(--s2)">
+<div style="position: absolute; left: 4px; top: 4px; bottom: 4px; width: calc(50% - 4px); border-radius: 10px; background: var(--ink)"></div>
+<span style="position: relative; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: var(--bg)">绕过大陆</span>
+<span style="position: relative; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: var(--ink2)">全局代理</span>
+</div>
+</div>
+<div class="light" style="border-radius: 20px; background: var(--bg); border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--ink)">
+<button class="press" style="height: 52px; border-radius: 16px; background: var(--sig); color: var(--onSig); font-size: 16px; font-weight: 700">主要按钮</button>
+<button class="press" style="height: 52px; border-radius: 16px; border: 1.5px solid var(--line); font-size: 16px; font-weight: 600">次要按钮</button>
+<button disabled style="height: 52px; border-radius: 16px; background: var(--s2); color: var(--ink2); font-size: 16px; font-weight: 600; cursor: not-allowed">部署</button>
+<div style="font-size: 13px; color: var(--ink2); margin-top: -4px">不可点时写原因：先填写服务器 IP</div>
+<div style="position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 46px; padding: 4px; box-sizing: border-box; border-radius: 14px; background: var(--s2)">
+<div style="position: absolute; left: 4px; top: 4px; bottom: 4px; width: calc(50% - 4px); border-radius: 10px; background: var(--ink)"></div>
+<span style="position: relative; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: var(--bg)">绕过大陆</span>
+<span style="position: relative; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: var(--ink2)">全局代理</span>
+</div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px">
+<sc-for list="{{shapes}}" as="s" hint-placeholder-count="4">
+<div style="padding: 10px 12px; border-radius: 14px; background: var(--s1); border: 1px solid var(--line)">
+<div class="num" style="font-size: 18px; font-weight: 600">{{s.v}}</div>
+<div style="font-size: 13px; color: var(--ink2)">{{s.k}}</div>
+</div>
+</sc-for>
+</div>
+</section>
+</div>
+
+<section style="margin-top: 36px">
+<div style="display: flex; align-items: baseline; justify-content: space-between">
+<h2 style="margin: 0 0 14px; font-size: 18px; font-weight: 600">动效</h2>
+<span style="font-size: 14px; color: var(--ink2)">系统「移除动画」打开时：去掉旋转、波纹和弹簧，只保留 150ms 淡入淡出</span>
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 24px">
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); overflow: hidden">
+<div style="display: grid; grid-template-columns: 120px 150px 260px minmax(0, 1fr) 190px; gap: 16px; padding: 12px 18px; font-size: 13px; color: var(--ink2); border-bottom: 1px solid var(--line)">
+<span>名称</span><span>时长</span><span>曲线 / Compose</span><span>用在哪里</span><span>预览</span>
+</div>
+<sc-for list="{{motion}}" as="m" hint-placeholder-count="8">
+<div style="display: grid; grid-template-columns: 120px 150px 260px minmax(0, 1fr) 190px; gap: 16px; align-items: center; padding: 0 18px; height: 50px; border-top: {{m.divider}}">
+<span style="font-size: 15px; font-weight: 600">{{m.name}}</span>
+<span class="num" style="font-size: 15px">{{m.dur}}</span>
+<span class="mono" style="color: var(--ink2)">{{m.curve}}</span>
+<span style="font-size: 14px; color: var(--ink2)">{{m.use}}</span>
+<span style="position: relative; height: 14px; border-radius: 7px; background: var(--s2)">
+<span class="dot" style="position: absolute; left: 3px; top: 2px; width: 10px; height: 10px; border-radius: 5px; background: var(--sig); animation-timing-function: {{m.ease}}; animation-duration: {{m.demo}}"></span>
+</span>
+</div>
+</sc-for>
+</div>
+<div style="border-radius: 20px; background: var(--s1); border: 1px solid var(--line); padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<div style="font-size: 15px; font-weight: 600">连接按钮的三个状态</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; text-align: center">
+<div>
+<div style="position: relative; width: 84px; height: 84px; margin: 0 auto">
+<svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="40" fill="none" stroke="var(--line)" stroke-width="1.5"></circle><circle cx="42" cy="42" r="40" fill="none" stroke="var(--ink3)" stroke-width="2.5" stroke-dasharray="30 222" stroke-linecap="round"></circle></svg>
+<div style="position: absolute; left: 20px; top: 20px; width: 44px; height: 44px; border-radius: 50%; background: var(--s2)"></div>
+</div>
+<div style="font-size: 14px; margin-top: 8px">未连接</div><div style="font-size: 13px; color: var(--ink2)">静止 · 灰</div>
+</div>
+<div>
+<div style="position: relative; width: 84px; height: 84px; margin: 0 auto">
+<svg class="spinDemo" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="40" fill="none" stroke="var(--line)" stroke-width="1.5"></circle><circle cx="42" cy="42" r="40" fill="none" stroke="#FFB547" stroke-width="2.5" stroke-dasharray="30 222" stroke-linecap="round"></circle></svg>
+<div style="position: absolute; left: 20px; top: 20px; width: 44px; height: 44px; border-radius: 50%; background: var(--s2)"></div>
+</div>
+<div style="font-size: 14px; margin-top: 8px">连接中</div><div style="font-size: 13px; color: var(--ink2)">三环快转 · 琥珀</div>
+</div>
+<div>
+<div style="position: relative; width: 84px; height: 84px; margin: 0 auto">
+<div class="rip" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--sig)"></div>
+<svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true" style="position: absolute; inset: 0"><circle cx="42" cy="42" r="40" fill="none" stroke="var(--sig)" stroke-width="2.5" stroke-dasharray="30 222" stroke-linecap="round"></circle></svg>
+<div class="br" style="position: absolute; left: 20px; top: 20px; width: 44px; height: 44px; border-radius: 50%; background: var(--sig)"></div>
+</div>
+<div style="font-size: 14px; margin-top: 8px">已连接</div><div style="font-size: 13px; color: var(--ink2)">呼吸 + 波纹 · 绿</div>
+</div>
+</div>
+<div style="font-size: 14px; line-height: 21px; color: var(--ink2); border-top: 1px solid var(--line); padding-top: 12px">震动反馈：连接成功 <span class="mono" style="color: var(--ink)">CONFIRM</span>，断开与撤销 <span class="mono" style="color: var(--ink)">REJECT</span>（Android 11+），旧系统用 <span class="mono" style="color: var(--ink)">CONTEXT_CLICK</span>。</div>
+</div>
+</div>
+</section>
+</main>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1600,"height":1180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sw = (rows) => rows.map(([name, hex, cr]) => ({ name, hex, cr }));
+    const line = (rows) => rows.map((r, i) => Object.assign(r, { divider: i ? '1px solid var(--line)' : '0' }));
+    return {
+      dark: sw([
+        ['背景', '#0A0D11', ''], ['卡片', '#12171D', ''], ['输入框 / 次级面', '#1A2129', ''], ['分隔线', '#263039', ''],
+        ['主文字', '#EEF2F6', '17.3:1'], ['次要文字', '#A9B4BF', '9.2:1'], ['图标 / 辅助', '#8592A0', '6.1:1'],
+        ['信号绿 · 主按钮', '#3EE6A3', '11.8:1'], ['连接中 / 提醒', '#FFB547', '11.1:1'], ['危险', '#FF7A7A', '7.1:1']
+      ]),
+      light: sw([
+        ['背景', '#F3F5F8', ''], ['卡片', '#FFFFFF', ''], ['输入框 / 次级面', '#E9EDF1', ''], ['分隔线', '#D8DFE6', ''],
+        ['主文字', '#0A0D11', '17.8:1'], ['次要文字', '#47525E', '8.0:1'], ['图标 / 辅助', '#5F6B78', '5.0:1'],
+        ['信号绿 · 主按钮', '#2BD394', '9.8:1'], ['绿色文字', '#0A7F55', '5.0:1'], ['危险', '#C42B2B', '5.6:1']
+      ]),
+      type: line([
+        { sample: '00:12:48', cls: 'num', size: '46px', weight: 600, role: '连接时长', spec: 'Space Grotesk 46/52' },
+        { sample: '我的服务器', cls: '', size: '30px', weight: 700, role: '页面标题', spec: '30/38 Bold' },
+        { sample: '收到一个邀请', cls: '', size: '23px', weight: 700, role: '弹窗标题', spec: '23/30 Bold' },
+        { sample: '已授权设备', cls: '', size: '17px', weight: 600, role: '区块 / 列表主文字', spec: '17/24 SemiBold' },
+        { sample: '国内网站直接访问', cls: '', size: '16px', weight: 400, role: '正文（最小）', spec: '16/24 Regular' },
+        { sample: '7 个节点 · 2 小时前', cls: '', size: '14px', weight: 400, role: '说明', spec: '14/20 Regular' },
+        { sample: '连接 节点', cls: '', size: '13px', weight: 500, role: '导航标签', spec: '13/18 Medium' }
+      ]),
+      shapes: [{ v: '20', k: '页边距 dp' }, { v: '20', k: '卡片圆角' }, { v: '16–18', k: '按钮圆角' }, { v: '≥ 48', k: '点按高度' }],
+      motion: line([
+        { name: '进入', dur: '450 ms', curve: '(.05,.7,.1,1) 强调减速', use: '页面、卡片、底部弹窗出现', ease: 'cubic-bezier(.05,.7,.1,1)', demo: '1.4s' },
+        { name: '状态切换', dur: '300 ms', curve: '(.2,0,0,1) 标准', use: '分段开关滑块、颜色、开关', ease: 'cubic-bezier(.2,0,0,1)', demo: '1.2s' },
+        { name: '退出', dur: '200 ms', curve: '(.3,0,.8,.15) 加速', use: '关闭弹窗、离开页面', ease: 'cubic-bezier(.3,0,.8,.15)', demo: '1s' },
+        { name: '按压', dur: '弹簧', curve: 'spring(0.6, 800f) → 0.96', use: '所有可点按的卡片和按钮', ease: 'cubic-bezier(.2,1.5,.4,1)', demo: '1s' },
+        { name: '弹出', dur: '弹簧', curve: 'spring(0.5, 400f)', use: '勾选、成功标记、二维码点阵', ease: 'cubic-bezier(.2,1.6,.4,1)', demo: '1.2s' },
+        { name: '连接中', dur: '1.1/1.6/2.3 s', curve: 'linear 循环', use: '三层圆环反向旋转', ease: 'linear', demo: '1.1s' },
+        { name: '已连接', dur: '3.2 s · 2.8 s', curve: 'ease-in-out 呼吸 + 波纹', use: '圆心呼吸，波纹每 1.4 s 一圈', ease: 'ease-in-out', demo: '1.6s' },
+        { name: '列表错峰', dur: '每项 30 ms', curve: '最多 8 项，上移 10 dp', use: '节点列表、设备列表首次出现', ease: 'cubic-bezier(.05,.7,.1,1)', demo: '1.4s' }
+      ])
+    };
+  }
+}
+</script>
+</body>
+</html>

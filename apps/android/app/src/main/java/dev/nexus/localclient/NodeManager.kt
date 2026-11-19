@@ -18,16 +18,30 @@ private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 private fun base64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
 class NodeManager(private val context: Context, val host: String, val port: Int, val user: String,
-                  private val password: String, private val fingerprint: String, private val sshKey: ByteArray? = null) {
+                  private val password: String, private val fingerprint: String, private val sshKey: ByteArray? = null,
+                  private val loadKey: (() -> ByteArray)? = null) {
     private fun <T> session(action: (Session) -> T): T {
         require(user.matches(Regex("[A-Za-z_][a-zA-Z0-9_-]{0,31}")) && port in 1..65535)
         require(fingerprint.matches(Regex("SHA256:[a-zA-Z0-9+/]{43}")))
+        if (port==22 && OwnerAccess(context).knownPin(host)?.let { it!=fingerprint }==true) throw ChangedServer()
         val jsch = JSch()
-        sshKey?.let { jsch.addIdentity("Nexus SSH", it.copyOf(), null, password.takeIf(String::isNotEmpty)?.toByteArray()) }
-        jsch.hostKeyRepository = object : HostKeyRepository {
+        val identity = loadKey?.invoke() ?: sshKey?.copyOf()
+        identity?.let { try { jsch.addIdentity("Nexus SSH", it, null, password.takeIf(String::isNotEmpty)?.toByteArray()) } finally { it.fill(0) } }
+        val repository = CheckedHost { it == fingerprint }
+        jsch.hostKeyRepository = repository
+        val ssh = jsch.getSession(user, host, port)
+        ssh.setConfig("StrictHostKeyChecking","yes")
+        ssh.setConfig("PreferredAuthentications",if (identity == null) "password" else "publickey")
+        ssh.timeout = 30000
+        if (identity == null) ssh.setPassword(password.toByteArray())
+        try { ssh.connect(10000); return action(ssh) } catch (e: JSchException) { if (repository.changed) throw ChangedServer(); throw e } finally { ssh.disconnect(); jsch.removeAllIdentity() }
+    }
+    private class CheckedHost(val accept: (String) -> Boolean) : HostKeyRepository {
+            var changed = false
             override fun check(host: String?, key: ByteArray): Int {
                 val actual = "SHA256:" + Base64.encodeToString(sha(key), Base64.NO_WRAP or Base64.NO_PADDING)
-                return if (actual == fingerprint) HostKeyRepository.OK else HostKeyRepository.CHANGED
+                changed = !accept(actual)
+                return if (!changed) HostKeyRepository.OK else HostKeyRepository.CHANGED
             }
             override fun getHostKey() = emptyArray<HostKey>()
             override fun getHostKey(host: String?, type: String?) = emptyArray<HostKey>()
@@ -36,12 +50,28 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             override fun remove(host: String?, type: String?, key: ByteArray?) = Unit
             override fun add(hostkey: HostKey?, ui: UserInfo?) = Unit
         }
-        val ssh = jsch.getSession(user, host, port)
-        ssh.setConfig("StrictHostKeyChecking","yes")
-        ssh.setConfig("PreferredAuthentications",if (sshKey == null) "password" else "publickey")
-        ssh.timeout = 30000
-        if (sshKey == null) ssh.setPassword(password.toByteArray())
-        try { ssh.connect(10000); return action(ssh) } finally { ssh.disconnect(); jsch.removeAllIdentity() }
+
+    companion object {
+        fun discover(host: String): String {
+            var found: String? = null
+            val jsch = JSch()
+            jsch.hostKeyRepository = CheckedHost { pin -> found = pin; false }
+            val session = jsch.getSession("root",host,22)
+            session.setConfig("StrictHostKeyChecking","yes")
+            try { session.connect(8000) } catch (e: JSchException) { if (found == null) throw e }
+            finally { session.disconnect() }
+            return requireNotNull(found)
+        }
+    }
+
+    fun authorize(publicKey: String, deploy: Boolean) = session { ssh ->
+        require(publicKey.matches(Regex("(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+ Nexus")))
+        val installed = run(ssh,"if test -f /opt/nexus-node/node_admin.py; then echo yes; else echo no; fi") == "yes"
+        check(installed != deploy) { if (installed) "这台服务器已经部署，请选择绑定" else "尚未找到部署，请选择部署" }
+        val key = "restrict $publicKey"
+        run(ssh, "umask 077 && mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && " +
+            "(grep -qxF '$key' ~/.ssh/authorized_keys || printf '\\n%s\\n' '$key' >> ~/.ssh/authorized_keys)")
+        Unit
     }
     private fun run(ssh: Session, cmd: String, data: JSONObject? = null, limit: Int = 131072): String {
         val channel = ssh.openChannel("exec") as ChannelExec

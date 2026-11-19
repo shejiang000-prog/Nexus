@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Nexus 首次打开</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+.nx{--bg:#0A0D11;--s1:#12171D;--s2:#1A2129;--line:#263039;--ink:#EEF2F6;--ink2:#A9B4BF;--ink3:#8592A0;--sig:#3EE6A3;--sigText:#3EE6A3;--onSig:#03140C;--sigSoft:rgba(62,230,163,.14);--glow:rgba(62,230,163,.16);font-family:'Noto Sans SC',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.nx.light{--bg:#F3F5F8;--s1:#FFFFFF;--s2:#E9EDF1;--line:#D8DFE6;--ink:#0A0D11;--ink2:#47525E;--ink3:#5F6B78;--sig:#2BD394;--sigText:#0A7F55;--onSig:#03140C;--sigSoft:rgba(43,211,148,.18);--glow:rgba(43,211,148,.18)}
+.num{font-family:'Space Grotesk',system-ui,sans-serif;letter-spacing:-.02em}
+a{color:inherit;text-decoration:none}
+.press{transition:transform .2s cubic-bezier(.2,0,0,1),border-color .2s}
+.press:active{transform:scale(.97)}
+.press:hover{border-color:var(--sig)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes spinr{to{transform:rotate(-360deg)}}
+@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.arc{transform-box:fill-box;transform-origin:center;fill:none;stroke-linecap:round;stroke:var(--sig)}
+.a1{animation:spin 10s linear infinite}
+.a2{animation:spinr 15s linear infinite}
+.a3{animation:spin 22s linear infinite}
+.float{animation:float 5s ease-in-out infinite}
+.in{animation:rise .6s cubic-bezier(.05,.7,.1,1) both}
+</style>
+</helmet>
+<main class="nx {{themeClass}}" style="position: relative; width: 390px; height: 844px; overflow: hidden; background: var(--bg)">
+<div aria-hidden="true" style="position: absolute; left: -40px; top: -20px; width: 470px; height: 420px; background: radial-gradient(circle at 50% 50%, var(--glow), transparent 60%)"></div>
+
+<section class="float" aria-hidden="true" style="position: relative; display: flex; justify-content: center; margin-top: 62px">
+<div style="position: relative; width: 176px; height: 176px">
+<svg width="176" height="176" viewBox="0 0 260 260" style="position: absolute; inset: 0">
+<circle cx="130" cy="130" r="126" fill="none" stroke="var(--line)" stroke-width="2"></circle>
+<circle cx="130" cy="130" r="104" fill="none" stroke="var(--line)" stroke-width="2"></circle>
+<circle cx="130" cy="130" r="82" fill="none" stroke="var(--line)" stroke-width="2"></circle>
+<circle class="arc a1" cx="130" cy="130" r="126" stroke-width="4" stroke-dasharray="96 696"></circle>
+<circle class="arc a2" cx="130" cy="130" r="104" stroke-width="4" stroke-dasharray="54 600"></circle>
+<circle class="arc a3" cx="130" cy="130" r="82" stroke-width="4" stroke-dasharray="130 386"></circle>
+</svg>
+<div style="position: absolute; left: 50px; top: 50px; width: 76px; height: 76px; border-radius: 50%; background: var(--sig); color: var(--onSig); display: flex; align-items: center; justify-content: center; box-shadow: 0 16px 50px var(--glow)">
+<svg width="30" height="30" viewBox="0 0 40 40"><path d="M0 34 L12 5.2 L21.2 5.2 L28.4 20.4 L34.8 5.2 L40 5.2 L28 34.8 L20.4 34.8 L12.8 18.8 L6.8 34 Z" fill="currentColor"></path></svg>
+</div>
+</div>
+</section>
+
+<section class="in" style="position: relative; padding: 0 28px; margin-top: 36px; text-align: center">
+<h1 style="margin: 0; font-size: 30px; font-weight: 700; line-height: 38px; letter-spacing: -0.4px">欢迎使用 Nexus</h1>
+<p style="margin: 10px 0 0; font-size: 16px; line-height: 25px; color: var(--ink2)">先添加一个节点来源。之后每次打开，点一下就能连接。</p>
+</section>
+
+<section style="position: relative; display: flex; flex-direction: column; gap: 12px; margin: 30px 20px 0">
+<a class="press in" href="Nodes.dc.html" style="display: flex; align-items: center; gap: 14px; padding: 18px 16px; border-radius: 22px; background: var(--s1); border: 1.5px solid var(--line); animation-delay: 80ms">
+<span style="width: 52px; height: 52px; border-radius: 16px; background: var(--sigSoft); color: var(--sigText); display: flex; align-items: center; justify-content: center; flex: none">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"></path><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"></path></svg>
+</span>
+<span style="flex: 1">
+<span style="display: block; font-size: 18px; font-weight: 600; line-height: 26px">添加机场订阅</span>
+<span style="display: block; font-size: 14px; line-height: 20px; color: var(--ink2)">粘贴订阅链接，或扫二维码</span>
+</span>
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+<a class="press in" href="Server.dc.html" style="display: flex; align-items: center; gap: 14px; padding: 18px 16px; border-radius: 22px; background: var(--s1); border: 1.5px solid var(--line); animation-delay: 140ms">
+<span style="width: 52px; height: 52px; border-radius: 16px; background: var(--s2); color: var(--ink); display: flex; align-items: center; justify-content: center; flex: none">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"></rect><rect x="4" y="13" width="16" height="7" rx="2"></rect><path d="M8 7.5h.01M8 16.5h.01"></path></svg>
+</span>
+<span style="flex: 1">
+<span style="display: block; font-size: 18px; font-weight: 600; line-height: 26px">接入我的服务器</span>
+<span style="display: block; font-size: 14px; line-height: 20px; color: var(--ink2)">填 IP 和密码，自动部署好</span>
+</span>
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+</section>
+
+<a class="press in" href="Receive.dc.html" style="position: relative; display: flex; align-items: center; justify-content: center; gap: 10px; margin: 22px 20px 0; height: 54px; border-radius: 18px; border: 1.5px dashed var(--line); font-size: 16px; font-weight: 600; animation-delay: 200ms">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 12h8"></path></svg>
+收到了邀请？扫码或粘贴</a>
+
+<p style="position: absolute; left: 0; right: 0; bottom: 34px; margin: 0; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: var(--ink2)">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z"></path></svg>
+节点和密钥只保存在这台手机上</p>
+</main>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { themeClass: (this.props.theme || 'dark') === 'light' ? 'light' : '' };
+  }
+}
+</script>
+</body>
+</html>

@@ -2,6 +2,7 @@ package dev.nexus.localclient
 
 import android.content.Context
 import androidx.work.*
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.TimeUnit
 
@@ -10,6 +11,13 @@ internal object SubscriptionRefresh {
     private val running = mutableSetOf<String>()
     val revision = MutableStateFlow(0L)
     private val network = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+
+    fun testImported(context: Context,id: String) {
+        val work=OneTimeWorkRequestBuilder<ImportedNodeTest>()
+            .setInputData(workDataOf("id" to id)).setConstraints(network)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL,10,TimeUnit.SECONDS).build()
+        WorkManager.getInstance(context).enqueueUniqueWork("imported-node-tests",ExistingWorkPolicy.APPEND_OR_REPLACE,work)
+    }
 
     fun schedule(context: Context) {
         // Hourly is enough for 6/12/24-hour intervals and retries; app start, resume and VPN
@@ -76,5 +84,23 @@ class RefreshWorker(context: Context, params: WorkerParameters): Worker(context,
     override fun doWork(): Result {
         SubscriptionRefresh.updateDue(Subscriptions(applicationContext))
         return Result.success()
+    }
+}
+
+class ImportedNodeTest(context: Context,params:WorkerParameters): CoroutineWorker(context,params) {
+    override suspend fun doWork(): Result {
+        val id=inputData.getString("id") ?: return Result.failure()
+        val source=runCatching { Subscriptions(applicationContext).get(id) }.getOrNull() ?: return Result.success()
+        val nodes=(0 until source.nodes.length()).map { NodeRow(source,it,source.nodes.getJSONObject(it)) }
+            .filter { CompatEngine.problem(it.node)==null }
+        if(nodes.isEmpty()) return Result.success()
+        return try {
+            NodeProbe.run(applicationContext,nodes) { _,_ -> }
+            synchronized(SubscriptionRefresh) { SubscriptionRefresh.revision.value++ }
+            Result.success()
+        } catch(e:kotlinx.coroutines.CancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            Result.retry()
+        } catch(_:Exception) { Result.retry() }
     }
 }

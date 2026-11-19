@@ -37,7 +37,9 @@ data class TunnelState(val starting: Boolean = false, val port: Int = 0, val err
 }
 
 class TunnelService : VpnService() {
-    companion object { val state = MutableStateFlow(TunnelState()) }
+    companion object { val state = MutableStateFlow(TunnelState())
+        @Volatile internal var interfaceName: String? = null
+    }
     private val main = Handler(Looper.getMainLooper())
     private var cancel: ParcelFileDescriptor? = null
     private var serial = 0
@@ -214,7 +216,9 @@ class TunnelService : VpnService() {
                 for (name in apps) builder.addAllowedApplication(name)
             }
         } else builder.addRoute(requireNotNull(plan.profile).vpnHost, 32).allowFamily(android.system.OsConstants.AF_INET6)
-        return checkNotNull(builder.establish())
+        return checkNotNull(builder.establish()).also { fd ->
+            interfaceName = runCatching { java.io.File("/proc/self/fdinfo/"+fd.fd).readLines().firstOrNull { it.startsWith("iff:") }?.substringAfter(':')?.trim() }.getOrNull()
+        }
     }
 
     private fun nextPlan(plan: Plan): Plan {
@@ -225,7 +229,7 @@ class TunnelService : VpnService() {
                 val ref=alternates.removeFirst()
                 val next=runCatching {
                     val source=store.get(ref.getString("source"))
-                    require(source.updated==ref.getLong("updated") && source.hasAllowance() && store.appearance.getBoolean("auto/"+source.id,false))
+                    require(source.updated==ref.getLong("updated") && source.hasAllowance() && store.appearance.getBoolean("auto/"+source.id,true))
                     val node=source.nodes.getJSONObject(ref.getInt("index"))
                     Plan(null,CompatEngine.outbound(node),source.label+" · "+node.getString("name"),plan.dns,nodeKey(source.id,node))
                 }.getOrNull()

@@ -174,7 +174,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
             }
         }
         HorizontalDivider()
-        Button(enabled = !busy && (current != null || subscription), onClick = { diagnose(false) }) { Text(if (subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
+        PrimaryAction(enabled = !busy && (current != null || subscription), onClick = { diagnose(false) }) { Text(if (subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
         TextButton(enabled = !busy && (selected?.dns != null || subscription) && tunnel.vpn, onClick = { ipConsent = true }) { Text("查询公网出口") }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (result.isNotEmpty()) Text(result)
@@ -203,12 +203,12 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
                     Checkbox(checked = pkg in draft,onCheckedChange = { draft = if (it) draft+pkg else draft-pkg })
                     Text(label)
                 } }
-            } }, confirmButton = { TextButton(onClick = {
+            } }, confirmButton = { PrimaryAction(onClick = {
                 if (prefs.edit().putStringSet("apps/$key",draft).commit()) { apps=draft; pickApps=false }
-            }) { Text("保存") } }, dismissButton = { TextButton(onClick = { pickApps=false }) { Text("取消") } })
+            }) { Text("保存") } }, dismissButton = { SecondaryAction(onClick = { pickApps=false }) { Text("取消") } })
     }
     if (ipConsent) AlertDialog(onDismissRequest = { ipConsent = false }, title = { Text("通过 ipinfo.io 查询出口？") },
         text = { Text("ipinfo.io 会看到私人节点的公网地址。返回的国家、网络运营方和出口地址仅在本机显示。") },
-        confirmButton = { TextButton(onClick = { ipConsent = false; diagnose(true) }) { Text("查询一次") } },
-        dismissButton = { TextButton(onClick = { ipConsent = false }) { Text("取消") } })
+        confirmButton = { PrimaryAction(onClick = { ipConsent = false; diagnose(true) }) { Text("查询一次") } },
+        dismissButton = { SecondaryAction(onClick = { ipConsent = false }) { Text("取消") } })
 }

@@ -197,8 +197,9 @@ def verify(args):
         call("push",str(target),remote)
         stack.callback(call,"shell","rm","-f",remote)
         call("shell","am","start","-W","-f","0x04000000","-n",PACKAGE+"/.MainActivity")
-        tap("添加订阅",True)
-        tap("选择文件或二维码图片（可多选）")
+        tap("节点")
+        tap("添加节点",True)
+        tap("选择文件或二维码图片（可多选）",True)
         # A fresh file appears first when Downloads is sorted by modification time.
         for _ in range(2):
             if any(n.get("text")==name for n in tree().iter("node")):
@@ -269,7 +270,8 @@ def verify(args):
                     recovered = wait_state(test,lambda s:s in PROTOCOLS,90)
                     traffic(recovered,"network recovery")
                     call("shell","am","start","-W","-n",PACKAGE+"/.MainActivity")
-                    tap("通过当前节点测速（Cloudflare，上下行各 1 MiB）",True)
+                    tap("节点")
+                    tap("测量当前连接速度",True)
                     for _ in range(18):
                         values=[n.get("text","") for n in tree().iter("node")]
                         measured=next((v for v in values if "Mbps" in v and "上传" in v),"")

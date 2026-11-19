@@ -151,11 +151,18 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
                 NodeQuality(ctx,physical).measure(vpn,"split-test"){TunnelService.state.value.connectedAt>0}
             }.getOrElse { it.javaClass.simpleName })
         }
-        if(fixture!=null) lab(vpn,fixture,false,"global",result)
+        if(fixture!=null) {
+            val before=requireNotNull(trafficBytes(ctx))
+            lab(vpn,fixture,false,"global",result)
+            Thread.sleep(1100)
+            val after=requireNotNull(trafficBytes(ctx))
+            check(after.first>before.first && after.second>before.second)
+            result.putString("traffic","TUN bytes increased: up "+(after.first-before.first)+", down "+(after.second-before.second))
+        }
         speed("global")
         val prev=TunnelService.state.value.connectedAt
         val visual = args.getString("visual")=="1"
-        if (visual) clickSplitLabel("分流模式 · 全局代理") else {
+        if (visual) clickSplitLabel("绕过大陆",scroll=true) else {
             check(prefs.edit().putBoolean(SplitRouting.KEY,true).commit())
             ctx.startService(Intent(ctx,TunnelService::class.java).setAction("split-mode"))
         }
@@ -175,10 +182,11 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
         if(visual) {
             check(fixture!=null && engine=="shoes")
             splitScreen("card",SplitRouting.SHOES)
-            clickSplitLabel("出口与诊断",scroll=true)
-            splitLabel("返回我的网络",false)
+            clickSplitLabel("设置")
+            splitLabel("返回",false)
             splitScreen("settings","全局代理")
-            clickSplitLabel("返回我的网络")
+            clickSplitLabel("返回")
+            clickSplitLabel("节点")
             splitScreen("row",SplitRouting.SHOES,rows=true)
             result.putString("visual","home toggle reconnected; card, settings and node warning captured")
         }
@@ -193,9 +201,11 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
     }
 }
 
-private fun Instrumentation.splitLabel(text:String, scroll:Boolean, rows:Boolean=false): android.view.accessibility.AccessibilityNodeInfo {
+internal fun Instrumentation.splitLabel(text:String, scroll:Boolean, rows:Boolean=false): android.view.accessibility.AccessibilityNodeInfo {
     val pkg=targetContext.packageName
     val until=SystemClock.elapsedRealtime()+25000
+    var previousViewport:List<String>?=null
+    var forward=true
     while(SystemClock.elapsedRealtime()<until){
         val root=uiAutomation.rootInActiveWindow
         if(root!=null) {
@@ -204,13 +214,24 @@ private fun Instrumentation.splitLabel(text:String, scroll:Boolean, rows:Boolean
                 for(i in 0 until n.childCount) n.getChild(i)?.let { yieldAll(nodes(it)) }
             }
             val visible=nodes(root).filter { it.packageName?.toString()==pkg && it.isVisibleToUser }.toList()
-            val same=visible.firstOrNull { it.text?.toString()?.contains(text)==true }
+            val same=visible.firstOrNull { it.contentDescription?.toString()==text } ?: visible.firstOrNull { it.text?.toString()==text } ?: visible.firstOrNull { it.text?.toString()?.contains(text)==true }
             val card=visible.any { it.text?.toString()=="我的网络" }
             if(same!=null && (!rows || !card && visible.any { it.text?.toString()?.startsWith("TUIC · ")==true })) return same
             if(scroll){
-                val size=targetContext.resources.displayMetrics
-                val x=size.widthPixels/2
-                uiAutomation.executeShellCommand("input swipe $x "+size.heightPixels*4/5+" $x "+size.heightPixels/3+" 350").close()
+                // The home screen has two independent scroll panes in landscape.
+                val pane=visible.lastOrNull { it.isScrollable }
+                if(pane!=null){
+                    val viewport=nodes(pane).filter {it.isVisibleToUser}.map { it.text?.toString().orEmpty() }.toList()
+                    if(viewport==previousViewport)forward=!forward
+                    previousViewport=viewport
+                    val bounds=android.graphics.Rect().also(pane::getBoundsInScreen)
+                    val x=bounds.centerX()
+                    val top=bounds.top+bounds.height()/4
+                    val bottom=bounds.bottom-bounds.height()/4
+                    val from=if(forward)bottom else top
+                    val to=if(forward)top else bottom
+                    android.os.ParcelFileDescriptor.AutoCloseInputStream(uiAutomation.executeShellCommand("input swipe $x $from $x $to 350")).use { it.readBytes() }
+                }
             }
         }
         Thread.sleep(350)
@@ -221,13 +242,18 @@ private fun Instrumentation.splitLabel(text:String, scroll:Boolean, rows:Boolean
     } } finally { image.recycle() }
     error("split UI control missing")
 }
-private fun Instrumentation.clickSplitLabel(text:String,scroll:Boolean=false){
-    var item: android.view.accessibility.AccessibilityNodeInfo? =splitLabel(text,scroll)
-    while(item!=null && !item.isClickable) item=item.parent
-    check(item?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)==true)
+internal fun Instrumentation.clickSplitLabel(text:String,scroll:Boolean=false){
+    repeat(5) {
+        var item:android.view.accessibility.AccessibilityNodeInfo?=splitLabel(text,scroll)
+        while(item!=null && !item.isClickable) item=item.parent
+        if(item?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)==true) return
+        Thread.sleep(200)
+    }
+    error("control could not be clicked: "+text)
 }
 private fun Instrumentation.splitScreen(name:String,text:String,rows:Boolean=false){
-    splitLabel(text,rows,rows)
+    sendStatus(1,android.os.Bundle().apply { putString("screen",name) })
+    splitLabel(text,rows || name=="card",rows)
     uiAutomation.waitForIdle(250,3000)
     val image=requireNotNull(uiAutomation.takeScreenshot())
     try { File(targetContext.cacheDir,"split-ui-$name.png").outputStream().use {

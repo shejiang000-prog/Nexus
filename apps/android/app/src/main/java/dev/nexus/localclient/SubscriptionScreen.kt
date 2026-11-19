@@ -6,8 +6,12 @@ import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -43,12 +47,20 @@ internal fun bytes(n: Long): String = when {
     else -> String.format(java.util.Locale.ROOT, "%.0f MB", n / 1048576.0)
 }
 
-private fun rankedNodes(context: android.content.Context, rows: List<NodeRow>): List<NodeRow> {
+internal fun rankedNodes(context: android.content.Context, rows: List<NodeRow>, problems: Map<String,String>? = null): List<NodeRow> {
     val store = Subscriptions(context)
-    val quality = NodeQuality(context, context.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
-    return rows.filter { it.type in CompatEngine.types && store.appearance.getBoolean("auto/"+it.source.id,false) &&
-        it.source.hasAllowance() && quality.lastProbe(it.favorite)?.let { p -> !p.ok && p.recent(3600000) } != true && CompatEngine.problem(it.node) == null }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
+    val quality = NodeQuality(context, TunnelService.state.value.physical ?: NodeProbe.physical(context.getSystemService(ConnectivityManager::class.java)))
+    return rows.filter { it.type in CompatEngine.types && store.appearance.getBoolean("auto/"+it.source.id,true) &&
+        it.source.hasAllowance() && quality.lastProbe(it.favorite)?.let { p -> !p.ok && p.recent(3600000) } != true && (if(problems==null) CompatEngine.problem(it.node)==null else it.favorite !in problems) }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
             .thenByDescending { quality.score(it.favorite) })
+}
+
+internal fun fastestNode(context: android.content.Context, rows: List<NodeRow>, problems: Map<String,String>? = null): NodeRow? {
+    val eligible=rankedNodes(context,rows,problems)
+    val physical=TunnelService.state.value.physical ?: NodeProbe.physical(context.getSystemService(ConnectivityManager::class.java))
+    val quality=NodeQuality(context,physical)
+    return eligible.mapNotNull { row -> quality.lastProbe(row.favorite)?.takeIf { it.ok && it.recent(86400000) }?.let { row to it.ms } }
+        .minByOrNull { it.second }?.first ?: eligible.firstOrNull()
 }
 
 internal fun subscriptionRequest(context: android.content.Context, row: NodeRow, allRows: List<NodeRow>,
@@ -64,17 +76,42 @@ internal fun subscriptionRequest(context: android.content.Context, row: NodeRow,
     return request
 }
 
+internal fun sourceRows(sources: List<Subscription>) = sources.flatMap { source ->
+    (0 until source.nodes.length()).map { NodeRow(source,it,source.nodes.getJSONObject(it)) }
+}
+
+internal fun nodeProblems(rows: List<NodeRow>) = rows.mapNotNull { row ->
+    CompatEngine.problem(row.node)?.let { row.favorite to it }
+}.toMap()
+
 @Composable
-fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
+internal fun rememberDefaultPhysical(connectivity: ConnectivityManager): Network? {
+    var physical by remember { mutableStateOf(NodeProbe.physical(connectivity)) }
+    DisposableEffect(connectivity) {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) { physical = NodeProbe.physical(connectivity) }
+            override fun onLost(network: Network) { physical = NodeProbe.physical(connectivity) }
+        }
+        connectivity.registerDefaultNetworkCallback(callback)
+        onDispose { connectivity.unregisterNetworkCallback(callback) }
+    }
+    return physical
+}
+
+@Composable
+internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAutomatic:(Boolean,List<NodeRow>)->Unit={_,_->}, addInitially: Boolean = false, manageSource: String? = null, onManageOpened: () -> Unit = {}, onInvite: (Invitation?) -> Unit, onSelected: (NodeRow) -> Unit = {}, onImported: () -> Unit = {}, onPick: (NodeRow,List<NodeRow>) -> Unit = { _,_ -> }, home: @Composable (List<NodeRow>) -> Unit) {
     val context = LocalContext.current
     val store = remember { Subscriptions(context) }
     val scope = rememberCoroutineScope()
     val scroll = androidx.compose.foundation.lazy.rememberLazyListState()
     var sources by remember { mutableStateOf(emptyList<Subscription>()) }
+    var showSources by remember { mutableStateOf(manageSource!=null) }
+    var tools by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
-    var adding by remember { mutableStateOf(false) }
+    var adding by remember { mutableStateOf(addInitially) }
+    var manualInput by remember(adding) { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<Subscription?>(null) }
     var input by remember { mutableStateOf("") }
     var label by remember { mutableStateOf("") }
@@ -98,25 +135,17 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
     var chosen by remember { mutableStateOf<NodeRow?>(null) }
     var dns by remember { mutableStateOf("1.1.1.1") }
     var smart by remember { mutableStateOf(false) }
-    val allRows = remember(sources) { sources.flatMap { s -> (0 until s.nodes.length()).map { NodeRow(s,it,s.nodes.getJSONObject(it)) } } }
+    val allRows = remember(sources) { sourceRows(sources) }
     // Reasons a node cannot be used, keyed by NodeRow.favorite. Conversion runs off the main thread.
     var problems by remember(allRows) { mutableStateOf<Map<String,String>?>(null) }
     LaunchedEffect(allRows) {
         problems = withContext(Dispatchers.Default) {
-            allRows.mapNotNull { row -> CompatEngine.problem(row.node)?.let { row.favorite to it } }.toMap()
+            nodeProblems(allRows)
         }
     }
     val tunnel by TunnelService.state.collectAsState()
     val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
-    var physical by remember { mutableStateOf(NodeProbe.physical(connectivity)) }
-    DisposableEffect(connectivity) {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) { physical = NodeProbe.physical(connectivity) }
-            override fun onLost(network: Network) { physical = NodeProbe.physical(connectivity) }
-        }
-        connectivity.registerDefaultNetworkCallback(callback)
-        onDispose { connectivity.unregisterNetworkCallback(callback) }
-    }
+    val physical=rememberDefaultPhysical(connectivity)
     val quality = remember(tunnel.physical,physical) { NodeQuality(context, tunnel.physical ?: physical) }
     // Stored results load once per list and network; a running batch adds only the node that just
     // finished, so large subscriptions do not reread every node on the main thread per result.
@@ -131,6 +160,7 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
     fun connect(row: NodeRow) {
         prefs.edit().putLong("recent/"+row.favorite,System.currentTimeMillis()).apply()
         val request = subscriptionRequest(context,row,allRows,dns,smart)
+        onSelected(row)
         context.startForegroundService(request)
         chosen = null
         scope.launch { scroll.scrollToItem(0) }
@@ -152,6 +182,9 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
     }
     val revision by SubscriptionRefresh.revision.collectAsState()
     LaunchedEffect(revision) { sources = withContext(Dispatchers.IO) { store.all() } }
+    LaunchedEffect(manageSource,sources) {
+        sources.firstOrNull { it.id==manageSource }?.let { editSource=it;onManageOpened() }
+    }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
             adding = false
@@ -173,8 +206,22 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
             }
         }
     }
+    fun importAndTest(value: String) {
+        adding=false
+        val name=label.trim().ifEmpty { "机场订阅" }
+        update {
+            val source=store.import(name,value)
+            context.getSharedPreferences("local",0).edit().putString("simple-node","auto").apply()
+            SubscriptionRefresh.testImported(context,source.id)
+            android.os.Handler(android.os.Looper.getMainLooper()).post(onImported)
+        }
+        input=""
+    }
     val scan = rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) {
-        it.contents?.let { value -> input = value.take(524288) }
+        it.contents?.let { value ->
+            val invite=sharedInvitation(value)
+            if(invite==null) importAndTest(value) else { adding=false;onInvite(invite) }
+        }
     }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         val source = exporting
@@ -200,10 +247,9 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
         }
     }
     val eligible = remember(visible,problems) { problems?.let { map -> visible.filter { it.favorite !in map } }.orEmpty() }
-    fun measure() {
-        if (busy || tunnel.active || physical == null || eligible.isEmpty()) return
+    fun measure(batch: List<NodeRow> = eligible) {
+        if (busy || tunnel.active || physical == null || batch.isEmpty()) return
         busy = true
-        val batch = eligible
         tested = 0
         total = batch.size
         errorMessage = ""
@@ -218,20 +264,22 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
             finally { busy = false; probeJob = null }
         }
     }
-    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         state = scroll, contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { home() }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("订阅与节点", style = MaterialTheme.typography.headlineMedium)
-                Button(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加订阅") }
+                Column(Modifier.weight(1f).align(androidx.compose.ui.Alignment.CenterVertically)) {
+                    Text(if(sources.isEmpty()) "暂无订阅" else "${allRows.size} 个订阅节点",style=MaterialTheme.typography.titleLarge)
+                    if(sources.isNotEmpty()) Text("来自 ${sources.size} 个订阅",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                PrimaryAction(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加节点") }
             }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (errorMessage.isNotEmpty()) Text(errorMessage, color = MaterialTheme.colorScheme.error)
             val current = tunnel
             current.node?.let { node ->
-                TextButton(enabled = !busy, onClick = {
+                SecondaryAction(enabled = !busy, onClick = {
                     busy = true
                     scope.launch {
                         try {
@@ -243,15 +291,27 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
                         } catch (_: Exception) { speedResult = "测速中断，请检查连接后重试" }
                         finally { busy = false }
                     }
-                }) { Text("通过当前节点测速（Cloudflare，上下行各 1 MiB）") }
+                }) { Text("测量当前连接速度") }
                 if (speedResult.isNotEmpty()) Text(speedResult)
             }
-            if (sources.isEmpty() && !busy) Text("添加订阅后，可以按来源查看节点。")
+            if (sources.isEmpty() && !busy) {
+                Spacer(Modifier.height(12.dp))
+                Text("添加机场订阅后，会自动测试并选择最快节点。",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        if (sources.isNotEmpty()) item {
-            SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L))
+        if(sources.isNotEmpty()) item {
+            Segment(listOf("节点列表","订阅管理"),if(showSources)1 else 0){showSources=it==1}
         }
-        items(sources, key = { it.id }) { source ->
+        if(!showSources && allRows.isNotEmpty())item {
+            val pinned=context.getSharedPreferences("local",0).contains("pinned")
+            AutoSelection(automatic,enabled=!pinned,onChange={value->onAutomatic(value,allRows)})
+            if(pinned)Text("请先在设置中解除固定出口")
+        }
+        if(!showSources)item {home(allRows)}
+        if (showSources && sources.isNotEmpty()) item {
+            SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L),onSource={editSource=it})
+        }
+        if(showSources) items(sources, key = { it.id }) { source ->
             Column {
                 var folded by remember { mutableStateOf(store.appearance.getBoolean("fold/"+source.id,false)) }
                 val color = store.appearance.getInt("color/"+source.id,0)
@@ -265,11 +325,10 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
                                 if (!busy && kotlin.math.abs(distance)>32.dp.toPx()) update { store.move(sources,source.id,if(distance>0) 1 else -1) }
                             }) { change,delta -> change.consume(); distance+=delta.y }
                         })
-                    TextButton(onClick = { folded=!folded; store.appearance.edit().putBoolean("fold/"+source.id,folded).apply() }) { Text(if (folded) "展开" else "收起") }
-                    TextButton(onClick = { editSource=source }) { Text("管理") }
+                    SecondaryAction(onClick = { folded=!folded; store.appearance.edit().putBoolean("fold/"+source.id,folded).apply() }) { Text(if (folded) "展开" else "收起") }
+                    SecondaryAction(onClick = { editSource=source }) { Text("管理") }
                 }
                 if (!folded) {
-                if (source.url.isNotEmpty()) Text(android.net.Uri.parse(source.url).host.orEmpty(),style = MaterialTheme.typography.bodySmall)
                 val blocked = problems?.let { map -> (0 until source.nodes.length()).count { nodeKey(source.id,source.nodes.getJSONObject(it)) in map } } ?: 0
                 Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
                     " · ${DateFormat.getDateTimeInstance().format(Date(source.updated))}",
@@ -278,18 +337,21 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
                     "到期 " + DateFormat.getDateInstance().format(Date(it * 1000))
                 }).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                 Row {
-                    if (source.url.isNotEmpty()) TextButton(enabled = !busy && synchronized(SubscriptionRefresh) { source.id !in SubscriptionRefresh.protectedSources },
+                    if (source.url.isNotEmpty()) SecondaryAction(enabled = !busy && synchronized(SubscriptionRefresh) { source.id !in SubscriptionRefresh.protectedSources },
                         onClick = { update { SubscriptionRefresh.refresh(store, source, force = true) } }) { Text("更新") }
-                    TextButton(enabled = !busy, onClick = { deleting = source }) { Text("删除") }
-                    TextButton(enabled = !busy, onClick = { exporting = source; exportConsent = true }) { Text("导出") }
+                    SecondaryAction(enabled = !busy, onClick = { deleting = source }) { Text("删除") }
+                    SecondaryAction(enabled = !busy, onClick = { exporting = source; exportConsent = true }) { Text("导出") }
                 }
                 }
                 HorizontalDivider()
             }
         }
-        item {
+        if(!showSources && sources.isNotEmpty()) item {
+            SecondaryAction(onClick={tools=!tools}) {Text(if(tools) "收起筛选与测速" else "筛选与测速")}
+        }
+        if(!showSources && tools && sources.isNotEmpty()) item {
             Box {
-                TextButton(onClick = { menu = true }) { Text(sources.find { it.id == selected }?.label ?: "全部来源") }
+                SecondaryAction(onClick = { menu = true }) { Text(sources.find { it.id == selected }?.label ?: "全部来源") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text("全部来源") }, onClick = { selected = null; menu = false })
                     sources.forEach { s -> DropdownMenuItem(text = { Text(s.label) },
@@ -300,7 +362,7 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
             Row {
                 listOf("协议","地区","排序").forEach { tag ->
                     Box {
-                        TextButton(onClick = { filterMenu = tag }) { Text(when(tag) {
+                        SecondaryAction(onClick = { filterMenu = tag }) { Text(when(tag) {
                             "协议" -> protocol.ifEmpty { tag }; "地区" -> region.ifEmpty { tag }; else -> sort
                         }) }
                         DropdownMenu(expanded = filterMenu==tag,onDismissRequest = { filterMenu="" }) {
@@ -315,7 +377,7 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
                     }
                 }
             }
-            TextButton(enabled=!tunnel.active && !busy && visible.isNotEmpty(),onClick={
+            SecondaryAction(enabled=!tunnel.active && !busy && visible.isNotEmpty(),onClick={
                 if (context.getSharedPreferences("local",0).contains("pinned")) message="请先解除固定出口"
                 else {
                     val best=rankedNodes(context,visible).firstOrNull()
@@ -326,68 +388,91 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
             if (probeJob != null) {
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text("已测 $tested / $total")
-                    TextButton(onClick = { probeJob?.cancel() }) { Text("取消测试") }
+                    SecondaryAction(onClick = { probeJob?.cancel() }) { Text("取消测试") }
                 }
-            } else TextButton(enabled = !tunnel.active && physical != null && !busy && eligible.isNotEmpty(),
+            } else SecondaryAction(enabled = !tunnel.active && physical != null && !busy && eligible.isNotEmpty(),
                 onClick = { measure() }) { Text("测试筛选结果的真实连通") }
             if (tunnel.vpn || connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) Text("请先断开 VPN")
             FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") })
         }
-        items(visible) { row ->
-            val type = row.node.getString("type")
-            val problem = problems?.get(row.favorite)
-            ListItem(headlineContent = { TextButton(onClick = { detail = row }) { Text(row.node.getString("name")) } },
-                supportingContent = { Column {
-                    Text("${type.uppercase()} · ${row.source.label}")
-                    if (bypass && type in ShoesEngine.types && problem == null) Text(SplitRouting.SHOES, style = MaterialTheme.typography.bodySmall)
-                    metrics[row.favorite]?.let { Text(it.label,color = if (it.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-                    if (problem != null) Text(if (problem == "信息") "信息" else "无法使用：$problem", color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall)
-                } },
-                trailingContent = { Row {
-                    TextButton(onClick = {
-                        favorites = if (row.favorite in favorites) favorites - row.favorite else favorites + row.favorite
-                        prefs.edit().putStringSet("items",favorites).apply()
-                    }) { Text(if (row.favorite in favorites) "已收藏" else "收藏") }
-                    TextButton(enabled = !busy && !tunnel.active && type in CompatEngine.types && problems != null && problem == null, onClick = {
-                        if (context.getSharedPreferences("local",0).contains("pinned")) message = "请先解除固定出口"
-                        else { smart=false; chosen = row }
-                    }) { Text(if (type in CompatEngine.types && problem == null) "连接" else "仅导入") }
-                } })
+        if(!showSources) itemsIndexed(visible,key={_,row->row.favorite}) { index,row ->
+            val type=row.type
+            val problem=problems?.get(row.favorite)
+            val metric=metrics[row.favorite]
+            val usable=type in CompatEngine.types && problems!=null && problem==null
+            val local=context.getSharedPreferences("local",0)
+            val info=listOfNotNull(metric?.takeUnless { it.ok }?.label,problem?.let { if(it=="信息") it else "无法使用：$it" },
+                SplitRouting.SHOES.takeIf {bypass && type in ShoesEngine.types && usable}).joinToString(" · ")
+            ListEntrance(index) { Column {
+                if(sort=="默认" && (index==0 || visible[index-1].source.id!=row.source.id))
+                    Text(row.source.label,Modifier.padding(vertical=6.dp),style=MaterialTheme.typography.titleMedium)
+                SignalNode(row.region,row.node.getString("name"),type.uppercase()+" · "+row.source.label,
+                    metric?.takeIf {it.ok}?.ms,local.getString("simple-node",null)==row.favorite,info,{detail=row},
+                    if(!busy && !tunnel.active && usable) ({
+                        if(local.contains("pinned"))message="请先解除固定出口" else { smart=false;chosen=row }
+                    }) else null)
+            } }
         }
     }
     detail?.let { row -> AlertDialog(onDismissRequest = { detail = null },title = { Text(row.node.getString("name")) },
-        text = { Text(listOfNotNull(row.source.label,row.type.uppercase(),"地区 · "+row.region,
+        text = { Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) { Text(listOfNotNull(row.source.label,row.type.uppercase(),"地区 · "+row.region,
             metrics[row.favorite]?.let { it.label + "\n" + DateFormat.getDateTimeInstance().format(Date(it.at)) + "\n" + it.detail } ?: "尚无真连测试结果",
-            problems?.get(row.favorite)?.let { "无法使用：$it" }).joinToString("\n")) },
-        confirmButton = { TextButton(onClick = { detail = null }) { Text("关闭") } }) }
+            problems?.get(row.favorite)?.let { "无法使用：$it" }).joinToString("\n"))
+            SecondaryAction({
+                favorites=if(row.favorite in favorites) favorites-row.favorite else favorites+row.favorite
+                prefs.edit().putStringSet("items",favorites).apply()
+            }) { Text(if(row.favorite in favorites) "取消收藏" else "收藏节点") }
+        } },
+        confirmButton = {
+            if(problems!=null && problems?.get(row.favorite)==null) PrimaryAction({
+                detail=null
+                if(context.getSharedPreferences("local",0).contains("pinned")) message="请先在设置中解除固定出口"
+                else onPick(row,allRows)
+            }) { Text("设为当前节点") }
+        },dismissButton={SecondaryAction({detail=null}) {Text("关闭")}}) }
     chosen?.let { row -> AlertDialog(onDismissRequest = { chosen = null }, title = { Text("使用订阅节点连接 VPN？") },
         text = { Column { Text(row.source.label + " · " + row.node.getString("name"))
             OutlinedTextField(dns,{ dns = it.take(15) },singleLine = true,label = { Text("经节点访问的 DNS 地址") })
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) { Checkbox(smart,{ smart=it });Text("验证网页并尝试备用节点") }
             if (smart) Text("每 20 秒经 VPN 向 example.com 验证网页。连续失败两次会尝试备用节点，出口可能变化。")
         } },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { PrimaryAction(onClick = {
             val prompt = VpnService.prepare(context)
             if (prompt == null) connect(row) else consent.launch(prompt)
-        }) { Text("连接 VPN") } }, dismissButton = { TextButton(onClick = { chosen = null }) { Text("取消") } }) }
-    if (adding) AlertDialog(onDismissRequest = { adding = false; input = "" }, title = { Text("添加订阅") },
-        text = { Column {
-            OutlinedTextField(label, { label = it.take(64) }, singleLine = true, label = { Text("来源名称") })
-            OutlinedTextField(input, { input = it.take(524288) }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                label = { Text("HTTPS 地址或节点链接") })
-            TextButton(onClick = { open.launch(arrayOf("*/*")) }) { Text("选择文件或二维码图片（可多选）") }
-            TextButton(onClick = { scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setBeepEnabled(false).setPrompt("扫描订阅二维码")) }) { Text("用相机扫码") }
-        } }, confirmButton = { TextButton(enabled = label.isNotBlank() && input.isNotBlank(), onClick = {
-            val data = input; val name = label
-            update { store.import(name, data) }; adding = false; input = ""
-        }) { Text("导入") } }, dismissButton = { TextButton(onClick = { adding = false; input = "" }) { Text("取消") } })
+        }) { Text("连接 VPN") } }, dismissButton = { SecondaryAction(onClick = { chosen = null }) { Text("取消") } }) }
+    if (adding) AlertDialog(onDismissRequest = { adding = false; input = "" }, title = { Text("添加节点") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            PrimaryAction(onClick={
+                val clipboard=context.getSystemService(android.content.ClipboardManager::class.java)
+                val clip=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text?.toString()?.trim()
+                val invite=clip?.let(::sharedInvitation)
+                if(invite!=null) { adding=false;onInvite(invite) }
+                else if(clip!=null && clip.startsWith("https://") && clip.length<=8192) importAndTest(clip)
+                else errorMessage="请复制订阅链接，或选择手动输入"
+            },modifier=Modifier.fillMaxWidth()) { Text("粘贴并添加") }
+            if(errorMessage.isNotBlank()) Text(errorMessage,color=MaterialTheme.colorScheme.error)
+            SecondaryAction(onClick = { scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setBeepEnabled(false).setPrompt("扫描节点或邀请二维码")) },modifier=Modifier.fillMaxWidth()) { Text("用相机扫码") }
+            SecondaryAction(onClick = { open.launch(arrayOf("*/*")) },modifier=Modifier.fillMaxWidth()) { Text("选择文件或二维码图片（可多选）") }
+            HorizontalDivider()
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                TextButton({manualInput=!manualInput}) { Text("手动输入") }
+                TextButton({adding=false;onInvite(null)}) { Text("导入设备邀请") }
+            }
+            androidx.compose.animation.AnimatedVisibility(manualInput) {
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(input, { input = it.take(524288) }, Modifier.fillMaxWidth(),singleLine=true,
+                        visualTransformation=PasswordVisualTransformation(),label={Text("粘贴订阅链接")})
+                    OutlinedTextField(label, { label = it.take(64) }, Modifier.fillMaxWidth(),singleLine=true,label={Text("来源名称（可选）")})
+                }
+            }
+        } }, confirmButton = { if(manualInput) PrimaryAction(enabled=input.isNotBlank(),onClick={importAndTest(input)}) { Text("导入") } },
+        dismissButton = { SecondaryAction(onClick = { adding=false;input="" }) { Text("关闭") } })
     editSource?.let { source ->
         var interval by remember(source.id) { mutableIntStateOf(store.interval(source)) }
         var mark by remember(source.id) { mutableStateOf(store.appearance.getString("mark/"+source.id,"").orEmpty()) }
         var color by remember(source.id) { mutableStateOf(store.appearance.getInt("color/"+source.id,0)) }
         var pin by remember(source.id) { mutableStateOf(store.appearance.getBoolean("pin/"+source.id,false)) }
-        var auto by remember(source.id) { mutableStateOf(store.appearance.getBoolean("auto/"+source.id,false)) }
+        var auto by remember(source.id) { mutableStateOf(store.appearance.getBoolean("auto/"+source.id,true)) }
         AlertDialog(onDismissRequest = { editSource=null },title = { Text(source.label) },text = { Column {
             OutlinedTextField(mark,{ mark=it.take(8) },singleLine=true,label = { Text("图标或简称") })
             Row { listOf("主色","强调","次色").forEachIndexed { idx, label ->
@@ -398,17 +483,17 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
                 var expanded by remember { mutableStateOf(false) }
                 Box {
                     fun caption(hours: Int) = if (hours == 0) "关闭" else "$hours 小时"
-                    TextButton(onClick = { expanded=true }) { Text("自动更新 · "+caption(interval)) }
+                    SecondaryAction(onClick = { expanded=true }) { Text("自动更新 · "+caption(interval)) }
                     DropdownMenu(expanded, { expanded=false }) {
                         listOf(0,6,12,24).forEach { hours -> DropdownMenuItem(text={ Text(caption(hours)) },
                             onClick={ interval=hours; expanded=false }) }
                     }
                 }
             }
-            Row { for ((name,step) in listOf("上移" to -1,"下移" to 1)) TextButton(onClick={
+            Row { for ((name,step) in listOf("上移" to -1,"下移" to 1)) SecondaryAction(onClick={
                 update { store.move(sources,source.id,step) };editSource=null
             }) { Text(name) } }
-        } },confirmButton = { TextButton(onClick = {
+        } },confirmButton = { PrimaryAction(onClick = {
             val layout=store.appearance
             update { check(layout.edit().putString("mark/"+source.id,mark).putInt("color/"+source.id,color)
                 .putInt("refresh/"+source.id,interval).putBoolean("pin/"+source.id,pin).putBoolean("auto/"+source.id,auto).commit()) }
@@ -417,10 +502,10 @@ fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
     }
     if (exportConsent) AlertDialog(onDismissRequest = { exportConsent = false; exporting = null },
         title = { Text("导出节点连接凭据？") },text = { Text("所选文件将包含明文节点凭据。请保存到受信任的位置。") },
-        confirmButton = { TextButton(onClick = { exportConsent = false; export.launch("nexus-nodes.json") }) { Text("选择保存位置") } },
-        dismissButton = { TextButton(onClick = { exportConsent = false; exporting = null }) { Text("取消") } })
+        confirmButton = { PrimaryAction(onClick = { exportConsent = false; export.launch("nexus-nodes.json") }) { Text("选择保存位置") } },
+        dismissButton = { SecondaryAction(onClick = { exportConsent = false; exporting = null }) { Text("取消") } })
     deleting?.let { source -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除“${source.label}”？") },
-        text = { Text("将移除这个来源及其节点。") }, confirmButton = { TextButton(onClick = {
+        text = { Text("将移除这个来源及其节点。") }, confirmButton = { PrimaryAction(onClick = {
             update { store.remove(source.id) }; if (selected == source.id) selected = null; deleting = null
-        }) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }) }
+        }) { Text("删除") } }, dismissButton = { SecondaryAction(onClick = { deleting = null }) { Text("取消") } }) }
 }
