@@ -97,10 +97,15 @@ fn native_packet(
                 SocketAddr::new(src, t.source_port()),
                 SocketAddr::new(dst, t.destination_port()),
             );
+            // Domestic destinations are taken natively whether or not this worker saw the DNS
+            // answer: after a network switch apps reuse cached addresses, and the native stack
+            // only answers the SYN once the direct connection exists, so a dead IPv6 path is
+            // refused at once and the app falls back to IPv4 instead of seeing a reset after
+            // Xray accepted the connection.
             active(key)
                 || t.syn()
                     && !t.ack()
-                    && (key.1.port() == 53 || routing.refused(key.1) || rules.learned(dst, now))
+                    && (key.1.port() == 53 || routing.refused(key.1) || rules.direct(dst, now))
         }
         Some(TransportSlice::Udp(u)) => {
             if u.destination_port() == 53 {
@@ -116,7 +121,7 @@ fn native_packet(
                     return *owned;
                 }
             }
-            let owned = rules.learned(dst, now);
+            let owned = rules.direct(dst, now);
             if udp.len() >= 4096 {
                 udp.retain(|_, (_, end)| *end > now);
             }

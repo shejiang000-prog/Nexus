@@ -202,3 +202,11 @@
 - 服务记录 `isAlwaysOn()`。设置页新增「断线自动恢复」卡片：未开启时说明风险，并提供「去系统设置开启」入口（`ACTION_VPN_SETTINGS`）。
 - 新 QA 模式 `resume`：模拟系统按始终开启方式重启服务。S24 实测：界面连接订阅节点 → `kill -9` → VPN 消失 → `resume` 返回 `resumed subscription node after subscription request`，-1；断开后 `resume-request` 已清除。
 - 未测：真正打开始终开启后由系统发起的重启（需要改系统设置，留给用户在真机上确认）；订阅在进程死亡期间刷新、`updated` 不一致时，恢复会失败，并提示「节点配置无法使用」。
+
+### 5G 切回 Wi-Fi 后国内网站打不开（Claude）
+
+- **现象（S24，Xray 订阅节点，绕过大陆）：** 从 5G 切回 Wi-Fi 后，每 0.3 秒访问一次百度，连续约 12 秒失败；同期 google 一直正常。逐项拆开看：IPv4 一直成功，IPv6 握手成功后 TLS 报错，默认请求走的是 IPv6，因此失败。
+- **原因：** 5G 下系统 DNS 缓存了百度的 AAAA 记录，而这台 Wi-Fi 没有 IPv6。切换网络时 worker 重启，Rust 层「已学习的国内 IP」被清空。Xray 模式下 `native_packet` 只接管已学习的 IP，所以缓存里的国内 IPv6 交给了 Xray。Xray 的 TUN 先在本地完成握手，再去直连失败。应用看到的是「已连接又被断开」，不会回退到 IPv4。
+- **修复：** `vpn.rs` 中 Xray 模式的 TCP SYN 与 UDP 判定从 `rules.learned` 改为 `rules.direct`，即「已学习」或「命中国内 IP 段」都由原生栈处理。原生栈等直连建立后才回 SYN-ACK，不通的 IPv6 会立即被拒，应用随即回退 IPv4。Xray 规则本来就把国内 IP 段走直连，所以出口不变。
+- **验证：** 修复后同样的时间线测试，Wi-Fi→5G、5G→Wi-Fi 各 70 次采样，百度和 google 全部成功。切回 Wi-Fi 后，IPv6 在 2–4 ms 内被拒，默认请求走 IPv4 返回 200。`split-public -e engine xray` 在雷电和 S24 上均返回 -1：绕过时国内出口与物理网络一致，境外与全局一致。`cargo test`、`cargo clippy -D warnings` 通过。split-lab（需要 WSL 实验室）本轮未跑。
+- 之前记录的「5G 下国内回显失败」是切换窗口里碰上的同一类问题；本次在 5G 稳定后复测，国内回显返回 200。
