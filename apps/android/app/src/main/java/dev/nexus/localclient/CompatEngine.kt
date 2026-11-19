@@ -86,6 +86,26 @@ object CompatEngine {
         }
     }
 
+    /**
+     * Resolves the node's domain with the physical network's own resolver, which tries every DNS
+     * server and honours Private DNS. Xray would otherwise ask only the first server, and one stale
+     * or unreachable entry makes every domain-addressed node fail. TLS keeps the domain as SNI.
+     */
+    internal fun resolved(outbound: JSONObject, network: Network): JSONObject {
+        val copy = JSONObject(outbound.toString())
+        val settings = copy.optJSONObject("settings") ?: return copy
+        val server = settings.takeIf { it.has("address") } ?: settings.optJSONArray("vnext")?.optJSONObject(0)
+            ?: settings.optJSONArray("servers")?.optJSONObject(0) ?: return copy
+        val host = server.optString("address").removeSurrounding("[", "]")
+        if (host.isEmpty() || host.matches(Regex("[0-9.]+|.*:.*"))) return copy
+        copy.optJSONObject("streamSettings")?.optJSONObject("tlsSettings")?.let { tls ->
+            if (tls.optString("serverName").isEmpty()) tls.put("serverName", host)
+        }
+        val address = network.getAllByName(host).first()
+        server.put("address", address.hostAddress)
+        return copy
+    }
+
     @Synchronized fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
                           tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, ready: () -> Unit): Int {
         socketProtection = { fd ->
@@ -109,7 +129,7 @@ object CompatEngine {
             val config = JSONObject().put("env", JSONObject().put("xray.tun.fd", tun.fd.toString()))
                 .put("log",JSONObject().put("loglevel","none"))
                 .put("inbounds",JSONArray().put(JSONObject().put("protocol","tun").put("settings",JSONObject().put("name","nexus").put("mtu",1500))))
-                .put("outbounds",JSONArray().put(outbound))
+                .put("outbounds",JSONArray().put(resolved(outbound, network)))
             invoke("runXray",JSONObject().put("xrayJson",config.toString()))
             ready()
             waitForStop(cancel, health)

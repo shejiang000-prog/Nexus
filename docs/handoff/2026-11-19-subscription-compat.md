@@ -31,7 +31,20 @@
 | `verify_subscription_vpn.py --links --protocol vless --protocol tuic --ld` | 全设备 VPN：VLESS → Trojan、TUIC → Shadowsocks 首选与停机切换，浏览器与独立应用 DNS/TCP/UDP 均通过；双网关闭后自动恢复，测速下行 3.58 Mbps、上行 5.28 Mbps；断开后直连通过 |
 | 界面 | 来源卡片显示“15 个节点（5 个暂不支持）”，节点行红字显示原因、按钮为“仅导入” |
 
-未做：REALITY 节点经 `TunnelService` 的全设备 VPN（转换与 Xray 出站已实测，VPN 层未改动）；真实机场订阅（需用户自己的订阅地址）。
+## 真实机场订阅
+
+用户提供的一个机场订阅（地址未写入仓库），HTTPS 导入得到 41 个节点：29 个 VLESS + REALITY + Vision（uTLS `ios`），12 个 AnyTLS。全部可转换，流量信息显示为“已用 80.3 GB / 1200 GB · 剩余 1120 GB”。
+
+| 项目 | 结果 |
+|---|---|
+| `CatalogCheck -e mode probe-source -e source <名称>` | 37 / 41 个节点经应用自身转换与引擎取得 https://example.com（证书正常校验）。失败的 3 个新加坡节点和 1 个台湾节点，在 WSL 用官方 Xray CLI 同样失败，属节点侧问题 |
+| 全设备 VPN | VLESS REALITY 与 AnyTLS 各一个节点：DNS、example.com/org HTTPS 通过；应用内测速分别为下行 4.68 / 上行 18.00 Mbps、下行 6.64 / 上行 8.34 Mbps |
+
+发现并修复的问题：Xray 只用物理网络的第一个 DNS 服务器解析节点域名。雷电沿用了主机 v2rayN TUN 的 DNS（172.18.0.2），TUN 关闭后该地址失效，所有以域名为地址的 VLESS 节点无法连接；真机的第一个 DNS 不可达时同样会发生。`CompatEngine.resolved` 改为先用物理网络的系统解析器（会尝试全部 DNS 并遵循私人 DNS）解析，再交给 Xray；TLS 未写 SNI 时保留域名作 SNI。shoes（TUIC、AnyTLS）原本就这样解析。
+
+测试注意：主机 v2rayN 开启 TUN 时，WSL 与雷电的流量都会先经过它的路由。该订阅 AnyTLS 节点的 SNI 在那条路径上被中断，在 TUN 开启时得出的结论不可靠。测试前确认 `route print` 中没有 `singbox_tun` 默认路由。
+
+未做：REALITY 节点经 `TunnelService` 的全设备 VPN 已用真实节点验证，但未覆盖切换与断网恢复。
 
 ## 复验
 

@@ -36,6 +36,13 @@ internal data class NodeRow(val source: Subscription, val index: Int, val node: 
     val favorite by lazy { nodeKey(source.id,node) }
 }
 
+/** Binary units, as panels count them: 1288490188800 bytes is 1200 GB on the provider's page. */
+internal fun bytes(n: Long): String = when {
+    n >= 100L shl 30 -> String.format(java.util.Locale.ROOT, "%.0f GB", n / 1073741824.0)
+    n >= 1L shl 30 -> String.format(java.util.Locale.ROOT, "%.1f GB", n / 1073741824.0)
+    else -> String.format(java.util.Locale.ROOT, "%.0f MB", n / 1048576.0)
+}
+
 internal fun Subscription.hasAllowance(): Boolean {
     val usage = usage.split(';').mapNotNull { field ->
         val parts = field.trim().split('=',limit=2)
@@ -264,16 +271,15 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                 Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
                     " · ${DateFormat.getDateTimeInstance().format(Date(source.updated))}",
                     style = MaterialTheme.typography.bodySmall)
-                val usage = source.usage.split(';').mapNotNull {
-                    val n = it.substringAfter('=', "").toLongOrNull() ?: return@mapNotNull null
-                    when (it.substringBefore('=')) {
-                        "expire" -> if (n in 1..253402300799) "到期 " + DateFormat.getDateInstance().format(Date(n * 1000)) else null
-                        "total" -> "总量 ${n / 1048576} MiB"
-                        "download" -> "下载 ${n / 1048576} MiB"
-                        "upload" -> "上传 ${n / 1048576} MiB"
-                        else -> null
-                    }
-                }
+                val fields = source.usage.split(';').mapNotNull { field ->
+                    field.substringAfter('=', "").toLongOrNull()?.takeIf { it >= 0 }?.let { field.substringBefore('=').trim() to it }
+                }.toMap()
+                val used = (fields["upload"] ?: 0) + (fields["download"] ?: 0)
+                val total = fields["total"]?.takeIf { it > 0 }
+                val usage = listOfNotNull(
+                    if (total != null) "已用 ${bytes(used)} / ${bytes(total)} · 剩余 ${bytes((total - used).coerceAtLeast(0))}"
+                        else if (fields.containsKey("upload") || fields.containsKey("download")) "已用 ${bytes(used)}" else null,
+                    fields["expire"]?.takeIf { it in 1..253402300799 }?.let { "到期 " + DateFormat.getDateInstance().format(Date(it * 1000)) })
                 Text(usage.takeIf { it.isNotEmpty() }?.joinToString(" · ") ?: "流量与到期时间未提供", style = MaterialTheme.typography.bodySmall)
                 Row {
                     if (source.url.isNotEmpty()) TextButton(enabled = !busy,

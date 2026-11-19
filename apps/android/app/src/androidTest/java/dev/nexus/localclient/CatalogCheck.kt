@@ -138,6 +138,70 @@ class CatalogCheck : Instrumentation() {
             if (args.getString("keep") != "yes") store.all().filter { it.label.startsWith(prefix) }.forEach { store.remove(it.id) }
         }
     }
+    /**
+     * Each node of one imported source, through the app's own conversion and engine, fetches
+     * https://example.com with normal certificate checks. Reports time per node; prints no credentials.
+     */
+    private fun probeSource(result: Bundle) {
+        val label = requireNotNull(args.getString("source"))
+        require(!TunnelService.state.value.active) { "disconnect the VPN first" }
+        val source = Subscriptions(targetContext).all().single { it.label == label }
+        val network = requireNotNull(targetContext.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
+        var passed = 0
+        for (i in 0 until source.nodes.length()) {
+            val node = source.nodes.getJSONObject(i)
+            val name = "%02d %s %s".format(i, node.getString("type"), node.getString("name"))
+            result.putString(name, try {
+                "OK ${httpsVia(CompatEngine.resolved(CompatEngine.outbound(node), network))} ms".also { passed++ }
+            } catch (e: Exception) { "FAIL ${e.javaClass.simpleName}: ${e.message?.take(120)}" })
+        }
+        result.putString("summary", "$passed / ${source.nodes.length()} nodes fetched https://example.com")
+    }
+
+    private fun httpsVia(out: JSONObject): Long {
+        val port = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
+        fun call(method: String, payload: JSONObject) =
+            JSONObject(libXray.LibXray.invoke(JSONObject().put("apiVersion", 3).put("method", method).put("payload", payload).toString()))
+        val pair = if (out.has("shoesClient")) android.os.ParcelFileDescriptor.createSocketPair() else null
+        var handle = 0L
+        try {
+            if (pair != null) {
+                val client = JSONObject(out.getJSONObject("shoesClient").toString())
+                val rule = JSONObject().put("masks", "0.0.0.0/0").put("action", "allow").put("client_chain", client)
+                val servers = JSONArray().put(JSONObject().put("device_fd", pair[0].fd))
+                    .put(JSONObject().put("address", "127.0.0.1:$port").put("protocol", JSONObject().put("type", "mixed"))
+                        .put("rules", JSONArray().put(rule)))
+                check(com.shoesproxy.ShoesNative.init("off") == 0)
+                handle = com.shoesproxy.ShoesNative.start(servers.toString()) { true }
+                check(handle > 0)
+                Thread.sleep(300)
+            } else {
+                val cfg = JSONObject().put("inbounds", JSONArray().put(JSONObject().put("listen", "127.0.0.1").put("port", port)
+                    .put("protocol", "socks").put("settings", JSONObject().put("auth", "noauth"))))
+                    .put("outbounds", JSONArray().put(out)).put("log", JSONObject().put("loglevel", "none"))
+                check(call("runXray", JSONObject().put("xrayJson", cfg.toString())).getBoolean("success"))
+            }
+            val start = android.os.SystemClock.elapsedRealtime()
+            val proxy = java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", port))
+            java.net.Socket(proxy).use { raw ->
+                raw.soTimeout = 12000
+                raw.connect(java.net.InetSocketAddress.createUnresolved("example.com", 443), 12000)
+                val factory = javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
+                (factory.createSocket(raw, "example.com", 443, true) as javax.net.ssl.SSLSocket).use { tls ->
+                    tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                    tls.startHandshake()
+                    tls.outputStream.write("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n".toByteArray())
+                    val status = tls.inputStream.bufferedReader().readLine().orEmpty()
+                    check(" 200 " in status) { status.take(40) }
+                }
+            }
+            return android.os.SystemClock.elapsedRealtime() - start
+        } finally {
+            if (handle > 0) com.shoesproxy.ShoesNative.stop(handle)
+            pair?.forEach { it.close() }
+            if (pair == null) call("stopXray", JSONObject())
+        }
+    }
     private fun nodeCheck() {
         val result = Bundle()
         val root = targetContext.noBackupFilesDir
@@ -209,6 +273,7 @@ class CatalogCheck : Instrumentation() {
                 }
                 "failover" -> checkFailover(result)
                 "formats" -> checkFormats(result)
+                "probe-source" -> probeSource(result)
                 "remove-formats" -> {
                     val store = Subscriptions(targetContext)
                     store.all().filter { it.label.matches(Regex("Nexus-QA-[0-9a-f]{8}-(clash|singbox|links)")) }
