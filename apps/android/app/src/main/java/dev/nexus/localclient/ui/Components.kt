@@ -4,6 +4,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,6 +48,23 @@ internal fun SecondaryAction(onClick:()->Unit,modifier:Modifier=Modifier,enabled
     val c=MaterialTheme.colorScheme
     OutlinedButton(onClick,modifier.heightIn(min=48.dp),enabled=enabled,shape=buttonShape,border=BorderStroke(1.5.dp,c.outlineVariant),
         colors=ButtonDefaults.outlinedButtonColors(contentColor=c.onSurface,disabledContainerColor=c.surfaceVariant,disabledContentColor=c.onSurfaceVariant),content=content)
+}
+
+/** A small pill action for page headers, where a full-width primary button would dominate. */
+@Composable
+internal fun CompactAction(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,filled:Boolean=true,content:@Composable RowScope.()->Unit) {
+    val c=MaterialTheme.colorScheme
+    val colors=if(filled) ButtonDefaults.buttonColors(containerColor=signal,contentColor=Color(0xFF03140C),
+        disabledContainerColor=c.surfaceVariant,disabledContentColor=c.onSurfaceVariant)
+        else ButtonDefaults.buttonColors(containerColor=c.surfaceVariant,contentColor=c.onSurface,
+        disabledContainerColor=c.surfaceVariant,disabledContentColor=c.onSurfaceVariant)
+    Button(onClick,modifier.heightIn(min=44.dp),enabled=enabled,shape=RoundedCornerShape(22.dp),colors=colors,
+        contentPadding=PaddingValues(horizontal=16.dp)) {
+        Canvas(Modifier.size(14.dp)){ val w=size.width; val ink=if(enabled)(if(filled)Color(0xFF03140C) else c.onSurface) else c.onSurfaceVariant
+            drawLine(ink,Offset(w/2,0f),Offset(w/2,w),2.dp.toPx(),StrokeCap.Round);drawLine(ink,Offset(0f,w/2),Offset(w,w/2),2.dp.toPx(),StrokeCap.Round) }
+        Spacer(Modifier.width(6.dp))
+        ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(fontSize=15.sp,fontWeight=FontWeight.SemiBold)) { content() }
+    }
 }
 
 @Composable
@@ -99,26 +117,84 @@ private fun regionBadge(region:String):String {
     return if(region.isBlank() || region=="未提供") "·" else String(codes,0,minOf(2,codes.size)).uppercase(java.util.Locale.ROOT)
 }
 
+/** Where a row sits in a grouped list, so a run of rows reads as one card. */
+internal enum class GroupPlace { Single, First, Middle, Last }
+internal fun groupPlace(index:Int,last:Int,startsGroup:Boolean,endsGroup:Boolean)=when {
+    (index==0 || startsGroup) && (index==last || endsGroup) -> GroupPlace.Single
+    index==0 || startsGroup -> GroupPlace.First
+    index==last || endsGroup -> GroupPlace.Last
+    else -> GroupPlace.Middle
+}
+internal fun GroupPlace.shape():RoundedCornerShape { val r=20.dp; return when(this) {
+    GroupPlace.Single->RoundedCornerShape(r); GroupPlace.First->RoundedCornerShape(topStart=r,topEnd=r)
+    GroupPlace.Last->RoundedCornerShape(bottomStart=r,bottomEnd=r); GroupPlace.Middle->RoundedCornerShape(0.dp) } }
+
 @Composable
-internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,selected:Boolean,info:String,
-                        onDetails:()->Unit,onSelect:(()->Unit)?) {
+internal fun RegionBadge(region:String,private:Boolean=false) {
+    val c=MaterialTheme.colorScheme
+    Box(Modifier.size(40.dp).background(if(private)signalSoft else c.surfaceVariant,RoundedCornerShape(13.dp)),contentAlignment=Alignment.Center){
+        Text(regionBadge(region),style=numberStyle.copy(fontSize=14.sp),fontWeight=FontWeight.Bold,color=if(private)c.primary else c.onSurface) }
+}
+
+@Composable
+internal fun LatencyMeter(latency:Long?) {
     val c=MaterialTheme.colorScheme
     val bars=when { latency==null->0;latency<150->4;latency<350->3;latency<800->2;else->1 }
-    Row(Modifier.fillMaxWidth().background(c.surface).clickable(onClick=onDetails).padding(start=12.dp,end=4.dp).heightIn(min=64.dp),
-        verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(38.dp).background(c.surfaceVariant,RoundedCornerShape(12.dp)),contentAlignment=Alignment.Center){
-            Text(regionBadge(region),style=numberStyle,fontWeight=FontWeight.Bold) }
-        Column(Modifier.weight(1f).padding(vertical=8.dp)) { Text(name,fontWeight=FontWeight.SemiBold);Text(detail,color=c.onSurfaceVariant)
-            if(info.isNotBlank()) Text(info,color=c.onSurfaceVariant) }
-        Canvas(Modifier.size(18.dp,16.dp)){ repeat(4){ i ->
-            val h=size.height*(i+1)/4
-            drawLine(if(i<bars)c.onSurfaceVariant else c.outlineVariant,Offset(size.width*(i+.5f)/4,size.height),Offset(size.width*(i+.5f)/4,size.height-h),2.dp.toPx())
+    val tint=when { latency==null->c.outlineVariant;latency<350->signal;latency<800->signalAmber;else->c.onSurfaceVariant }
+    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        // Untested nodes show only the label, leaving the name more room.
+        if(latency!=null) Canvas(Modifier.size(16.dp,14.dp)){ repeat(4){ i ->
+            val w=size.width/4;val h=size.height*(i+1)/4
+            drawRoundRect(if(i<bars)tint else c.outlineVariant,Offset(i*w+w*.15f,size.height-h),androidx.compose.ui.geometry.Size(w*.7f,h),
+                androidx.compose.ui.geometry.CornerRadius(1.dp.toPx()))
         } }
-        if(latency!=null) Text("${latency} ms",style=numberStyle)
-        if(onSelect!=null || selected) Box(Modifier.size(48.dp).then(if(onSelect!=null)Modifier.clickable(role=Role.Button,onClick=onSelect)
-            .semantics {contentDescription="使用此节点"} else Modifier),contentAlignment=Alignment.Center){
-            if(selected)Box(Modifier.size(24.dp).background(signal,androidx.compose.foundation.shape.CircleShape),contentAlignment=Alignment.Center){Text("✓",color=Color(0xFF03140C))}
-            else Text("›",color=c.onSurfaceVariant,fontSize=22.sp)
+        Text(if(latency==null)"未测" else "$latency ms",Modifier.widthIn(min=if(latency==null) 0.dp else 52.dp),style=numberStyle.copy(fontSize=14.sp),
+            fontWeight=FontWeight.SemiBold,color=when { latency==null->c.onSurfaceVariant;latency<350->c.primary;latency<800->signalAmber;else->c.onSurfaceVariant },
+            textAlign=androidx.compose.ui.text.style.TextAlign.End)
+    }
+}
+
+@Composable
+internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,selected:Boolean,info:String,
+                        onDetails:()->Unit,onSelect:(()->Unit)?,place:GroupPlace=GroupPlace.Single) {
+    val c=MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface)) {
+        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=66.dp),color=c.outlineVariant)
+        Row(Modifier.fillMaxWidth().clickable(onClick=onDetails).padding(start=14.dp,end=4.dp).heightIn(min=64.dp),
+            verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            RegionBadge(region)
+            Column(Modifier.weight(1f).padding(vertical=10.dp)) {
+                Text(name,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Text(detail,color=c.onSurfaceVariant,fontSize=14.sp,lineHeight=20.sp,maxLines=1)
+                if(info.isNotBlank()) Text(info,color=signalAmber,fontSize=13.sp,lineHeight=18.sp)
+            }
+            LatencyMeter(latency)
+            if(onSelect!=null || selected) Box(Modifier.size(48.dp).then(if(onSelect!=null)Modifier.clickable(role=Role.Button,onClick=onSelect)
+                .semantics {contentDescription="使用此节点"} else Modifier),contentAlignment=Alignment.Center){
+                if(selected) Box(Modifier.size(24.dp).background(signal,CircleShape),contentAlignment=Alignment.Center){
+                    Canvas(Modifier.size(12.dp)){ val w=size.width
+                        drawPath(Path().apply{moveTo(w*.05f,w*.52f);lineTo(w*.4f,w*.85f);lineTo(w*.95f,w*.18f)},Color(0xFF03140C),
+                            style=androidx.compose.ui.graphics.drawscope.Stroke(2.4.dp.toPx(),cap=StrokeCap.Round,join=StrokeJoin.Round)) } }
+                else Box(Modifier.size(22.dp).border(1.5.dp,c.outline,CircleShape))
+            }
+        }
+    }
+}
+
+/** The connection page's current-node card: the whole card opens the node list. */
+@Composable
+internal fun CurrentNode(region:String,name:String,detail:String,latency:Long?,private:Boolean,open:()->Unit) {
+    val c=MaterialTheme.colorScheme
+    Surface(shape=signalCard,color=c.surface,border=BorderStroke(1.dp,c.outlineVariant)) {
+        Row(Modifier.fillMaxWidth().clickable(role=Role.Button,onClickLabel="切换节点",onClick=open).padding(14.dp),
+            verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            RegionBadge(region,private)
+            Column(Modifier.weight(1f)) {
+                Text(name,fontWeight=FontWeight.SemiBold,fontSize=17.sp,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Text(detail,color=c.onSurfaceVariant,fontSize=14.sp,maxLines=1)
+            }
+            LatencyMeter(latency)
+            Text("›",color=c.onSurfaceVariant,fontSize=22.sp)
         }
     }
 }

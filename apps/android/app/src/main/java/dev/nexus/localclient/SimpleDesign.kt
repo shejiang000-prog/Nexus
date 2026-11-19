@@ -115,16 +115,17 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         }
     }
     val details:@Composable ()->Unit={
-        Surface(shape=signalCard,border=BorderStroke(1.dp,c.outlineVariant),color=c.surface){
-            Column{Text("当前节点",Modifier.padding(start=14.dp,top=8.dp),color=c.onSurfaceVariant)
-                SignalNode(region,node.ifBlank{"选择节点"},nodeInfo,latency,false,"",pick,pick)}
-        }
+        CurrentNode(region,displayName(node).ifBlank{"选择节点"},nodeInfo,latency,region=="NX",pick)
         ModeSwitch(bypass,mode)
-        Text(if(bypass && state.shoes)SplitRouting.SHOES else if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",color=c.onSurfaceVariant)
-        RateTiles(traffic)
+        Text(if(bypass && state.shoes)SplitRouting.SHOES else if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",
+            Modifier.fillMaxWidth(),color=c.onSurfaceVariant,fontSize=14.sp,textAlign=TextAlign.Center)
+        androidx.compose.animation.AnimatedVisibility(on,enter=androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(450,easing=enterCurve))+
+            androidx.compose.animation.expandVertically(androidx.compose.animation.core.tween(450,easing=enterCurve)),
+            exit=androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200,easing=exitCurve))+
+            androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.tween(200,easing=exitCurve))) { RateTiles(traffic) }
         if(state.port>0 && !state.vpn)Text("本地端口 "+state.port)
         if(notice.isNotBlank())Notice(notice,state.error.isNotEmpty())
-        overview?.invoke()
+        if(overview!=null){Spacer(Modifier.height(10.dp));overview()}
     }
     BoxWithConstraints(Modifier.fillMaxSize()){
         if(maxWidth>=600.dp && maxWidth>maxHeight)Row(Modifier.fillMaxSize().padding(horizontal=20.dp),horizontalArrangement=Arrangement.spacedBy(20.dp)){

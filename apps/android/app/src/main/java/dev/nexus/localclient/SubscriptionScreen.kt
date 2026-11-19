@@ -35,10 +35,27 @@ internal data class NodeRow(val source: Subscription, val index: Int, val node: 
     val region by lazy {
         val data = node.optJSONObject("config")
         data?.optString("country")?.takeIf { it.isNotBlank() }?.take(32)
+            ?: regionFromName(node.getString("name"))
             ?: Regex("[\\x{1F1E6}-\\x{1F1FF}]{2}").find(node.getString("name"))?.value ?: "未提供"
     }
+    /** Name without leading flag emoji; the region badge already shows where the node is. */
+    val title by lazy { displayName(node.getString("name")) }
     val favorite by lazy { nodeKey(source.id,node) }
 }
+
+// Providers often put a misleading flag on Taiwan, Hong Kong and Macau nodes, so the written
+// place name wins over the flag emoji.
+private val placeCodes = listOf(
+    "台湾" to "TW", "臺灣" to "TW", "香港" to "HK", "澳门" to "MO", "日本" to "JP", "东京" to "JP", "大阪" to "JP",
+    "韩国" to "KR", "首尔" to "KR", "新加坡" to "SG", "狮城" to "SG", "美国" to "US", "洛杉矶" to "US", "纽约" to "US",
+    "硅谷" to "US", "西雅图" to "US", "英国" to "GB", "伦敦" to "GB", "德国" to "DE", "法兰克福" to "DE", "法国" to "FR",
+    "荷兰" to "NL", "加拿大" to "CA", "澳大利亚" to "AU", "澳洲" to "AU", "俄罗斯" to "RU", "印度" to "IN", "土耳其" to "TR",
+    "马来西亚" to "MY", "泰国" to "TH", "越南" to "VN", "菲律宾" to "PH", "印尼" to "ID", "印度尼西亚" to "ID",
+    "巴西" to "BR", "阿根廷" to "AR", "意大利" to "IT", "西班牙" to "ES", "瑞士" to "CH", "瑞典" to "SE", "爱尔兰" to "IE",
+    "以色列" to "IL", "阿联酋" to "AE", "迪拜" to "AE", "南非" to "ZA", "墨西哥" to "MX", "新西兰" to "NZ", "回国" to "CN", "中国" to "CN")
+internal fun regionFromName(name: String): String? = placeCodes.firstOrNull { name.contains(it.first) }?.second
+internal fun displayName(name: String): String =
+    name.replace(Regex("^(?:[\\x{1F1E6}-\\x{1F1FF}]{2}|\\x{1F3F4}[\\x{E0061}-\\x{E007F}]+|[\\s|·_-])+"), "").ifBlank { name }
 
 /** Binary units, as panels count them: 1288490188800 bytes is 1200 GB on the provider's page. */
 internal fun bytes(n: Long): String = when {
@@ -265,14 +282,12 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
         }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
-        state = scroll, contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f).align(androidx.compose.ui.Alignment.CenterVertically)) {
-                    Text(if(sources.isEmpty()) "暂无订阅" else "${allRows.size} 个订阅节点",style=MaterialTheme.typography.titleLarge)
-                    if(sources.isNotEmpty()) Text("来自 ${sources.size} 个订阅",color=MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                PrimaryAction(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加节点") }
+        state = scroll, contentPadding = PaddingValues(vertical = 16.dp)) {
+        item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(if(sources.isEmpty()) "暂无订阅" else "${allRows.size} 个节点 · ${sources.size} 个订阅",Modifier.weight(1f),
+                    color=MaterialTheme.colorScheme.onSurfaceVariant)
+                CompactAction(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加节点") }
             }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -298,19 +313,19 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 Spacer(Modifier.height(12.dp))
                 Text("添加机场订阅后，会自动测试并选择最快节点。",color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        if(sources.isNotEmpty()) item {
+        }}
+        if(sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Segment(listOf("节点列表","订阅管理"),if(showSources)1 else 0){showSources=it==1}
-        }
-        if(!showSources && allRows.isNotEmpty())item {
+        }}
+        if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val pinned=context.getSharedPreferences("local",0).contains("pinned")
             AutoSelection(automatic,enabled=!pinned,onChange={value->onAutomatic(value,allRows)})
             if(pinned)Text("请先在设置中解除固定出口")
-        }
-        if(!showSources)item {home(allRows)}
-        if (showSources && sources.isNotEmpty()) item {
+        }}
+        if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { home(allRows) } }
+        if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L),onSource={editSource=it})
-        }
+        }}
         if(showSources) items(sources, key = { it.id }) { source ->
             Column {
                 var folded by remember { mutableStateOf(store.appearance.getBoolean("fold/"+source.id,false)) }
@@ -346,10 +361,10 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 HorizontalDivider()
             }
         }
-        if(!showSources && sources.isNotEmpty()) item {
+        if(!showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SecondaryAction(onClick={tools=!tools}) {Text(if(tools) "收起筛选与测速" else "筛选与测速")}
-        }
-        if(!showSources && tools && sources.isNotEmpty()) item {
+        }}
+        if(!showSources && tools && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box {
                 SecondaryAction(onClick = { menu = true }) { Text(sources.find { it.id == selected }?.label ?: "全部来源") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -394,7 +409,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 onClick = { measure() }) { Text("测试筛选结果的真实连通") }
             if (tunnel.vpn || connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) Text("请先断开 VPN")
             FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") })
-        }
+        }}
         if(!showSources) itemsIndexed(visible,key={_,row->row.favorite}) { index,row ->
             val type=row.type
             val problem=problems?.get(row.favorite)
@@ -403,14 +418,21 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
             val local=context.getSharedPreferences("local",0)
             val info=listOfNotNull(metric?.takeUnless { it.ok }?.label,problem?.let { if(it=="信息") it else "无法使用：$it" },
                 SplitRouting.SHOES.takeIf {bypass && type in ShoesEngine.types && usable}).joinToString(" · ")
+            val grouped=sort=="默认"
+            val starts=grouped && (index==0 || visible[index-1].source.id!=row.source.id)
+            val ends=grouped && (index==visible.lastIndex || visible[index+1].source.id!=row.source.id)
             ListEntrance(index) { Column {
-                if(sort=="默认" && (index==0 || visible[index-1].source.id!=row.source.id))
-                    Text(row.source.label,Modifier.padding(vertical=6.dp),style=MaterialTheme.typography.titleMedium)
-                SignalNode(row.region,row.node.getString("name"),type.uppercase()+" · "+row.source.label,
+                if(starts) Row(Modifier.fillMaxWidth().padding(start=4.dp,end=4.dp,top=if(index==0) 0.dp else 14.dp,bottom=8.dp),
+                    verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                    Text(row.source.label,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    Text("${visible.count { it.source.id==row.source.id }} 个",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                SignalNode(row.region,row.title,if(grouped) type.uppercase() else type.uppercase()+" · "+row.source.label,
                     metric?.takeIf {it.ok}?.ms,local.getString("simple-node",null)==row.favorite,info,{detail=row},
                     if(!busy && !tunnel.active && usable) ({
                         if(local.contains("pinned"))message="请先解除固定出口" else { smart=false;chosen=row }
-                    }) else null)
+                    }) else null,
+                    groupPlace(index,visible.lastIndex,starts,ends))
             } }
         }
     }

@@ -19,6 +19,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.Dispatchers
@@ -68,18 +74,33 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(20.dp),
         verticalArrangement=Arrangement.spacedBy(12.dp)) {
         if (adding) {
-            Text("接入服务器",style=MaterialTheme.typography.headlineSmall,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
-            Text("使用一次服务器密码，绑定后即可在本机管理。",color=MaterialTheme.colorScheme.onSurfaceVariant)
-            HorizontalDivider()
-            OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") })
-            OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
-                visualTransformation=PasswordVisualTransformation(),label={ Text("root 密码（仅用一次）") })
+            val c=MaterialTheme.colorScheme
+            Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Box(Modifier.size(44.dp).background(signalSoft,androidx.compose.foundation.shape.RoundedCornerShape(14.dp)),
+                            contentAlignment=androidx.compose.ui.Alignment.Center) { CompositionLocalProvider(LocalContentColor provides c.primary) { SectionIcon(2) } }
+                        Column(Modifier.weight(1f)) {
+                            Text("接入服务器",style=MaterialTheme.typography.titleLarge,fontWeight=androidx.compose.ui.text.font.FontWeight.Bold)
+                            Text("只用一次密码，之后在本机直接管理",color=c.onSurfaceVariant,fontSize=14.sp)
+                        }
+                    }
+                    val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,focusedBorderColor=c.primary,
+                        unfocusedContainerColor=c.background,focusedContainerColor=c.background)
+                    OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
+                        shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),colors=field)
+                    OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
+                        visualTransformation=PasswordVisualTransformation(),label={ Text("root 密码（仅用一次）") },
+                        shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),colors=field)
+                    Text("密码不会保存。App 会生成自己的管理密钥，以后用它登录。",color=c.onSurfaceVariant,fontSize=13.sp)
+                }
+            }
             val ready=host.isNotBlank() && password.isNotEmpty() && !busy
-            if (!ready && !busy) Text(if (host.isBlank()) "先填写服务器 IP" else "请输入服务器密码")
             PrimaryAction({ checkHost(true) },Modifier.fillMaxWidth(),enabled=ready) { Text("部署新服务器") }
             SecondaryAction({ checkHost(false) },Modifier.fillMaxWidth(),enabled=ready) { Text("绑定已部署的服务器") }
-            HorizontalDivider()
-            TextButton({ expanded=!expanded }) { Text(if(expanded) "收起高级设置" else "高级设置") }
+            if (!ready && !busy) Text(if (host.isBlank()) "先填写服务器 IP" else "请输入服务器密码",Modifier.fillMaxWidth(),
+                color=c.onSurfaceVariant,fontSize=14.sp,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+            TextButton({ expanded=!expanded }) { Text(if(expanded) "收起高级设置" else "高级设置",color=c.onSurfaceVariant) }
             androidx.compose.animation.AnimatedVisibility(expanded) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Text("端口是服务器的网络入口，DNS 用来查找网站地址。")
                 OutlinedTextField(dns,{dns=it},singleLine=true,label={Text("DNS")})
@@ -96,24 +117,45 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             PrimaryAction({ work {
                 link=withContext(Dispatchers.IO) { JSONObject(access.manager(host).owner("invite",requireNotNull(limits))).getString("link") }
             } },Modifier.fillMaxWidth(),enabled=!busy && limits!=null) { Text("邀请朋友或我的设备") }
-            if (limits==null) Text("请检查天数、设备数和流量上限")
-            SecondaryAction({ expanded=!expanded }) { Text("限制") }
-            androidx.compose.animation.AnimatedVisibility(expanded) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(days,{days=it},singleLine=true,label={Text("设备有效天数（1–365）")})
-                Text("邀请链接最多可在 7 天内领取")
-                OutlinedTextField(count,{count=it},singleLine=true,label={Text("设备数（1–128）")})
-                OutlinedTextField(mb,{mb=it},singleLine=true,label={Text("每台流量上限（MB，留空为不限）")})
-            } }
-            SecondaryAction({ work { devices=withContext(Dispatchers.IO) { JSONArray(access.manager(host).owner("devices")) } } },enabled=!busy) { Text("已授权设备") }
-            devices?.let { list -> repeat(list.length()) { i ->
-                val row=list.getJSONObject(i)
-                DeviceCard(row,busy){revoke=row}
-            } }
-            SecondaryAction({ advanced(host) }) { Text("高级") }
-            access.hosts.filter { it!=host }.forEach { other ->
-                SecondaryAction({ host=other; access.current=other; devices=null; status="" },enabled=!busy) { Text("管理 "+other) }
+            if (limits==null) Text("请检查天数、设备数和流量上限",color=MaterialTheme.colorScheme.error)
+            // Current invite limits as three tappable tiles; tapping any of them opens the editor.
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                listOf("有效期" to "$days 天","设备" to "$count 台","流量" to (mb.takeIf { it.isNotBlank() }?.let { "$it MB" } ?: "不限")).forEach { (label,value) ->
+                    Surface(modifier=Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceVariant,
+                        onClick={ expanded=!expanded }) {
+                        Column(Modifier.padding(vertical=10.dp).fillMaxWidth(),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally) {
+                            Text(label,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=13.sp)
+                            Text(value,style=numberStyle,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        }
+                    }
+                }
             }
-            SecondaryAction({ host="";adding=true;expanded=false;devices=null;status="" },enabled=!busy) { Text("添加其他服务器") }
+            TextButton({ expanded=!expanded }) { Text(if(expanded) "收起限制" else "限制",color=MaterialTheme.colorScheme.onSurfaceVariant) }
+            androidx.compose.animation.AnimatedVisibility(expanded) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(days,{days=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("设备有效天数（1–365）")})
+                Text("邀请链接最多可在 7 天内领取",color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=14.sp)
+                OutlinedTextField(count,{count=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("设备数（1–128）")})
+                OutlinedTextField(mb,{mb=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("每台流量上限（MB，留空为不限）")})
+            } }
+            Row(Modifier.fillMaxWidth().padding(top=8.dp,start=4.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Text("已授权设备",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                TextButton({ work { devices=withContext(Dispatchers.IO) { JSONArray(access.manager(host).owner("devices")) } } },enabled=!busy) {
+                    Text("刷新",color=MaterialTheme.colorScheme.primary) }
+            }
+            val list=devices
+            if (list==null) Text(if(busy) "正在读取设备…" else "暂未读取",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            else if (list.length()==0) Text("还没有设备，点上方「邀请」添加",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            else Column { repeat(list.length()) { i ->
+                val row=list.getJSONObject(i)
+                DeviceCard(row,busy,place=groupPlace(i,list.length()-1,false,false)){revoke=row}
+            } }
+            Text("维护",Modifier.padding(top=8.dp,start=4.dp),style=MaterialTheme.typography.titleMedium,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+            val tools=buildList {
+                add(Triple("高级","更新、迁移、备份恢复、端口与 DNS") { advanced(host) })
+                access.hosts.filter { it!=host }.forEach { other -> add(Triple("管理 "+other,"切换到这台服务器") { host=other; access.current=other; devices=null; status="" }) }
+                add(Triple("添加其他服务器","再接入一台服务器") { host="";adding=true;expanded=false;devices=null;status="" })
+            }
+            Column { tools.forEachIndexed { i,(title,detail,go) -> ToolRow(title,detail,groupPlace(i,tools.lastIndex,false,false),!busy,go) } }
         }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (status.isNotBlank()) Text(status, color=MaterialTheme.colorScheme.onSurface)
@@ -151,37 +193,82 @@ internal fun usageAmount(bytes: Long) = java.lang.String.format(java.util.Locale
 internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
     val c=MaterialTheme.colorScheme
     Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)){
-        Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
-            Text("当前服务器",color=c.onSurfaceVariant)
-            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
-                Text(name,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
-                TextButton(manage){Text("管理",color=c.onSurfaceVariant)}
+        Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
+                Column(Modifier.weight(1f)){
+                    Text(name,style=MaterialTheme.typography.titleLarge,fontWeight=androidx.compose.ui.text.font.FontWeight.Bold,maxLines=1)
+                    Text("我的服务器",color=c.onSurfaceVariant,fontSize=14.sp)
+                }
+                Surface(shape=androidx.compose.foundation.shape.CircleShape,color=signalSoft){
+                    Row(Modifier.padding(horizontal=12.dp,vertical=6.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                        Box(Modifier.size(8.dp).background(signal,androidx.compose.foundation.shape.CircleShape))
+                        Text("已绑定",color=c.primary,fontSize=14.sp,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    }
+                }
             }
             val authorized=devices?.let { rows-> (0 until rows.length()).count{rows.getJSONObject(it).optInt("revoked")==0}.toString() }
             val used=devices?.let {rows->usageAmount((0 until rows.length()).sumOf {rows.getJSONObject(it).optLong("used")})}
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("已授权设备" to authorized,"累计流量" to used).forEach{(label,value)->
                     Surface(Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),color=c.surfaceVariant){
-                        Column(Modifier.padding(10.dp)){Text(value?:"—",style=numberStyle);Text(label,color=c.onSurfaceVariant)}
+                        Column(Modifier.padding(horizontal=12.dp,vertical=10.dp)){
+                            Text(value?:"—",style=numberStyle.copy(fontSize=22.sp,lineHeight=28.sp),fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                            Text(label,color=c.onSurfaceVariant,fontSize=13.sp)
+                        }
                     }
                 }
             }
-            Text("已用本机密钥绑定，管理时不用再输密码",color=c.onSurfaceVariant)
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+                Text("已用本机密钥绑定，管理时不用再输密码",Modifier.weight(1f),color=c.onSurfaceVariant,fontSize=14.sp)
+                TextButton(manage){Text("管理",color=c.primary)}
+            }
         }
     }
 }
 
 @Composable
-internal fun DeviceCard(row:JSONObject,busy:Boolean,revoke:()->Unit) {
+internal fun DeviceCard(row:JSONObject,busy:Boolean,place:GroupPlace=GroupPlace.Single,revoke:()->Unit) {
+    val c=MaterialTheme.colorScheme
     val used=row.getLong("used")
     val quota=row.optLong("quota",0L)
-    Surface(shape=signalCard,color=MaterialTheme.colorScheme.surface) {
-        Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
-            Text(row.getString("name"),style=MaterialTheme.typography.titleMedium)
-            Text("最近使用 · 服务器未提供",color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("已用 "+usageAmount(used)+(if(quota>0)" / "+usageAmount(quota) else ""),style=numberStyle)
-            if(quota>0)LinearProgressIndicator(progress={ (used.toDouble()/quota).toFloat().coerceIn(0f,1f) },modifier=Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.onSurfaceVariant)
-            if(row.getInt("revoked")==0)SecondaryAction(revoke,enabled=!busy){Text("撤销")} else Text("已撤销")
+    val revoked=row.getInt("revoked")!=0
+    Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface)) {
+        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=68.dp),color=c.outlineVariant)
+        Row(Modifier.fillMaxWidth().padding(14.dp).graphicsLayer{alpha=if(revoked).6f else 1f},
+            verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(40.dp).background(c.surfaceVariant,androidx.compose.foundation.shape.RoundedCornerShape(13.dp)),
+                contentAlignment=androidx.compose.ui.Alignment.Center) {
+                Canvas(Modifier.size(20.dp)){ val w=size.width; val ink=c.onSurfaceVariant
+                    drawRoundRect(ink,androidx.compose.ui.geometry.Offset(w*.27f,w*.06f),androidx.compose.ui.geometry.Size(w*.46f,w*.88f),
+                        androidx.compose.ui.geometry.CornerRadius(w*.12f),style=androidx.compose.ui.graphics.drawscope.Stroke(1.8.dp.toPx()))
+                    drawLine(ink,androidx.compose.ui.geometry.Offset(w*.44f,w*.8f),androidx.compose.ui.geometry.Offset(w*.56f,w*.8f),1.8.dp.toPx()) }
+            }
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                Text(row.getString("name"),fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold,maxLines=1)
+                Text("最近使用 · 服务器未提供",color=c.onSurfaceVariant,fontSize=13.sp)
+                Text("已用 "+usageAmount(used)+(if(quota>0)" / "+usageAmount(quota) else ""),style=numberStyle.copy(fontSize=13.sp),color=c.onSurfaceVariant)
+                if(quota>0) Box(Modifier.padding(top=4.dp).fillMaxWidth().height(4.dp).background(c.surfaceVariant,androidx.compose.foundation.shape.CircleShape)) {
+                    Box(Modifier.fillMaxWidth((used.toDouble()/quota).toFloat().coerceIn(0.02f,1f)).fillMaxHeight()
+                        .background(if(used>=quota) c.error else signal,androidx.compose.foundation.shape.CircleShape)) }
+            }
+            if(!revoked) OutlinedButton(revoke,Modifier.heightIn(min=44.dp),enabled=!busy,shape=androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant),contentPadding=PaddingValues(horizontal=14.dp)) { Text("撤销",color=c.onSurface) }
+            else Text("已撤销",color=c.onSurfaceVariant,fontSize=14.sp)
+        }
+    }
+}
+
+@Composable
+internal fun ToolRow(title:String,detail:String,place:GroupPlace,enabled:Boolean,open:()->Unit) {
+    val c=MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface)) {
+        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=16.dp),color=c.outlineVariant)
+        Row(Modifier.fillMaxWidth().clickable(enabled=enabled,role=androidx.compose.ui.semantics.Role.Button,onClick=open).heightIn(min=62.dp)
+            .padding(horizontal=16.dp,vertical=10.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) { Text(title,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                Text(detail,color=c.onSurfaceVariant,fontSize=13.sp) }
+            Text("›",color=c.onSurfaceVariant,fontSize=22.sp)
         }
     }
 }

@@ -354,6 +354,20 @@ class CatalogCheck : Instrumentation() {
             when (args.getString("mode")) {
                 "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
                 "split-lab", "split-public" -> splitCheck(args,result)
+                // QA transfer of a saved source between the owner's devices. The link stays in app-private
+                // storage on each side and is never printed.
+                "source-export" -> {
+                    val source = Subscriptions(targetContext).all().single { it.label == args.getString("source") }
+                    File(targetContext.noBackupFilesDir, "source-transfer").writeText(source.url)
+                    result.putString("export", "written")
+                }
+                "source-import" -> {
+                    val file = File(targetContext.noBackupFilesDir, "source-transfer")
+                    try {
+                        val source = Subscriptions(targetContext).import(requireNotNull(args.getString("source")), file.readText().trim())
+                        result.putString("import", "${source.nodes.length()} nodes")
+                    } finally { file.delete() }
+                }
                 "migration-crypto" -> {
                     val data = JSONObject().put("format","nexus-migration/1").put("probe",UUID.randomUUID().toString())
                     val secret = UUID.randomUUID().toString()
