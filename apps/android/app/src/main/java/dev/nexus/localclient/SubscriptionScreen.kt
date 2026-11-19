@@ -65,7 +65,7 @@ internal fun subscriptionRequest(context: android.content.Context, row: NodeRow,
 }
 
 @Composable
-fun SubscriptionScreen(home: @Composable () -> Unit) {
+fun SubscriptionScreen(bypass: Boolean, home: @Composable () -> Unit) {
     val context = LocalContext.current
     val store = remember { Subscriptions(context) }
     val scope = rememberCoroutineScope()
@@ -339,6 +339,7 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
             ListItem(headlineContent = { TextButton(onClick = { detail = row }) { Text(row.node.getString("name")) } },
                 supportingContent = { Column {
                     Text("${type.uppercase()} · ${row.source.label}")
+                    if (bypass && type in ShoesEngine.types && problem == null) Text(SplitRouting.SHOES, style = MaterialTheme.typography.bodySmall)
                     metrics[row.favorite]?.let { Text(it.label,color = if (it.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
                     if (problem != null) Text(if (problem == "信息") "信息" else "无法使用：$problem", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)

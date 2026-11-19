@@ -1,4 +1,6 @@
 #![cfg(target_os = "android")]
+mod forwarding;
+mod split;
 mod vpn;
 use jni::{
     objects::{GlobalRef, JByteArray, JObject, JString, JValue},
@@ -70,6 +72,23 @@ impl Signer for Key {
     }
 }
 impl Device {
+    fn protect(&self, fd: i32) -> io::Result<()> {
+        let mut env = self.vm.attach_current_thread().map_err(io::Error::other)?;
+        let ok = env
+            .call_method(
+                &self.callback,
+                "protectTransport",
+                "(I)Z",
+                &[JValue::Int(fd)],
+            )
+            .and_then(|v| v.z())
+            .map_err(io::Error::other)?;
+        if ok {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::PermissionDenied.into())
+        }
+    }
     fn path(&self, ms: i64, lost: i64, sent: i64) -> io::Result<()> {
         let mut env = self.vm.attach_current_thread().map_err(io::Error::other)?;
         env.call_method(
@@ -115,6 +134,7 @@ async fn serve(
     tun: Option<OwnedFd>,
     route: Option<std::net::IpAddr>,
     dns: Option<std::net::IpAddr>,
+    split_text: String,
 ) -> io::Result<()> {
     let connector = Arc::new(connector);
     let (flow, probe) = match (tun.is_some(), dns) {
@@ -123,7 +143,12 @@ async fn serve(
     };
     drop(open(&connector, &Mode::Auto, flow, probe).await?);
     if let Some(fd) = tun {
-        let forward = vpn::forward(fd, route, target, connector.clone(), device.clone());
+        let routing = forwarding::Forwarding::new(
+            forwarding::Backend::Nexus(connector.clone()),
+            device.clone(),
+            &split_text,
+        )?;
+        let forward = vpn::forward(fd, route, target, Arc::new(routing));
         let metrics = async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -189,6 +214,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
     target: JString,
     ca: JByteArray,
     cert: JByteArray,
+    split_data: JByteArray,
 ) -> i32 {
     if cancel_fd < 0 {
         return 1;
@@ -198,6 +224,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
     // A VPN session receives its own dup; the service holds the original throughout recovery.
     let tun = (tun_fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(tun_fd) });
     let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let split_text = String::from_utf8(env.convert_byte_array(split_data)?)?;
         let server: String = env.get_string(&server)?.into();
         let name: String = env.get_string(&name)?.into();
         let target: String = env.get_string(&target)?.into();
@@ -221,29 +248,8 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
             .with_root_certificates(roots)
             .with_client_cert_resolver(Arc::new(SingleCertAndKey::from(key)));
         let socket_owner = device.clone();
-        let connector = Connector::from_config(server, &name, tls)?.with_android_network(
-            network_handle as u64,
-            move |fd| {
-                let mut env = socket_owner
-                    .vm
-                    .attach_current_thread()
-                    .map_err(io::Error::other)?;
-                let protected = env
-                    .call_method(
-                        &socket_owner.callback,
-                        "protectTransport",
-                        "(I)Z",
-                        &[JValue::Int(fd)],
-                    )
-                    .and_then(|value| value.z())
-                    .map_err(io::Error::other)?;
-                if protected {
-                    Ok(())
-                } else {
-                    Err(io::ErrorKind::PermissionDenied.into())
-                }
-            },
-        );
+        let connector = Connector::from_config(server, &name, tls)?
+            .with_android_network(network_handle as u64, move |fd| socket_owner.protect(fd));
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -253,7 +259,7 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
             socket.set_nonblocking(true)?;
             let mut stop=UnixStream::from_std(socket)?;
             let mut byte=[0u8];
-            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device,tun,route,dns)=>outcome}
+            tokio::select! {biased; value=stop.read(&mut byte)=>value.map(|_|()), outcome=serve(connector,target,device,tun,route,dns,split_text)=>outcome}
         })?;
         Ok(())
     };
@@ -261,4 +267,51 @@ pub extern "system" fn Java_dev_nexus_localclient_Tunnel_run(
         Ok(()) => 0,
         Err(_) => 1,
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_nexus_localclient_Tunnel_split(
+    mut env: JNIEnv,
+    callback: JObject,
+    cancel_fd: i32,
+    tun_fd: i32,
+    engine_fd: i32,
+    dns_socket: JString,
+    data: JByteArray,
+) -> i32 {
+    // The caller transfers duplications, so cancellation never closes the service's TUN.
+    let (cancel, tun, engine) = unsafe {
+        (
+            OwnedFd::from_raw_fd(cancel_fd),
+            OwnedFd::from_raw_fd(tun_fd),
+            std::os::unix::net::UnixDatagram::from(OwnedFd::from_raw_fd(engine_fd)),
+        )
+    };
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let device = Arc::new(Device {
+            vm: env.get_java_vm()?,
+            callback: env.new_global_ref(callback)?,
+        });
+        let path: String = env.get_string(&dns_socket)?.into();
+        let text = String::from_utf8(env.convert_byte_array(data)?)?;
+        let cancel = std::os::unix::net::UnixStream::from(cancel);
+        cancel.set_nonblocking(true)?;
+        engine.set_nonblocking(true)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let mut cancel = UnixStream::from_std(cancel)?;
+                let backend = forwarding::Backend::Xray {
+                    packets: tokio::net::UnixDatagram::from_std(engine)?,
+                    dns_socket: path.into(),
+                };
+                let routing = forwarding::Forwarding::new(backend, device, &text)?;
+                let mut byte = [0];
+                tokio::select! {biased; r=cancel.read(&mut byte)=>r.map(|_|()),
+                r=vpn::forward(tun,None,SocketAddr::from(([0,0,0,0],0)),Arc::new(routing))=>r}
+            })?;
+        Ok(())
+    };
+    i32::from(run().is_err())
 }

@@ -24,7 +24,7 @@ import java.util.Date
 import javax.net.ssl.HttpsURLConnection
 
 @Composable
-fun NetworkScreen(current: Profile?, tunnel: TunnelState, onSelect: (Profile) -> Unit, close: () -> Unit) {
+fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, onSelect: (Profile) -> Unit, close: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("local", 0) }
     val scope = rememberCoroutineScope()
@@ -110,6 +110,15 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, onSelect: (Profile) ->
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = close) { Text("返回我的网络") }
         Text("出口与诊断", style = MaterialTheme.typography.headlineMedium)
+        Text("分流模式", style = MaterialTheme.typography.titleMedium)
+        SingleChoiceSegmentedButtonRow(Modifier.widthIn(max = 320.dp).fillMaxWidth()) {
+            listOf(true,false).forEachIndexed { index, value ->
+                SegmentedButton(selected = bypass == value, onClick = { changeMode(value) },
+                    colors = SegmentedButtonDefaults.colors(activeContainerColor = MaterialTheme.colorScheme.primary,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary),
+                    shape = SegmentedButtonDefaults.itemShape(index,2)) { Text(SplitRouting.label(value)) }
+            }
+        }
         servers.forEach { server ->
             val chosen = server.server == current?.server && server.fingerprint == current.fingerprint
             ListItem(headlineContent = { Text(server.name) }, supportingContent = { Text(server.server) },

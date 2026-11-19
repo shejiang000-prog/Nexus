@@ -17,3 +17,7 @@ nexus-protocol.workspace = true
 nexus-transport.workspace = true
 rustls.workspace = true
 tokio.workspace = true
+
+[[test]]
+name = "split_rules"
+path = "src/split.rs"

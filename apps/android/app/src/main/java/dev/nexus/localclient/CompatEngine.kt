@@ -124,7 +124,7 @@ object CompatEngine {
     }
 
     fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
-                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, ready: () -> Unit): Int = engineLock.withLock {
+                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, split: ByteArray = byteArrayOf(), ready: () -> Unit): Int = engineLock.withLock {
         socketProtection = { fd ->
             runCatching {
                 check(service.protect(fd))
@@ -147,13 +147,23 @@ object CompatEngine {
                 .put("log",JSONObject().put("loglevel","none"))
                 .put("inbounds",JSONArray().put(JSONObject().put("protocol","tun").put("settings",JSONObject().put("name","nexus").put("mtu",1500))))
                 .put("outbounds",JSONArray().put(resolved(outbound, network)))
-            invoke("runXray",JSONObject().put("xrayJson",config.toString()))
-            ready()
-            waitForStop(cancel, health)
+            fun session(running: (() -> Boolean)? = null) {
+                try {
+                    invoke("runXray",JSONObject().put("xrayJson",config.toString()))
+                    ready()
+                    waitForStop(cancel, health, running)
+                } finally { runCatching { invoke("stopXray") } }
+            }
+            if (split.isEmpty()) session() else {
+                SplitRouting.withXray(service,tun,split,requireNotNull(socketProtection)) { fd, dns, running ->
+                    config.getJSONObject("env").put("xray.tun.fd",fd.toString())
+                    SplitRouting.configure(config,split,dns)
+                    session(running)
+                }
+            }
             return 0
         } finally {
             if (!outbound.has("shoesClient")) {
-                runCatching { invoke("stopXray") }
                 runCatching { LibXray.resetDNS() }
             }
             socketProtection = null

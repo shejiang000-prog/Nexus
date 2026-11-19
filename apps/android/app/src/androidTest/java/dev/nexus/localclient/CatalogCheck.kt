@@ -350,6 +350,7 @@ class CatalogCheck : Instrumentation() {
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "split-lab", "split-public" -> splitCheck(args,result)
                 "migration-crypto" -> {
                     val data = JSONObject().put("format","nexus-migration/1").put("probe",UUID.randomUUID().toString())
                     val secret = UUID.randomUUID().toString()

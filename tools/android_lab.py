@@ -53,7 +53,7 @@ def lab(args):
         target = f"{bind}:{http.server_port}"
         policy = ["--internet", f"{args.dns}:53"] if args.dns else []
         with process([args.server_bin.resolve(), args.host + ":0", "ca.der", "server.der", "server.key.der",
-                      "android.der", target, *policy], keys) as port:
+                      "android.der", target, *policy, *args.allow], keys) as port:
             def public(name):
                 return base64.b64encode((keys / name).read_bytes()).decode("ascii")
             profile = {"version":1, "name":"Debian 测试服务器", "server":f"{args.host}:{port}", "tls_name":"nexus.test",
@@ -76,4 +76,5 @@ if __name__ == "__main__":
     parser.add_argument("--host", required=True, help="Linux VM interface address reachable from Android")
     parser.add_argument("--server-bin", required=True, type=Path)
     parser.add_argument("--dns", type=ipaddress.IPv4Address, help="Issue a full-device profile with this node-side resolver")
+    parser.add_argument("--allow", action="append", default=[], help="additional exact lab target host:port")
     lab(parser.parse_args())

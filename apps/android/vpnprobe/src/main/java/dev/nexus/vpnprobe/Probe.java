@@ -78,8 +78,9 @@ public final class Probe extends Instrumentation {
                 // The lab node denies documentation addresses. A premature local SYN-ACK
                 // would let connect() succeed and break a browser's IPv4 fallback.
                 for (String address : options.containsKey("subscription") ? new String[0] : new String[]{"192.0.2.123", "2001:db8::123"}) {
+                    // A direct route can black-hole a SYN. Wait for the native 8 s setup deadline and its RST.
                     try (Socket denied = new Socket()) {
-                        denied.connect(new InetSocketAddress(InetAddress.getByName(address), 443), 6000);
+                        denied.connect(new InetSocketAddress(InetAddress.getByName(address), 443), 12000);
                         throw new AssertionError("unreachable destination completed TCP handshake: " + address);
                     } catch (ConnectException expected) {
                         result.putString(address, "TCP connection refused before handshake");

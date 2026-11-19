@@ -81,6 +81,13 @@ class MainActivity : ComponentActivity() {
             background = Color(0xFFF5F6F1), surface = Color(0xFFFBFCF8), onSurface = Color(0xFF182820))
         val scope = rememberCoroutineScope()
         val tunnel by TunnelService.state.collectAsState()
+        var bypass by remember { mutableStateOf(SplitRouting.enabled(this)) }
+        fun changeMode(value: Boolean) {
+            if (value == bypass) return
+            getSharedPreferences("local",0).edit().putBoolean(SplitRouting.KEY,value).apply()
+            bypass = value
+            if (tunnel.vpn) startService(Intent(this, TunnelService::class.java).setAction("split-mode"))
+        }
         var rates by remember { mutableStateOf("") }
         LaunchedEffect(tunnel.connectedAt) {
             rates = ""
@@ -155,12 +162,12 @@ class MainActivity : ComponentActivity() {
             }
             if (networks) {
                 Surface(Modifier.fillMaxSize(), color = colors.background) {
-                    NetworkScreen(profile, tunnel, onSelect = { profile = it }, close = { networks = false })
+                    NetworkScreen(profile, tunnel, bypass, ::changeMode, onSelect = { profile = it }, close = { networks = false })
                 }
                 return@MaterialTheme
             }
             Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
-                SubscriptionScreen {
+                SubscriptionScreen(bypass) {
                 Column(Modifier.fillMaxWidth().widthIn(max = 640.dp), horizontalAlignment = Alignment.Start) {
                     Spacer(Modifier.height(24.dp))
                     Text(getString(R.string.app_name), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = colors.primary)
@@ -179,6 +186,8 @@ class MainActivity : ComponentActivity() {
                             (if (apps.isEmpty()) it.vpnSummary else "业务 VPN · ${apps.size} 个应用") + " · " + it.name
                         }.orEmpty() else profile?.name ?: "尚未添加私人节点",
                             fontFamily = if (tunnel.port > 0) FontFamily.Monospace else FontFamily.Default)
+                        TextButton(onClick = { changeMode(!bypass) }) { Text("分流模式 · " + SplitRouting.label(bypass) + "　切换") }
+                        if (bypass && tunnel.shoes) Text(SplitRouting.SHOES, style = MaterialTheme.typography.bodySmall)
                         if (rates.isNotEmpty()) Text(rates, style = MaterialTheme.typography.bodySmall)
                         if (tunnel.path.isNotEmpty()) Text(tunnel.path,style=MaterialTheme.typography.bodySmall)
                         if (profile != null || tunnel.active) {

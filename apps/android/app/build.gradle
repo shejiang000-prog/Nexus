@@ -79,3 +79,15 @@ def adminAssets = tasks.register('prepareNodeAssets', Sync) {
 }
 android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('nodeAssets'))
 tasks.named('preBuild').configure { dependsOn adminAssets }
+
+def splitScript = new File(rootProject.projectDir.parentFile.parentFile, 'tools/generate_split_rules.py')
+def splitAssets = layout.buildDirectory.dir('splitAssets')
+def splitCache = layout.buildDirectory.dir('splitDownloads')
+def splitData = tasks.register('generateSplitRules', Exec) {
+    inputs.file(splitScript)
+    outputs.file(splitAssets.map { it.file('split-rules.txt') })
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), splitScript,
+        splitCache.get().asFile, splitAssets.get().file('split-rules.txt').asFile
+}
+android.sourceSets.main.assets.srcDir(splitAssets)
+tasks.named('preBuild').configure { dependsOn splitData }

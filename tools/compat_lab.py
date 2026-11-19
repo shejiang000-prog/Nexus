@@ -197,6 +197,9 @@ def run(args):
                     nodes.append(dict(type=typ,name=typ,config=f"{typ}://{auth}@{peer}?sni=nexus.test" + (f"&pcs={pin}" if args.full_device or args.probe else "") +("&alpn=h3" if typ=="tuic" else "")))
                 path=root/"shoes.yaml"
                 path.write_text(json.dumps(settings))
+                if args.split:
+                    from split_lab import serve
+                    return serve(args,root,nodes,inbounds,settings)
                 if args.full_device:
                     from subscription_lab import full_device
                     return full_device(args, root, nodes, inbounds, settings)
@@ -224,9 +227,11 @@ if __name__=="__main__":
     parser.add_argument("--fixture",required=True,type=Path)
     parser.add_argument("--probe", action="store_true", help="serve a lab-CA HTTPS response for batch probes")
     parser.add_argument("--full-device",action="store_true")
+    parser.add_argument("--split",action="store_true",help="run split-routing receipts with --full-device")
     parser.add_argument("--variants",action="store_true",
                         help="add REALITY, CDN transports, SS-2022, Hysteria2 obfs and structured nodes")
     args = parser.parse_args()
+    if args.split: args.full_device = True
     if args.full_device and not args.shoes: parser.error("--full-device requires --shoes")
     if args.full_device and args.variants: parser.error("--variants runs in the node-side receipt mode")
     run(args)

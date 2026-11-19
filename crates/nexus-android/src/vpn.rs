@@ -1,4 +1,7 @@
-use super::{Connector, Device};
+use super::{
+    forwarding::{Backend, Forwarding},
+    split::domestic_question,
+};
 use etherparse::{NetSlice, PacketBuilder, SlicedPacket, TransportSlice};
 use futures_util::{SinkExt, StreamExt};
 use netstack_smoltcp::StackBuilder;
@@ -11,10 +14,10 @@ use std::{
     net::{IpAddr, SocketAddr},
     os::fd::OwnedFd,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
-    io::{copy_bidirectional, unix::AsyncFd, Interest},
+    io::{unix::AsyncFd, Interest},
     sync::{mpsc, oneshot},
     task::JoinSet,
     time::timeout,
@@ -62,6 +65,70 @@ fn initial_syn(bytes: &[u8]) -> Option<(TcpFlow, u32)> {
     ))
 }
 
+// Native DNS handling and learned-address routes share the same cache as the private
+// client. All other packets retain the Xray TUN path (including sniffing and CIDRs).
+fn native_packet(
+    packet: &[u8],
+    routing: &Forwarding,
+    active: impl Fn(TcpFlow) -> bool,
+    udp: &mut HashMap<UdpFlow, (bool, Instant)>,
+) -> bool {
+    let Ok(p) = SlicedPacket::from_ip(packet) else {
+        return false;
+    };
+    let (src, dst) = match p.net {
+        Some(NetSlice::Ipv4(ip)) => (
+            IpAddr::V4(ip.header().source_addr()),
+            IpAddr::V4(ip.header().destination_addr()),
+        ),
+        Some(NetSlice::Ipv6(ip)) => (
+            IpAddr::V6(ip.header().source_addr()),
+            IpAddr::V6(ip.header().destination_addr()),
+        ),
+        _ => return false,
+    };
+    let Some(rules) = routing.rules.as_ref() else {
+        return false;
+    };
+    let now = Instant::now();
+    match p.transport {
+        Some(TransportSlice::Tcp(t)) => {
+            let key = (
+                SocketAddr::new(src, t.source_port()),
+                SocketAddr::new(dst, t.destination_port()),
+            );
+            active(key)
+                || t.syn()
+                    && !t.ack()
+                    && (key.1.port() == 53 || routing.refused(key.1) || rules.learned(dst, now))
+        }
+        Some(TransportSlice::Udp(u)) => {
+            if u.destination_port() == 53 {
+                return domestic_question(rules, u.payload());
+            }
+            let key = (
+                SocketAddr::new(src, u.source_port()),
+                SocketAddr::new(dst, u.destination_port()),
+            );
+            if let Some((owned, end)) = udp.get_mut(&key) {
+                if *end > now {
+                    *end = now + UDP_IDLE;
+                    return *owned;
+                }
+            }
+            let owned = rules.learned(dst, now);
+            if udp.len() >= 4096 {
+                udp.retain(|_, (_, end)| *end > now);
+            }
+            if udp.len() < 4096 {
+                udp.insert(key, (owned, now + UDP_IDLE));
+            }
+            owned
+        }
+        _ => false,
+    }
+}
+
 async fn write_tun(tun: &AsyncFd<File>, packet: &[u8]) -> io::Result<()> {
     let written = tun
         .async_io(Interest::WRITABLE, |mut file| file.write(packet))
@@ -88,12 +155,46 @@ async fn refuse_syn(tun: &AsyncFd<File>, (src, dst): TcpFlow, ack: u32) -> io::R
 }
 
 async fn udp_flow(
-    connector: Arc<Connector>,
+    routing: Arc<Forwarding>,
     (local, remote): UdpFlow,
     mut outgoing: mpsc::Receiver<Vec<u8>>,
     replies: mpsc::Sender<netstack_smoltcp::udp::UdpMsg>,
 ) -> io::Result<()> {
-    let channel = nexus_client::open(&connector, &Mode::Auto, Flow::Udp, remote).await?;
+    if let Some(rules) = &routing.rules {
+        if remote.port() == 53 {
+            while let Ok(Some(query)) = timeout(DNS_IDLE, outgoing.recv()).await {
+                if let Ok(Ok(reply)) = timeout(SETUP, routing.dns(remote, &query, false)).await {
+                    replies
+                        .send((reply, remote, local))
+                        .await
+                        .map_err(|_| io::ErrorKind::BrokenPipe)?;
+                }
+            }
+            return Ok(());
+        }
+        if matches!(routing.backend, Backend::Xray { .. })
+            || rules.direct(remote.ip(), Instant::now())
+        {
+            let socket = routing.udp(remote).await?;
+            let mut buf = vec![0; 65535];
+            loop {
+                tokio::select! {
+                    n = socket.recv(&mut buf) => {
+                        replies.send((buf[..n?].to_vec(), remote, local)).await.map_err(|_| io::ErrorKind::BrokenPipe)?;
+                    }
+                    packet = outgoing.recv() => {
+                        let Some(packet) = packet else {return Ok(())};
+                        socket.send(&packet).await?;
+                    }
+                    _ = tokio::time::sleep(UDP_IDLE) => return Ok(()),
+                }
+            }
+        }
+    }
+    let Backend::Nexus(connector) = &routing.backend else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    let channel = nexus_client::open(connector, &Mode::Auto, Flow::Udp, remote).await?;
     let (mut reader, mut writer) = channel.packets();
     let idle = if remote.port() == 53 {
         DNS_IDLE
@@ -116,7 +217,7 @@ async fn udp_flow(
 
 async fn udp_flows(
     socket: netstack_smoltcp::UdpSocket,
-    connector: Arc<Connector>,
+    routing: Arc<Forwarding>,
 ) -> io::Result<()> {
     let (mut reader, mut writer) = socket.split();
     let (replies, mut received) = mpsc::channel(64);
@@ -131,9 +232,9 @@ async fn udp_flows(
                 if !sessions.contains_key(&key) && sessions.len() < MAX_UDP_FLOWS {
                     let (tx, rx) = mpsc::channel(64);
                     sessions.insert(key, tx);
-                    let connector = connector.clone();
+                    let routing = routing.clone();
                     let replies = replies.clone();
-                    tasks.spawn(async move { let _ = udp_flow(connector, key, rx, replies).await; key });
+                    tasks.spawn(async move { let _ = udp_flow(routing, key, rx, replies).await; key });
                 }
                 if let Some(session) = sessions.get(&key) { let _ = session.try_send(payload); }
             }
@@ -147,8 +248,7 @@ pub(super) async fn forward(
     fd: OwnedFd,
     route: Option<IpAddr>,
     target: SocketAddr,
-    connector: Arc<Connector>,
-    device: Arc<Device>,
+    routing: Arc<Forwarding>,
 ) -> io::Result<()> {
     // The file owns this nonblocking TUN descriptor exclusively until AsyncFd drops it.
     let tun = unsafe { AsyncFd::register(File::from(fd)) }.map_err(io::Error::from)?;
@@ -169,6 +269,7 @@ pub(super) async fn forward(
         let mut buf = [0u8; 1500];
         let mut opening = JoinSet::new();
         let mut relays = JoinSet::new();
+        let mut udp_paths = HashMap::new();
         let mut sessions =
             HashMap::<TcpFlow, Option<oneshot::Sender<netstack_smoltcp::TcpStream>>>::new();
         loop {
@@ -176,6 +277,12 @@ pub(super) async fn forward(
                 read = tun.async_io(Interest::READABLE, |mut file| file.read(&mut buf)) => {
                     let size = read?;
                     if size == 0 { return Err(io::ErrorKind::UnexpectedEof.into()); }
+                    if let Backend::Xray { packets, .. } = &routing.backend {
+                        if !native_packet(&buf[..size],&routing,|k| sessions.contains_key(&k),&mut udp_paths) {
+                            packets.send(&buf[..size]).await?;
+                            continue;
+                        }
+                    }
                     let packet = buf[..size].to_vec();
                     let Some((key, ack)) = initial_syn(&packet) else { sink.send(packet).await?; continue };
                     if sessions.contains_key(&key) || sessions.len() >= MAX_TCP_FLOWS { continue; }
@@ -184,28 +291,27 @@ pub(super) async fn forward(
                         target
                     } else { key.1 };
                     sessions.insert(key,None);
-                    let connector = connector.clone();
+                    let routing = routing.clone();
                     // smoltcp acknowledges a SYN immediately. Only give it the SYN after the
                     // node connects, so a browser can race IPv4 against unreachable IPv6.
                     opening.spawn(async move {
-                        let channel = nexus_client::open(&connector,&Mode::Auto,Flow::Tcp,destination).await;
+                        let channel = routing.open_tcp(destination).await;
                         (key,ack,packet,channel)
                     });
                 }
                 Some(done) = opening.join_next() => {
                     let (key,ack,packet,channel) = done?;
-                    let Ok(mut channel) = channel else {
+                    let Ok(channel) = channel else {
                         sessions.remove(&key);
                         refuse_syn(&tun,key,ack).await?;
                         continue;
                     };
                     let (sender,receiver) = oneshot::channel::<netstack_smoltcp::TcpStream>();
                     sessions.insert(key,Some(sender));
+                    let routing=routing.clone();
                     relays.spawn(async move {
                         if let Ok(Ok(mut stream)) = timeout(SETUP,receiver).await {
-                            if let Ok(Ok(_)) = timeout(LIFETIME,copy_bidirectional(&mut stream,&mut channel.stream)).await {
-                                channel.drain().await;
-                            }
+                            let _=timeout(LIFETIME,routing.relay(channel,key.1,&mut stream)).await;
                         }
                         key
                     });
@@ -228,12 +334,25 @@ pub(super) async fn forward(
         }
         Err(io::Error::from(io::ErrorKind::BrokenPipe))
     };
-    device.ready(0)?;
+    let xray_replies = async {
+        let Backend::Xray { packets, .. } = &routing.backend else {
+            return std::future::pending().await;
+        };
+        let mut packet = vec![0; 65535];
+        loop {
+            let n = packets.recv(&mut packet).await?;
+            if n == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            write_tun(&tun, &packet[..n]).await?;
+        }
+    };
+    routing.device.ready(0)?;
     let datagrams = async {
         match udp {
-            Some(socket) => udp_flows(socket, connector.clone()).await,
+            Some(socket) => udp_flows(socket, routing.clone()).await,
             None => std::future::pending().await,
         }
     };
-    tokio::select! {r=runner=>r, r=ingress=>r, r=egress=>r, r=datagrams=>r}
+    tokio::select! {r=runner=>r, r=ingress=>r, r=egress=>r, r=datagrams=>r,r=xray_replies=>r}
 }

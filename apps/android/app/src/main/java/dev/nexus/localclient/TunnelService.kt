@@ -26,12 +26,13 @@ class Tunnel(private val signingAlias: String, private val protectSocket: (Int) 
     fun onReady(port: Int) = ready(port)
     fun protectTransport(fd: Int) = protectSocket(fd)
     fun sign(message: ByteArray): ByteArray = Identity.sign(message, signingAlias)
-    external fun run(cancelFd: Int, tunFd: Int, netHandle: Long, route: String, dns: String, server: String, name: String, target: String, ca: ByteArray, device: ByteArray): Int
+    external fun run(cancelFd: Int, tunFd: Int, netHandle: Long, route: String, dns: String, server: String, name: String, target: String, ca: ByteArray, device: ByteArray, split: ByteArray = byteArrayOf()): Int
+    external fun split(cancelFd: Int, tunFd: Int, engineFd: Int, dnsSocket: String, rules: ByteArray): Int
 }
 
 data class TunnelState(val starting: Boolean = false, val port: Int = 0, val error: String = "", val subscription: String = "",
                        val vpn: Boolean = false, val waiting: Boolean = false, val activeProfile: Profile? = null,
-                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "") {
+                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "", val shoes: Boolean = false) {
     val active get() = starting || port != 0 || vpn
 }
 
@@ -59,6 +60,15 @@ class TunnelService : VpnService() {
             .addAction(Notification.Action.Builder(null, "断开", stop).build()).setOngoing(true).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "split-mode") {
+            val plan = selected
+            if (plan != null && tun != null && network != null && !exitHeld) {
+                cancelWorker()
+                failures = 0
+                startWorker(plan)
+            }
+            return START_NOT_STICKY
+        }
         val systemStart = intent?.action == SERVICE_INTERFACE || intent?.action == null
         val compat = intent?.action == "subscription"
         val vpn = intent?.action == "vpn" || compat || systemStart
@@ -242,25 +252,28 @@ class TunnelService : VpnService() {
 
     private fun startWorker(plan: Plan, attempt: Int = 0) {
         val vpn = tun != null
+        val bypass = vpn && plan.dns != null && SplitRouting.enabled(this)
         val netHandle = network?.networkHandle ?: 0L
         val physical = network
         val token = ++serial
         val pipe = ParcelFileDescriptor.createSocketPair()
         val workerTun = tun?.let { ParcelFileDescriptor.dup(it.fileDescriptor) }
         cancel = pipe[1]
-        state.value = TunnelState(starting = true, vpn = vpn)
+        state.value = TunnelState(starting = true, vpn = vpn, shoes = plan.outbound?.has("shoesClient") == true)
         Thread {
             val result = runCatching {
                 val ready: (Int) -> Unit = { port -> main.post {
                     if (token == serial) {
                         failures = 0
                         state.value = TunnelState(port = port, vpn = vpn, subscription = if (plan.outbound != null) plan.name else "",
-                            activeProfile = plan.profile, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
+                            activeProfile = plan.profile, shoes = plan.outbound?.has("shoesClient") == true, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
                         val label = if (vpn) "VPN" else "本机端口 $port"
                         getSystemService(NotificationManager::class.java).notify(1, notification(label + " · " + plan.name))
                         if (vpn) monitorExit(plan,token)
                     }
                 }; Unit }
+                val rules = if (bypass && plan.outbound?.has("shoesClient") != true)
+                    SplitRouting.data(this, plan.dns, physical?.let { connectivity.getLinkProperties(it) }) else byteArrayOf()
                 if (plan.outbound != null) {
                     val net = requireNotNull(physical)
                     val dns = requireNotNull(connectivity.getLinkProperties(net)?.dnsServers?.firstOrNull()?.hostAddress)
@@ -280,20 +293,26 @@ class TunnelService : VpnService() {
                             passed
                         }
                     }
-                    CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health) {
+                    CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health,rules) {
                         check(health?.invoke() != false)
                         ready(0)
                     }
                 } else {
                     val profile = requireNotNull(plan.profile)
-                    val native = Tunnel(profile.signingAlias, { fd -> protect(fd) }, ready)
+                    val native = Tunnel(profile.signingAlias, { fd ->
+                        runCatching {
+                            check(protect(fd))
+                            if (bypass) ParcelFileDescriptor.fromFd(fd).use { requireNotNull(physical).bindSocket(it.fileDescriptor) }
+                            true
+                        }.getOrDefault(false)
+                    }, ready)
                     native.path = { rtt,lost,sent -> main.post {
                         if (serial==token && state.value.connectedAt!=0L) state.value=state.value.copy(
                             path=if (rtt>=0 && sent>0) "QUIC RTT $rtt ms · 丢失 $lost / $sent 包" else "")
                     }; Unit }
                     native.run(pipe[0].detachFd(), workerTun?.detachFd() ?: -1, netHandle,
                         if (profile.dns == null) profile.vpnHost else "", profile.dns.orEmpty(),
-                        profile.server, profile.tlsName, profile.target, profile.ca, profile.device)
+                        profile.server, profile.tlsName, profile.target, profile.ca, profile.device, rules)
                 }
             }.getOrDefault(1)
             workerTun?.close()
