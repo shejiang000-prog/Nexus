@@ -38,6 +38,8 @@ data class TunnelState(val starting: Boolean = false, val port: Int = 0, val err
 
 class TunnelService : VpnService() {
     companion object { val state = MutableStateFlow(TunnelState())
+        /** The last user-started VPN request, replayed when Android restarts a killed service. */
+        private const val RESUME = "resume-request"
         @Volatile internal var interfaceName: String? = null
     }
     private val main = Handler(Looper.getMainLooper())
@@ -62,6 +64,21 @@ class TunnelService : VpnService() {
             .addAction(Notification.Action.Builder(null, "断开", stop).build()).setOngoing(true).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val prefs = getSharedPreferences("local", 0)
+        if (intent?.action == "stop") prefs.edit().remove(RESUME).apply()
+        // After Android kills the process it restarts a sticky service with a null intent (or the
+        // always-on interface action). Resume the connection the user last started, not a default.
+        val resumed = if (intent == null || intent.action == SERVICE_INTERFACE) prefs.getString(RESUME, null)?.let {
+            runCatching { Intent.parseUri(it, 0).setClass(this, TunnelService::class.java) }.getOrNull()
+        } else null
+        val request = resumed ?: intent
+        handle(request)
+        val running = tun != null
+        if (running && request?.action in setOf("vpn", "subscription")) prefs.edit().putString(RESUME, request!!.toUri(0)).apply()
+        return if (running) START_STICKY else START_NOT_STICKY
+    }
+
+    private fun handle(intent: Intent?): Int {
         if (intent?.action == "split-mode") {
             val plan = selected
             if (plan != null && tun != null && network != null && !exitHeld) {
@@ -120,6 +137,10 @@ class TunnelService : VpnService() {
         try {
             check(prepare(this) == null)
             tun = establishFor(plan)
+            // Only always-on VPN is brought back by Android after the process is killed; remember
+            // whether it is set so the settings page can offer it.
+            getSharedPreferences("local",0).edit()
+                .putBoolean("always-on", android.os.Build.VERSION.SDK_INT >= 29 && isAlwaysOn()).apply()
             selected = plan
             state.value = TunnelState(vpn = true, waiting = true)
             val observer = object : ConnectivityManager.NetworkCallback() {
@@ -345,7 +366,7 @@ class TunnelService : VpnService() {
             }
         }.start()
     }
-    override fun onRevoke() { main.post { disconnect() } }
+    override fun onRevoke() { main.post { getSharedPreferences("local",0).edit().remove(RESUME).apply(); disconnect() } }
     private fun disconnect() {
         // Android keeps a VPN service bound while its TUN is open.
         releaseSession()

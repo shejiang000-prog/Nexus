@@ -194,3 +194,11 @@
 - 连接页当前节点改成整卡可点的 `CurrentNode`。速率卡只在已连接时出现。订阅总览每个来源一张卡：剩余量大号数字、进度条，单来源时不再显示合计。
 - 我的服务器：已绑定时依次是状态卡、邀请按钮、三格限制摘要、设备分组列表（带刷新）、维护分组列表。未绑定时表单放进一张卡，并说明密码不会保存。
 - 回归（雷电）：`simple`、`simple-shots`、`simple-overview`、`simple-motion`、默认 CatalogCheck 均返回 -1。split-lab 与 probe-vpn 需要实验室 VPN，本轮未重跑；节点行仍保留 shoes 提示文字。
+
+### 进程被杀后的恢复（Claude）
+
+- 雷电（Android 14）和 S24（Android 16）上，`kill -9` 杀掉进程后，系统的 `Vpn.interfaceRemoved` 会先解绑服务，AMS 没有安排重启（日志没有出现 "Scheduling restart"）。改成 `START_STICKY` 后 `stopIfKilled=false`，但服务仍然没有被拉起来。所以在 Android 上，靠「始终开启的 VPN」才能可靠地自动恢复。
+- `TunnelService` 现在会保存最后一次用户发起的 `vpn` / `subscription` 请求（`resume-request`，只含来源 id、节点序号和 DNS，没有密钥），在用户断开或系统撤销时清除。系统以空 intent 或 `VpnService.SERVICE_INTERFACE`（始终开启）重启服务时，会恢复这次请求；以前这种情况只会尝试私人节点。VPN 运行期间服务返回 `START_STICKY`，系统允许时也能自动重启。
+- 服务记录 `isAlwaysOn()`。设置页新增「断线自动恢复」卡片：未开启时说明风险，并提供「去系统设置开启」入口（`ACTION_VPN_SETTINGS`）。
+- 新 QA 模式 `resume`：模拟系统按始终开启方式重启服务。S24 实测：界面连接订阅节点 → `kill -9` → VPN 消失 → `resume` 返回 `resumed subscription node after subscription request`，-1；断开后 `resume-request` 已清除。
+- 未测：真正打开始终开启后由系统发起的重启（需要改系统设置，留给用户在真机上确认）；订阅在进程死亡期间刷新、`updated` 不一致时，恢复会失败，并提示「节点配置无法使用」。

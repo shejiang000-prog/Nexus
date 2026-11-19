@@ -361,6 +361,21 @@ class CatalogCheck : Instrumentation() {
                     File(targetContext.noBackupFilesDir, "source-transfer").writeText(source.url)
                     result.putString("export", "written")
                 }
+                // Replays what Android does for an always-on VPN after the process was killed: a start
+                // with the VpnService interface action must resume the user's last connection.
+                "resume" -> {
+                    val saved = targetContext.getSharedPreferences("local", 0).getString("resume-request", null)
+                    check(saved != null) { "no saved request" }
+                    targetContext.startForegroundService(Intent(android.net.VpnService.SERVICE_INTERFACE).setClass(targetContext, TunnelService::class.java))
+                    val deadline = android.os.SystemClock.elapsedRealtime() + 45000
+                    while (android.os.SystemClock.elapsedRealtime() < deadline && TunnelService.state.value.connectedAt == 0L) Thread.sleep(250)
+                    val s = TunnelService.state.value
+                    check(s.connectedAt > 0 && s.error.isEmpty()) { "not resumed: " + s.error }
+                    result.putString("resume", "resumed " + (if (s.node != null) "subscription node" else "private node") +
+                        " after " + Intent.parseUri(saved, 0).action + " request")
+                    targetContext.startService(Intent(targetContext, TunnelService::class.java).setAction("stop"))
+                    Thread.sleep(2000)
+                }
                 "source-import" -> {
                     val file = File(targetContext.noBackupFilesDir, "source-transfer")
                     try {

@@ -254,6 +254,19 @@ class MainActivity : ComponentActivity() {
                             "设置" -> {
                                 Text("设置",style=MaterialTheme.typography.headlineMedium)
                                 Text("分流模式");ModeSwitch(bypass,::changeMode)
+                                val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
+                                Surface(shape=signalCard,color=colors.surface,border=androidx.compose.foundation.BorderStroke(1.dp,colors.outlineVariant)) {
+                                    Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Text("断线自动恢复",fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                                        Text(if(alwaysOn) "已开启。Nexus 被系统关闭后会自动重新连接上次的节点。"
+                                            else "手机清理后台时可能关闭 Nexus，网络会变成不经过代理。把 Nexus 设为「始终开启的 VPN」后，系统会自动把它重新连上。",
+                                            color=colors.onSurfaceVariant,fontSize=14.sp)
+                                        if(!alwaysOn) SecondaryAction({
+                                            runCatching { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) }
+                                                .onFailure { message="请在系统设置 → 网络 → VPN 中开启" }
+                                        },Modifier.fillMaxWidth()) { Text("去系统设置开启") }
+                                    }
+                                }
                                 SecondaryAction({page="诊断"}) { Text("按应用代理与出口诊断") }
                                 SecondaryAction({page="高级"}) {Text("高级")}
                             }
