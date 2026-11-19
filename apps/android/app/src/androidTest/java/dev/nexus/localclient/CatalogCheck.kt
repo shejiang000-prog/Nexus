@@ -339,6 +339,9 @@ class CatalogCheck : Instrumentation() {
                     check(parsed.remaining == (123.45*1073741824).toLong() && parsed.total == null && parsed.used == null)
                     check(parsed.expires == java.time.LocalDate.of(2026,12,31).atStartOfDay(java.time.ZoneId.systemDefault()).toEpochSecond())
                     check(Usage.parse("total=100;download=25",meta).remaining == 75L)
+                    // A header without expire still takes the expiry date from an info node.
+                    check(Usage.parse("total=100;download=25",meta).expires == parsed.expires)
+                    check(Usage.parse("total=100;download=25;expire=1893456000",meta).expires == 1893456000L)
                     check(listOf("节点 剩余流量：1 GB","套餐到期：2026-02-31","距离下次重置剩余：12 天 US").none(Usage::isInfo))
                     result.putString("usage","3 metadata formats, strict negatives and header precedence passed")
                 }

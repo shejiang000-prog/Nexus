@@ -21,11 +21,17 @@ internal data class Usage(val used: Long?, val total: Long?, val remaining: Long
         }
         fun isInfo(name: String) = remaining(name) != null || expiration(name) != null || reset.matches(name)
 
+        /** Header fields win; info node names fill only what the header leaves out (often `expire`). */
         fun parse(header: String, nodes: JSONArray): Usage {
-            if (header.isBlank()) {
-                val names = (0 until nodes.length()).map { nodes.getJSONObject(it).optString("name") }
-                return Usage(null,null,names.firstNotNullOfOrNull(::remaining),names.firstNotNullOfOrNull(::expiration))
-            }
+            val names = (0 until nodes.length()).map { nodes.getJSONObject(it).optString("name") }
+            val fromNames = Usage(null, null, names.firstNotNullOfOrNull(::remaining), names.firstNotNullOfOrNull(::expiration))
+            if (header.isBlank()) return fromNames
+            val fromHeader = fromHeader(header)
+            return fromHeader.copy(remaining = fromHeader.remaining ?: fromNames.remaining.takeIf { fromHeader.total == null },
+                expires = fromHeader.expires ?: fromNames.expires)
+        }
+
+        private fun fromHeader(header: String): Usage {
             val fields = header.split(';').mapNotNull { field ->
                 val pair = field.trim().split('=',limit=2)
                 pair.getOrNull(1)?.toLongOrNull()?.takeIf { it >= 0 }?.let { pair[0] to it }

@@ -12,9 +12,11 @@ internal object SubscriptionRefresh {
     private val network = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
     fun schedule(context: Context) {
-        val periodic = PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES)
+        // Hourly is enough for 6/12/24-hour intervals and retries; app start, resume and VPN
+        // disconnect also enqueue a one-off check. UPDATE replaces the earlier 15-minute period.
+        val periodic = PeriodicWorkRequestBuilder<RefreshWorker>(1, TimeUnit.HOURS)
             .setConstraints(network).build()
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork("subscription-periodic", ExistingPeriodicWorkPolicy.KEEP, periodic)
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork("subscription-periodic", ExistingPeriodicWorkPolicy.UPDATE, periodic)
         enqueue(context)
     }
 
