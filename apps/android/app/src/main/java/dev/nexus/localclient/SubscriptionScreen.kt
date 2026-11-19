@@ -451,7 +451,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 else errorMessage="请复制订阅链接，或选择手动输入"
             },modifier=Modifier.fillMaxWidth()) { Text("粘贴并添加") }
             if(errorMessage.isNotBlank()) Text(errorMessage,color=MaterialTheme.colorScheme.error)
-            SecondaryAction(onClick = { scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setBeepEnabled(false).setPrompt("扫描节点或邀请二维码")) },modifier=Modifier.fillMaxWidth()) { Text("用相机扫码") }
+            SecondaryAction(onClick = { scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setOrientationLocked(false).setBeepEnabled(false).setPrompt("扫描节点或邀请二维码")) },modifier=Modifier.fillMaxWidth()) { Text("用相机扫码") }
             SecondaryAction(onClick = { open.launch(arrayOf("*/*")) },modifier=Modifier.fillMaxWidth()) { Text("选择文件或二维码图片（可多选）") }
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {

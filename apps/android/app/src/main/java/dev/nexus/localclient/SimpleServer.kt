@@ -256,7 +256,7 @@ internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, co
         val current=invite
         if(current==null) {
             OutlinedTextField(input,{input=it.take(4200);read(input)},label={Text("粘贴邀请消息")})
-            PrimaryAction({ scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setBeepEnabled(false)) }) { Text("扫描邀请") }
+            PrimaryAction({ scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setOrientationLocked(false).setBeepEnabled(false)) }) { Text("扫描邀请") }
             SecondaryAction({ file.launch(arrayOf("image/*","text/plain")) }) { Text("从文件读取") }
         } else {
             val c=MaterialTheme.colorScheme
