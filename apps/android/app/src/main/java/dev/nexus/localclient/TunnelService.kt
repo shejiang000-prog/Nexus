@@ -89,7 +89,12 @@ class TunnelService : VpnService() {
                 if (systemStart) require(p.dns != null)
                 Plan(p,null,p.name,p.dns)
             }
-        }.getOrElse { state.value = TunnelState(error = "节点配置无法使用，请检查参数及固定出口设置"); disconnect(); return START_NOT_STICKY }
+        }.getOrElse { failure ->
+            state.value = TunnelState(error = (failure as? UnsupportedNode)?.let { "无法连接此节点：" + it.message }
+                ?: "节点配置无法使用，请检查参数及固定出口设置")
+            disconnect()
+            return START_NOT_STICKY
+        }
         if (!vpn) {
             startWorker(plan)
             return START_NOT_STICKY

@@ -1,5 +1,13 @@
 # Nexus · Android 优先
 
+## 2026-11-19 订阅兼容性
+
+[问题清单、改动与复验命令](2026-11-19-subscription-compat.md)。Clash/mihomo 与 sing-box 的 VLESS REALITY、HTTPUpgrade、XHTTP、Hysteria2 混淆与端口跳跃、SS-2022 可用；不可用的节点在列表里写明原因并排除出自动选择。雷电上 25 项格式检查、16 个节点的实连回执，以及 VLESS、TUIC 全设备 VPN 验收通过。
+
+## 2026-11-19 自研协议性能与容量
+
+[问题清单、改动与复验命令](2026-11-19-protocol-performance.md)。QUIC 改用 BBR 并放大流控窗口，额度计费改为预留租约，提高服务端与 Android 并发上限，DNS 复用已认证连接，订阅下载跟随 HTTPS 重定向。Windows、Linux、Android 构建与测试及雷电真实节点验收通过；180 ms、3% 丢包下 512 KiB 往返中位耗时由 6.3 秒降到 0.85 秒。
+
 ## 2026-11-19 安卓订阅全设备验收
 
 [逐项进度、复验命令和接手事项](2026-11-19-android-subscription-vpn.md)

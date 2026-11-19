@@ -14,7 +14,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
+import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.constructor.SafeConstructor
+import org.yaml.snakeyaml.nodes.Tag
+import org.yaml.snakeyaml.representer.Representer
+import org.yaml.snakeyaml.resolver.Resolver
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.URL
@@ -41,6 +45,18 @@ internal fun InputStream.bounded(maximum: Int): ByteArray = use { input ->
     }
     output.toByteArray()
 }
+/**
+ * Keeps every YAML scalar except true/false and null as text. YAML 1.1 would otherwise read a
+ * REALITY short-id such as 0123 as octal 83, or a password such as 1_000 as the number 1000.
+ */
+private class TextResolver : Resolver() {
+    override fun addImplicitResolvers() {
+        addImplicitResolver(Tag.BOOL, java.util.regex.Pattern.compile("^(?:true|True|TRUE|false|False|FALSE)$"), "tTfF")
+        addImplicitResolver(Tag.NULL, NULL, "~nN\u0000")
+        addImplicitResolver(Tag.NULL, EMPTY, null)
+    }
+}
+
 private fun decode64(s: String): String = runCatching { Base64.decode(s, Base64.DEFAULT) }
     .recoverCatching { Base64.decode(s, Base64.URL_SAFE) }.getOrThrow().toString(Charsets.UTF_8)
 
@@ -127,20 +143,37 @@ class Subscriptions(context: Context) {
         val source = input.trim()
         val url = if (!source.contains('\n') && source.startsWith("https://")) source else ""
         var usage = ""
-        val content = if (url.isEmpty()) source else {
-            val connection = URL(url).openConnection() as HttpsURLConnection
+        val content = if (url.isEmpty()) source else fetch(url).let { (body, info) -> usage = info; body }
+        val nodes = parse(content)
+        save(Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage, System.currentTimeMillis()))
+    }
+
+    /** Downloads a subscription. Providers commonly redirect to a CDN; only HTTPS hops are followed. */
+    private fun fetch(url: String): Pair<String, String> {
+        var target = URL(url)
+        repeat(4) { hop ->
+            val connection = target.openConnection() as HttpsURLConnection
             try {
                 connection.instanceFollowRedirects = false
                 connection.connectTimeout = 10000
                 connection.readTimeout = 15000
-                check(connection.responseCode == 200)
-                usage = connection.getHeaderField("subscription-userinfo").orEmpty().take(256)
+                connection.useCaches = false
+                // Panels pick the format by User-Agent; "v2rayN" selects Base64 share links.
+                connection.setRequestProperty("User-Agent", "Nexus/0.1.0 (compatible; v2rayN)")
+                val code = connection.responseCode
+                if (code in setOf(301, 302, 303, 307, 308) && hop < 3) {
+                    val next = URL(target, requireNotNull(connection.getHeaderField("Location")))
+                    require(next.protocol == "https" && next.userInfo == null)
+                    target = next
+                    return@repeat
+                }
+                check(code == 200)
+                val usage = connection.getHeaderField("subscription-userinfo").orEmpty().take(256)
                     .split(';').map { it.trim() }.filter { it.matches(Regex("(upload|download|total|expire)=[0-9]{1,19}")) }.joinToString(";")
-                connection.inputStream.bounded(MAX_BYTES).toString(Charsets.UTF_8)
+                return connection.inputStream.bounded(MAX_BYTES).toString(Charsets.UTF_8) to usage
             } finally { connection.disconnect() }
         }
-        val nodes = parse(content)
-        save(Subscription(previous?.id ?: UUID.randomUUID().toString(), label.trim(), url, nodes, usage, System.currentTimeMillis()))
+        error("too many redirects")
     }
     private fun parse(content: String): JSONArray {
         val raw = content.trim().removePrefix("\uFEFF").trim()
@@ -162,7 +195,7 @@ class Subscriptions(context: Context) {
                 require(config is String || config is JSONObject)
                 add(n.getString("type"),n.getString("name"),config)
             }
-        } else if (body.lineSequence().firstOrNull()?.substringBefore("://") in protocols) {
+        } else if (!body.startsWith("{") && body.lineSequence().any { it.trim().substringBefore("://") in protocols }) {
             for (line in body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }) {
                 require(line.length <= 16384)
                 val type = line.substringBefore("://")
@@ -176,7 +209,7 @@ class Subscriptions(context: Context) {
         } else {
             val options = LoaderOptions().apply { codePointLimit = MAX_BYTES; maxAliasesForCollections = 0
                 nestingDepthLimit = 24; isAllowDuplicateKeys = false }
-            val root = Yaml(SafeConstructor(options)).load<Any>(body)
+            val root = Yaml(SafeConstructor(options), Representer(DumperOptions()), DumperOptions(), options, TextResolver()).load<Any>(body)
             val entries = if (root is Map<*, *>) root["proxies"] ?: root["outbounds"] else root
             for (entry in entries as List<*>) {
                 val item = entry as? Map<*, *> ?: continue

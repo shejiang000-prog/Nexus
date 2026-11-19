@@ -100,6 +100,44 @@ class CatalogCheck : Instrumentation() {
             }
         }
     }
+    /** Clash/mihomo YAML, sing-box JSON and Base64 links through the real parser and libXray. */
+    private fun checkFormats(result: Bundle) {
+        val store = Subscriptions(targetContext)
+        val prefix = "Nexus-QA-" + UUID.randomUUID().toString().take(8)
+        try {
+            store.import("$prefix-clash", FormatSamples.clash)
+            store.import("$prefix-singbox", FormatSamples.singBox)
+            store.import("$prefix-links", Base64.encodeToString(FormatSamples.links.toByteArray(), Base64.NO_WRAP))
+            val nodes = store.all().filter { it.label.startsWith(prefix) }
+                .flatMap { s -> (0 until s.nodes.length()).map { s.nodes.getJSONObject(it) } }
+                .associateBy { it.getString("name") }
+            check(nodes.keys.none { it in setOf("proxy", "direct") }) { "sing-box selector or direct imported" }
+            val failures = mutableListOf<String>()
+            for ((name, expect) in FormatSamples.cases) {
+                val node = nodes[name]
+                if (node == null) { failures += "$name: not imported"; continue }
+                val problem = CompatEngine.problem(node)
+                if (expect.startsWith("!")) {
+                    if (problem?.contains(expect.drop(1)) != true) failures += "$name: expected refusal ${expect.drop(1)}, got $problem"
+                } else if (problem != null) failures += "$name: $problem"
+                else {
+                    val text = CompatEngine.outbound(node).toString().replace("\\/", "/")
+                    expect.split('|').filterNot { it in text }.takeIf { it.isNotEmpty() }?.let { missing ->
+                        failures += "$name lacks $missing in ${text.take(700)}"
+                    }
+                }
+            }
+            check(nodes.size == FormatSamples.cases.size) { "imported ${nodes.keys.sorted()}" }
+            if (failures.isNotEmpty()) {
+                result.putString("failures", failures.joinToString("\n"))
+                error("${failures.size} format cases failed")
+            }
+            result.putString("formats", "${FormatSamples.cases.size} Clash, sing-box and link cases converted or refused as expected")
+        } finally {
+            // keep=yes leaves the samples for a screenshot; remove-formats deletes them afterwards.
+            if (args.getString("keep") != "yes") store.all().filter { it.label.startsWith(prefix) }.forEach { store.remove(it.id) }
+        }
+    }
     private fun nodeCheck() {
         val result = Bundle()
         val root = targetContext.noBackupFilesDir
@@ -170,6 +208,12 @@ class CatalogCheck : Instrumentation() {
                     }
                 }
                 "failover" -> checkFailover(result)
+                "formats" -> checkFormats(result)
+                "remove-formats" -> {
+                    val store = Subscriptions(targetContext)
+                    store.all().filter { it.label.matches(Regex("Nexus-QA-[0-9a-f]{8}-(clash|singbox|links)")) }
+                        .forEach { store.remove(it.id) }
+                }
                 "key" -> {
                     require(!privateKey.exists())
                     val kp = KeyPair.genKeyPair(JSch(),KeyPair.ECDSA,256)
@@ -344,10 +388,13 @@ class CatalogCheck : Instrumentation() {
                     val file = File(root,"qa-interop")
                     val fixture = JSONObject(file.readText())
                     val list = fixture.getJSONArray("nodes")
+                    val failed = mutableListOf<String>()
                     for (i in 0 until list.length()) {
                         val node = list.getJSONObject(i)
                         val type = node.getString("type")
-                        result.putString(type,"started")
+                        val label = node.optString("name",type)
+                        result.putString(label,"started")
+                        try {
                         val out = CompatEngine.outbound(node)
                         val port = java.net.ServerSocket(0,1,java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
                         val cfg = JSONObject().put("inbounds",JSONArray().put(JSONObject().put("listen","127.0.0.1").put("port",port)
@@ -393,14 +440,19 @@ class CatalogCheck : Instrumentation() {
                                 reader.readFully(body)
                                 check(body.toString(Charsets.UTF_8).startsWith("Nexus interop "))
                             }
-                            result.putString(type,"node-side HTTP receipt")
+                            result.putString(label,"node-side HTTP receipt")
                         } finally {
                             if (handle>0) com.shoesproxy.ShoesNative.stop(handle)
                             pair?.forEach { it.close() }
                             if (pair==null) call("stopXray",JSONObject())
                         }
+                        } catch (e: Exception) {
+                            failed += label
+                            result.putString(label,"FAIL ${e.javaClass.simpleName}: ${e.message}")
+                        }
                     }
                     file.delete()
+                    check(failed.isEmpty()) { "failed: $failed" }
                 }
                 else -> error("unknown QA mode")
             }

@@ -22,80 +22,52 @@ object CompatEngine {
         check(result.optBoolean("success")) { "节点参数不受支持" }
         return result
     }
-    private fun structuredLink(s: JSONObject, type: String): String {
-        val host = s.getString("server")
-        val port = s.optInt("port", s.optInt("server_port"))
-        require(port in 1..65535 && host.matches(Regex("[a-zA-Z0-9.:-]{1,253}")))
-        val address = (if (':' in host) "[$host]" else host) + ":" + port
-        require(!s.optBoolean("skip-cert-verify") && !s.has("plugin") && !s.has("reality-opts") &&
-            !s.has("obfs") && !s.has("transport") && !s.has("dialer-proxy") && !s.has("detour"))
-        val tls = s.optJSONObject("tls")
-        require(tls?.optBoolean("insecure") != true && tls?.has("reality") != true)
-        require(tls == null || tls.keys().asSequence().all { it in setOf("enabled","server_name","insecure","alpn") })
-        require(!s.has("ca") && !s.has("ca-str") && !s.has("certificate") && !s.has("fingerprint") &&
-            !s.has("certificate_public_key_sha256") && !s.has("ech-opts") && !s.has("ech"))
-        val network = s.optString("network","tcp")
-        require(network in setOf("tcp","ws","grpc"))
-        val id = when (type) {
-            "vless","vmess" -> s.getString("uuid")
-            "ss" -> Base64.encodeToString((s.optString("cipher",s.optString("method")) + ":" + s.getString("password")).toByteArray(),
-                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-            else -> s.getString("password")
-        }
-        val query = Uri.Builder().appendQueryParameter("type",network)
-        if (s.optBoolean("tls") || tls?.optBoolean("enabled")==true || type in setOf("trojan","hy2","hysteria2"))
-            query.appendQueryParameter("security","tls")
-        val sni = s.optString("servername",s.optString("sni",tls?.optString("server_name").orEmpty()))
-        if (sni.isNotEmpty()) query.appendQueryParameter("sni",sni)
-        val alpn = s.optJSONArray("alpn") ?: tls?.optJSONArray("alpn")
-        if (alpn != null) {
-            val values=(0 until alpn.length()).map(alpn::getString)
-            require(values.isNotEmpty() && values.all { it.matches(Regex("[a-zA-Z0-9./_-]{1,32}")) })
-            query.appendQueryParameter("alpn",values.joinToString(","))
-        }
-        s.optJSONObject("ws-opts")?.let { options ->
-            query.appendQueryParameter("path",options.optString("path","/"))
-            options.optJSONObject("headers")?.optString("Host")?.let { query.appendQueryParameter("host",it) }
-        }
-        s.optJSONObject("grpc-opts")?.let { query.appendQueryParameter("serviceName",it.optString("grpc-service-name")) }
-        if (s.has("flow")) query.appendQueryParameter("flow",s.getString("flow"))
-        if (type=="vmess") require(s.optInt("alterId",s.optInt("alter_id"))==0)
-        return "$type://${Uri.encode(id)}@$address?${query.build().encodedQuery}"
+    private val verdicts = object : LinkedHashMap<String, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 4096
     }
-    fun outbound(node: JSONObject): JSONObject {
+
+    /** Why this node cannot be used, or null when it converts. Cached by node content. */
+    fun problem(node: JSONObject): String? {
+        val key = Base64.encodeToString(java.security.MessageDigest.getInstance("SHA-256")
+            .digest(node.toString().toByteArray()), Base64.NO_WRAP)
+        synchronized(verdicts) { verdicts[key] }?.let { return it.ifEmpty { null } }
+        val verdict = try { outbound(node); "" } catch (e: UnsupportedNode) { e.message.orEmpty() }
+        synchronized(verdicts) { verdicts[key] = verdict }
+        return verdict.ifEmpty { null }
+    }
+
+    /** Converts a subscription node into one Xray outbound, or throws [UnsupportedNode] with a reason. */
+    fun outbound(node: JSONObject): JSONObject = try {
+        convert(node)
+    } catch (e: UnsupportedNode) {
+        throw e
+    } catch (e: Exception) {
+        throw UnsupportedNode("节点参数不完整或格式无法识别")
+    }
+
+    private fun convert(node: JSONObject): JSONObject {
         val type = node.getString("type")
-        require(type in types)
+        ensure(type in types) { "协议 $type 暂不支持" }
         if (type in ShoesEngine.types) return ShoesEngine.outbound(node)
         val raw = node.get("config")
         val link = when {
-            raw is JSONObject -> structuredLink(raw,type)
-            raw is String && type == "vmess" && '@' !in raw -> {
-                val encoded = raw.substringAfter("vmess://").substringBefore('#')
-                val bytes = runCatching { Base64.decode(encoded,Base64.DEFAULT) }
-                    .getOrElse { Base64.decode(encoded,Base64.URL_SAFE) }
-                val old = JSONObject(bytes.toString(Charsets.UTF_8))
-                val network = old.optString("net","tcp")
-                require(old.optInt("aid",0)==0 && old.optString("tls") in setOf("","none","tls") &&
-                    old.optString("type","none") in setOf("","none") && old.optString("scy","auto") in setOf("","auto"))
-                val data = JSONObject().put("server",old.getString("add")).put("port",old.getInt("port"))
-                    .put("uuid",old.getString("id")).put("network",network)
-                    .put("tls",old.optString("tls")=="tls").put("sni",old.optString("sni",old.optString("host")))
-                if (network=="ws") data.put("ws-opts",JSONObject().put("path",old.optString("path","/"))
-                    .put("headers",JSONObject().put("Host",old.optString("host"))))
-                if (network=="grpc") data.put("grpc-opts",JSONObject().put("grpc-service-name",old.optString("path")))
-                structuredLink(data,type)
-            }
-            else -> raw as String
+            raw is JSONObject -> NodeFormats.link(raw, type)
+            raw is String && type == "vmess" && '@' !in raw -> NodeFormats.vmessJson(raw)
+            raw is String -> NodeFormats.hostAsSni(raw.trim())
+            else -> unsupported("节点格式无法识别")
         }
-        require(link.substringBefore("://")==type && link.length <= 16384)
+        ensure(link.substringBefore("://") == type && link.length <= 16384) { "节点格式无法识别" }
         val uri = Uri.parse(link)
-        require(uri.queryParameterNames.filter { it.equals("allowInsecure",true) || it.equals("insecure",true) }
-            .all { uri.getQueryParameters(it).all { value -> value.lowercase() in setOf("0","false") } })
-        val list = invoke("convertShareLinksToXrayJson",JSONObject().put("text",link)).getJSONObject("data").getJSONArray("outbounds")
-        require(list.length()==1)
+        ensure(uri.queryParameterNames.filter { it.lowercase() in setOf("allowinsecure", "insecure", "allow_insecure") }
+            .all { uri.getQueryParameters(it).all { value -> value.lowercase() in setOf("0", "false") } }) { "节点要求跳过证书验证，已拒绝" }
+        val result = JSONObject(LibXray.invoke(JSONObject().put("apiVersion", 3).put("method", "convertShareLinksToXrayJson")
+            .put("payload", JSONObject().put("text", link)).toString()))
+        ensure(result.optBoolean("success")) { "节点参数不受 Xray 核心支持" }
+        val list = result.getJSONObject("data").getJSONArray("outbounds")
+        ensure(list.length() == 1) { "节点格式无法识别" }
         val outbound = list.getJSONObject(0)
-        require(outbound.getString("protocol") in setOf("vless","vmess","trojan","shadowsocks","hysteria"))
-        return outbound.put("tag","selected")
+        ensure(outbound.getString("protocol") in setOf("vless", "vmess", "trojan", "shadowsocks", "hysteria")) { "节点格式无法识别" }
+        return outbound.put("tag", "selected")
     }
     fun waitForStop(cancel: ParcelFileDescriptor, health: (() -> Boolean)?, running: (() -> Boolean)? = null) {
         val poll = android.system.StructPollfd().apply {

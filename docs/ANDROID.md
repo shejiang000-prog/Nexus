@@ -47,7 +47,11 @@ cd apps/android
 
 在「部署与分享」输入本人服务器的 SSH 地址，并通过 VPS 控制台独立确认 SHA-256 主机指纹。安装器接受 Debian 12、Debian 13 和 Ubuntu 24.04，APK 提供 x86_64 与 aarch64 节点程序，需要 root 或免密 sudo。确认页面显示端口。首次安装创建普通服务账户和两个 systemd 服务，已有部署会退出。部署完可给其他设备创建限额、限时邀请。接收者的设备自己生成私钥，并在领取时证明持有对应私钥。
 
-首页的「订阅与节点」接受 HTTPS 订阅、节点文本、Base64、Clash proxies 和 sing-box outbounds。各来源分别加密保存在手机中。具体协议的实测进度见交接记录。配置导出会包含节点连接凭据。
+首页的「订阅与节点」接受 HTTPS 订阅、节点文本、Base64、Clash/mihomo proxies 和 sing-box outbounds。各来源分别加密保存在手机中。具体协议的实测进度见交接记录。配置导出会包含节点连接凭据。
+
+可用的协议为 VLESS（含 REALITY 与 Vision）、VMess、Trojan、Shadowsocks（含 2022 系列）、Hysteria2（含 salamander 混淆与端口跳跃）、TUIC v5 和 AnyTLS。传输方式支持 TCP、TCP HTTP 伪装、WebSocket（含早期数据）、HTTPUpgrade、gRPC 和 XHTTP。Clash 的 `fingerprint` 按叶证书 SHA-256 固定校验。WebSocket 节点未写 SNI 时使用 Host 头，与 mihomo、v2rayN 一致。
+
+无法使用的节点仍会导入，列表中以红字写明原因，不参与自动选择。以下情况会被拒绝：要求跳过证书验证（`skip-cert-verify`、`insecure=1`）、自定义 CA、ECH、Shadowsocks 插件（obfs、v2ray-plugin 等）、HTTP/2 与 QUIC 传输（Xray 已移除）、VMess alterId 不为 0、旧式流加密（如 aes-256-cfb）、TUIC v4 和链式代理。下载订阅时 User-Agent 含 `v2rayN`，面板通常据此返回 Base64 分享链接。
 
 ## 使用自己的测试环境
 

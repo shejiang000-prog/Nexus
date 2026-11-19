@@ -52,7 +52,7 @@ private fun rankedNodes(context: android.content.Context, rows: List<NodeRow>): 
     val store = Subscriptions(context)
     val quality = NodeQuality(context, context.getSystemService(android.net.ConnectivityManager::class.java).activeNetwork)
     return rows.filter { it.type in CompatEngine.types && store.appearance.getBoolean("auto/"+it.source.id,false) &&
-        it.source.hasAllowance() }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
+        it.source.hasAllowance() && CompatEngine.problem(it.node) == null }.sortedWith(compareByDescending<NodeRow> { store.appearance.getBoolean("pin/"+it.source.id,false) }
             .thenByDescending { quality.score(it.favorite) })
 }
 
@@ -102,6 +102,13 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
     var dns by remember { mutableStateOf("1.1.1.1") }
     var smart by remember { mutableStateOf(false) }
     val allRows = remember(sources) { sources.flatMap { s -> (0 until s.nodes.length()).map { NodeRow(s,it,s.nodes.getJSONObject(it)) } } }
+    // Reasons a node cannot be used, keyed by NodeRow.favorite. Conversion runs off the main thread.
+    var problems by remember { mutableStateOf<Map<String,String>?>(null) }
+    LaunchedEffect(allRows) {
+        problems = withContext(Dispatchers.Default) {
+            allRows.mapNotNull { row -> CompatEngine.problem(row.node)?.let { row.favorite to it } }.toMap()
+        }
+    }
     val tunnel by TunnelService.state.collectAsState()
     val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
     val quality = NodeQuality(context, tunnel.physical ?: connectivity.activeNetwork)
@@ -253,7 +260,9 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
                 }
                 if (!folded) {
                 if (source.url.isNotEmpty()) Text(android.net.Uri.parse(source.url).host.orEmpty(),style = MaterialTheme.typography.bodySmall)
-                Text("${source.nodes.length()} 个节点 · ${DateFormat.getDateTimeInstance().format(Date(source.updated))}",
+                val blocked = problems?.let { map -> (0 until source.nodes.length()).count { nodeKey(source.id,source.nodes.getJSONObject(it)) in map } } ?: 0
+                Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
+                    " · ${DateFormat.getDateTimeInstance().format(Date(source.updated))}",
                     style = MaterialTheme.typography.bodySmall)
                 val usage = source.usage.split(';').mapNotNull {
                     val n = it.substringAfter('=', "").toLongOrNull() ?: return@mapNotNull null
@@ -317,23 +326,29 @@ fun SubscriptionScreen(home: @Composable () -> Unit) {
         }
         items(visible) { row ->
             val type = row.node.getString("type")
+            val problem = problems?.get(row.favorite)
             ListItem(headlineContent = { TextButton(onClick = { detail = row }) { Text(row.node.getString("name")) } },
-                supportingContent = { Text("${type.uppercase()} · ${row.source.label}") },
+                supportingContent = { Column {
+                    Text("${type.uppercase()} · ${row.source.label}")
+                    if (problem != null) Text("无法使用：$problem", color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                } },
                 trailingContent = { Row {
                     TextButton(onClick = {
                         favorites = if (row.favorite in favorites) favorites - row.favorite else favorites + row.favorite
                         prefs.edit().putStringSet("items",favorites).apply()
                     }) { Text(if (row.favorite in favorites) "已收藏" else "收藏") }
-                    TextButton(enabled = !tunnel.active && type in CompatEngine.types, onClick = {
+                    TextButton(enabled = !tunnel.active && type in CompatEngine.types && problem == null, onClick = {
                         if (context.getSharedPreferences("local",0).contains("pinned")) message = "请先解除固定出口"
                         else { smart=false; chosen = row }
-                    }) { Text(if (type in CompatEngine.types) "连接" else "仅导入") }
+                    }) { Text(if (type in CompatEngine.types && problem == null) "连接" else "仅导入") }
                 } })
         }
     }
     detail?.let { row -> AlertDialog(onDismissRequest = { detail = null },title = { Text(row.node.getString("name")) },
-        text = { Text(listOf(row.source.label,row.type.uppercase(),"地区 · "+row.region,
-            metrics[row.favorite]?.let { if (it>=0) "TCP 端口 · $it ms" else "TCP 端口未连通" } ?: "尚无 TCP 端口检测结果").joinToString("\n")) },
+        text = { Text(listOfNotNull(row.source.label,row.type.uppercase(),"地区 · "+row.region,
+            metrics[row.favorite]?.let { if (it>=0) "TCP 端口 · $it ms" else "TCP 端口未连通" } ?: "尚无 TCP 端口检测结果",
+            problems?.get(row.favorite)?.let { "无法使用：$it" }).joinToString("\n")) },
         confirmButton = { TextButton(onClick = { detail = null }) { Text("关闭") } }) }
     chosen?.let { row -> AlertDialog(onDismissRequest = { chosen = null }, title = { Text("使用订阅节点连接 VPN？") },
         text = { Column { Text(row.source.label + " · " + row.node.getString("name"))
