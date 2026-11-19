@@ -1,0 +1,91 @@
+name: Android release
+on:
+  push:
+    tags: ['v*']
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check version tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Build Linux nodes on Debian 12
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rust:1.100.0-bookworm bash -euc '
+            apt-get update -qq
+            apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            rustup target add aarch64-unknown-linux-gnu
+            export CARGO_TARGET_DIR=/tmp/target
+            cargo build --locked --release -p nexus-server
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo build --locked --release --target aarch64-unknown-linux-gnu -p nexus-server
+            install -D /tmp/target/release/nexus-server /src/apps/android/app/build/linuxNodes/x86_64/nexus-server
+            install -D /tmp/target/aarch64-unknown-linux-gnu/release/nexus-server /src/apps/android/app/build/linuxNodes/aarch64/nexus-server
+            for bin in /src/apps/android/app/build/linuxNodes/*/nexus-server; do
+              newest=$(readelf --version-info "$bin" | grep -oE "GLIBC_[0-9.]+" | sort -Vu | tail -1)
+              test -n "$newest" && dpkg --compare-versions "${newest#GLIBC_}" le 2.36
+            done
+            chown -R $(stat -c %u:%g /src) /src/apps/android/app/build'
+      - name: Install Android toolchain
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --target aarch64-linux-android,x86_64-linux-android
+          cargo +1.100.0 install cargo-ndk --version 4.1.2 --locked
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "ndk;28.2.13676358" "build-tools;35.0.0"
+      - name: Sign APKs
+        working-directory: apps/android
+        env:
+          RUSTUP_TOOLCHAIN: '1.100.0'
+          NEXUS_PYTHON: python3
+          STORE_FILE: ${{ secrets.NEXUS_KEYSTORE }}
+          STORE_B64: ${{ secrets.NEXUS_KEYSTORE_B64 }}
+          NEXUS_KEYSTORE_PASSWORD: ${{ secrets.NEXUS_KEYSTORE_PASSWORD }}
+          NEXUS_KEY_ALIAS: ${{ secrets.NEXUS_KEY_ALIAS }}
+          NEXUS_KEY_PASSWORD: ${{ secrets.NEXUS_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$STORE_FILE" =~ ^[A-Za-z0-9_-]+\.(p12|jks|keystore)$ ]]
+          keydir=$(mktemp -d "$RUNNER_TEMP/nexus-sign.XXXXXXXX")
+          trap 'rm -f "$NEXUS_KEYSTORE"; rmdir "$keydir"' EXIT
+          export NEXUS_KEYSTORE="$keydir/$STORE_FILE"
+          printf '%s' "$STORE_B64" | base64 --decode > "$NEXUS_KEYSTORE"
+          unset STORE_B64
+          bash gradlew --no-daemon :app:assembleRelease
+          for apk in app/build/outputs/apk/release/Nexus-*.apk; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          done
+      - run: python3 tools/prepare_android_release.py "$GITHUB_REF_NAME" apps/android/app/build/outputs/apk/release release-assets
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-android
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed-android
+          path: assets
+      - name: Publish verified tag
+        working-directory: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum --check SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md Nexus-*.apk SHA256SUMS.txt

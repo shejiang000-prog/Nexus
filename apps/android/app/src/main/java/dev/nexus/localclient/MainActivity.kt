@@ -178,9 +178,10 @@ class MainActivity : ComponentActivity() {
         }
 
         fun save(p:Profile) { p.save(this);profile=p;choose("private") }
-        val goBack: ()->Unit = { page=when(page) { "服务器高级"->"我的服务器";"高级","诊断"->"设置";else->"连接" }; incoming=null;manageSource=null;message="" }
+        val goBack: ()->Unit = { page=when(page) { "服务器高级"->"我的服务器";"高级","诊断","关于"->"设置";else->"连接" }; incoming=null;manageSource=null;message="" }
         androidx.activity.compose.BackHandler(page!="连接",onBack=goBack)
         NexusTheme {
+            ReleaseStartup()
             val colors=MaterialTheme.colorScheme
             SimpleShell(page,{ target -> page=target;addSubscription=false;manageSource=null;message="" },goBack) { displayed ->
                 when(displayed) {
@@ -215,6 +216,7 @@ class MainActivity : ComponentActivity() {
                         incoming=null;page="连接"
                         switchConnection(privateRequest())
                     },goBack)
+                    "关于" -> AboutScreen()
                     "诊断" -> NetworkScreen(profile,tunnel,bypass,::changeMode,{profile=it;choose("private")},goBack)
                     "连接" -> {
                         if(!loaded && !tunnel.active) LinearProgressIndicator(Modifier.fillMaxWidth()) else {
@@ -257,6 +259,8 @@ class MainActivity : ComponentActivity() {
                                 val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
                                 Surface(shape=signalCard,color=colors.surface,border=androidx.compose.foundation.BorderStroke(1.dp,colors.outlineVariant)) {
                                     Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        BootPreference()
+                                        HorizontalDivider()
                                         Text("断线自动恢复",fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
                                         Text(if(alwaysOn) "已开启。Nexus 被系统关闭后会自动重新连接上次的节点。"
                                             else "手机清理后台时可能关闭 Nexus，网络会变成不经过代理。把 Nexus 设为「始终开启的 VPN」后，系统会自动把它重新连上。",
@@ -267,6 +271,8 @@ class MainActivity : ComponentActivity() {
                                         },Modifier.fillMaxWidth()) { Text("去系统设置开启") }
                                     }
                                 }
+                                UpdatePreference()
+                                SecondaryAction({page="关于"}) {Text("关于")}
                                 SecondaryAction({page="诊断"}) { Text("按应用代理与出口诊断") }
                                 SecondaryAction({page="高级"}) {Text("高级")}
                             }

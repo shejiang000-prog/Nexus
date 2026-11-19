@@ -2,6 +2,19 @@ apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
+def publicVersion = '1.0.0'
+def components = publicVersion.tokenize('.').collect { Integer.parseInt(it) }
+assert components.size() == 3 && components[1] < 100 && components[2] < 100
+def numericVersion = components[0] * 10000 + components[1] * 100 + components[2]
+def signingInput = { key -> providers.environmentVariable(key).orElse(providers.gradleProperty(key)).orNull }
+def signingKeys = ['NEXUS_KEYSTORE', 'NEXUS_KEYSTORE_PASSWORD', 'NEXUS_KEY_ALIAS', 'NEXUS_KEY_PASSWORD']
+def sign = signingKeys.collectEntries { [(it):signingInput(it)] }
+def verifySigning = tasks.register('requireReleaseSigning') {
+    doLast {
+        def missing = signingKeys.findAll { !sign[it] }
+        if (missing) throw new GradleException("Release signing requires: " + missing.join(', '))
+    }
+}
 android {
     namespace 'dev.nexus.localclient'
     compileSdk 36
@@ -10,7 +23,30 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    buildFeatures { compose true }
+    buildFeatures { compose true; buildConfig true }
+    testBuildType = providers.gradleProperty('nexusTestRelease').isPresent() ? 'release' : 'debug'
+    signingConfigs {
+        release {
+            if (sign.NEXUS_KEYSTORE) storeFile file(sign.NEXUS_KEYSTORE)
+            storePassword sign.NEXUS_KEYSTORE_PASSWORD
+            keyAlias sign.NEXUS_KEY_ALIAS
+            keyPassword sign.NEXUS_KEY_PASSWORD
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'proguard-test-api.pro'
+        }
+    }
+    // GitHub downloads are slow from mainland China; compressing the ~66 MB of native code
+    // roughly halves the APK at the cost of extracting the libraries once at install.
+    packaging { jniLibs { excludes += ['lib/armeabi-v7a/**', 'lib/x86/**']; useLegacyPackaging true } }
+    splits {
+        abi { enable true; reset(); include 'arm64-v8a', 'x86_64'; universalApk true }
+    }
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('nexusJni'))
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('shoesJni'))
     sourceSets.main.assets.srcDir(layout.buildDirectory.dir('shoesNotices'))
@@ -18,12 +54,28 @@ android {
         applicationId 'dev.nexus.localclient'
         testInstrumentationRunner 'dev.nexus.localclient.CatalogCheck'
         minSdk 26
-        ndk { abiFilters 'arm64-v8a', 'x86_64' }
         targetSdk 36
-        versionCode 1
-        versionName '0.1.0'
+        versionCode numericVersion
+        versionName publicVersion
+        def epoch = providers.environmentVariable('SOURCE_DATE_EPOCH').orNull
+        def built = epoch ? java.time.Instant.ofEpochSecond(epoch.toLong()) : java.time.Instant.now()
+        buildConfigField 'String', 'BUILT_AT', '"' + built.toString() + '"'
+
     }
 }
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    if (variant.buildType == 'release') variant.applicationId.set('dev.nexus.android')
+    variant.outputs.each { output ->
+        def abi = output.filters.find { it.filterType.name() == 'ABI' }?.identifier
+        if (variant.buildType == 'release') {
+            if (abi == 'x86_64') output.enabled.set(false)
+            else output.outputFileName.set("Nexus-${publicVersion}-${abi ? 'arm64' : 'universal'}.apk")
+        } else if (abi) output.enabled.set(false)
+        else output.outputFileName.set('app-debug.apk')
+    }
+}
+tasks.matching { it.name == 'preReleaseBuild' || it.name == 'validateSigningRelease' }.configureEach { dependsOn verifySigning }
+
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 
 def engineAar = layout.buildDirectory.file('engines/libXray.aar')
@@ -65,6 +117,8 @@ def rustBuild = tasks.register('buildRust', Exec) {
 tasks.named('preBuild').configure { dependsOn rustBuild, fetchEngine, shoesBuild }
 
 def adminAssets = tasks.register('prepareNodeAssets', Sync) {
+    from(new File(rootProject.projectDir.parentFile.parentFile, 'PRIVACY.md'))
+    from(new File(rootProject.projectDir.parentFile.parentFile, 'LICENSE')) { into 'licenses/Nexus' }
     from(new File(rootProject.projectDir.parentFile.parentFile, 'tools')) { include 'node_admin.py', 'install_node.py' }
     from(providers.environmentVariable('NEXUS_LINUX_BINARIES').orElse(layout.buildDirectory.dir('linuxNodes').map { it.asFile.absolutePath })) {
         into 'linux'

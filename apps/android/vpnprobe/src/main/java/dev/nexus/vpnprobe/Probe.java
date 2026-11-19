@@ -74,7 +74,7 @@ public final class Probe extends Instrumentation {
                 } finally { c.disconnect(); }
                 result.putString(host, "HTTPS 200, verified page");
             }
-            if (vpn) {
+            if (vpn && !"only".equals(options.getString("https"))) {
                 // The lab node denies documentation addresses. A premature local SYN-ACK
                 // would let connect() succeed and break a browser's IPv4 fallback.
                 for (String address : options.containsKey("subscription") ? new String[0] : new String[]{"192.0.2.123", "2001:db8::123"}) {

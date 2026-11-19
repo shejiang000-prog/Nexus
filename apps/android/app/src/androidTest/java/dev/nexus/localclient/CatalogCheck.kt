@@ -352,6 +352,7 @@ class CatalogCheck : Instrumentation() {
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "release-icons","release-import","release-update","release-key","release-private","release-boot","release-state","release-stop" -> releaseCheck(args,result)
                 "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
                 "split-lab", "split-public" -> splitCheck(args,result)
                 // QA transfer of a saved source between the owner's devices. The link stays in app-private

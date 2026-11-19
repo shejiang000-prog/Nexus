@@ -14,3 +14,4 @@
 *.log
 /lab-identity/
 __pycache__/
+*.hprof

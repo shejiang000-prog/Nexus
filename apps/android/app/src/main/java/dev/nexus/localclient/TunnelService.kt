@@ -39,7 +39,7 @@ data class TunnelState(val starting: Boolean = false, val port: Int = 0, val err
 class TunnelService : VpnService() {
     companion object { val state = MutableStateFlow(TunnelState())
         /** The last user-started VPN request, replayed when Android restarts a killed service. */
-        private const val RESUME = "resume-request"
+        internal const val RESUME = "resume-request"
         @Volatile internal var interfaceName: String? = null
     }
     private val main = Handler(Looper.getMainLooper())
@@ -59,18 +59,24 @@ class TunnelService : VpnService() {
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val stop = PendingIntent.getService(this, 1, Intent(this, TunnelService::class.java).setAction("stop"), flags)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), flags)
-        return Notification.Builder(this, channelId).setSmallIcon(android.R.drawable.stat_sys_upload)
+        return Notification.Builder(this, channelId).setSmallIcon(R.drawable.nexus_notification)
             .setContentTitle(getString(R.string.app_name)).setContentText(text).setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "断开", stop).build()).setOngoing(true).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = getSharedPreferences("local", 0)
+        val boot = intent?.action == "resume-boot"
+        if (boot && (!prefs.getBoolean("boot-connect",false) || VpnService.prepare(this)!=null || tun!=null)) {
+            if(tun==null) stopSelf(startId)
+            return if(tun==null) START_NOT_STICKY else START_STICKY
+        }
         if (intent?.action == "stop") prefs.edit().remove(RESUME).apply()
         // After Android kills the process it restarts a sticky service with a null intent (or the
         // always-on interface action). Resume the connection the user last started, not a default.
-        val resumed = if (intent == null || intent.action == SERVICE_INTERFACE) prefs.getString(RESUME, null)?.let {
+        val resumed = if (boot || intent == null || intent.action == SERVICE_INTERFACE) prefs.getString(RESUME, null)?.let {
             runCatching { Intent.parseUri(it, 0).setClass(this, TunnelService::class.java) }.getOrNull()
         } else null
+        if(boot && resumed?.action !in setOf("vpn","subscription")) {stopSelf(startId);return START_NOT_STICKY}
         val request = resumed ?: intent
         handle(request)
         val running = tun != null

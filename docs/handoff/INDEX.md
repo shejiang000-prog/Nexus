@@ -1,5 +1,9 @@
 # Nexus · Android 优先
 
+## 2026-11-25 Android GitHub 发布准备
+
+[公开版签名、检查更新、开机连接与设备验收](2026-11-25-release-prep-1.md)
+
 ## 2026-11-24 Android 简易连接与服务器管理
 
 [Nexus Signal 六屏、连接动效与实机验收](2026-11-24-simple-mode.md)。含明暗主题、真机帧耗时、订阅总览、免密绑定和邀请流程。
