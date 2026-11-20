@@ -223,7 +223,10 @@ internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
                 listOf("已授权设备" to authorized,"累计流量" to used).forEach{(label,value)->
                     Surface(Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),color=c.surfaceVariant){
                         Column(Modifier.padding(horizontal=12.dp,vertical=10.dp)){
-                            Text(value?:"—",style=numberStyle.copy(fontSize=22.sp,lineHeight=28.sp),fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+                            // One line at any font scale: shrink long amounts instead of wrapping "MB".
+                            androidx.compose.foundation.text.BasicText(value?:"—",
+                                style=numberStyle.copy(fontSize=22.sp,lineHeight=28.sp,color=c.onSurface,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold),
+                                maxLines=1,autoSize=androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize=13.sp,maxFontSize=22.sp,stepSize=1.sp))
                             Text(label,color=c.onSurfaceVariant,fontSize=13.sp)
                         }
                     }

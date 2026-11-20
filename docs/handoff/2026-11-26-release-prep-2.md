@@ -54,6 +54,7 @@ README 替换为连接、节点、我的服务器、设置四个页面的真机�
 
 - **节点地址过滤放宽。** 原实现拒绝全部私网、CGNAT 和 198.18.0.0/15，会让 OpenClash fake-ip 路由器后面的用户和家用局域网节点连不上。改为只拒绝只能指向手机自身的地址（回环、未指定、链路本地、组播、240/4、本机接口地址）。去掉 `instrumentationPeer` 测试钩子及 `lab-host` 参数，security 检查改为正反两组地址。
 - **小整理。** `QuickAccess.kt` 中订阅链接的注释回到 `subscriptionLink` 上方。README 八张截图右缘的三星侧屏面板把手已抹去。
-- **复测。** Windows `cargo fmt --check`、clippy（警告为错）、`cargo test --workspace` 通过；临时签名 release 与 release androidTest 构建成功；真机 R5GL14PWDNA release 包 security、formats、refresh 均 `INSTRUMENTATION_CODE: -1`。`tools/device_check.py --font-scale 1.3 --subscription` 因手机锁屏在准备阶段按预期停止并给出「请先解锁设备并保持屏幕亮起」，未重跑完整套件。
+- **复测。** Windows `cargo fmt --check`、clippy（警告为错）、`cargo test --workspace` 通过；临时签名 release 与 release androidTest 构建成功；真机 R5GL14PWDNA release 包 security、formats、refresh 均 `INSTRUMENTATION_CODE: -1`。`tools/device_check.py --font-scale 1.3 --subscription` 锁屏时在准备阶段按预期停止并提示解锁；解锁后整套重跑全部通过（simple、simple-overview、simple-motion、release-update、CatalogCheck、split-public Xray、两种字号×两种主题截图），字号 1.0 与夜间模式已读回恢复，VPN 已断开。
+- **大字号修复。** 1.3 倍字号下「我的服务器」累计流量「375.00 MB」折成两行、两格高度不一；改为单行自动缩小字号（13–22sp），重拍确认。其余页面只有个别行尾单字换行，未改。
 - **仍未完成。** 雷电实验室回归、耗电测试、完整域名抓包、其他 ROM 设备。
 
