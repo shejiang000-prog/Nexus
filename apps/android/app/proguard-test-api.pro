@@ -263,6 +263,13 @@
 }
 -keep,allowobfuscation class dev.nexus.localclient.MainActivity {
 }
+-keep,allowobfuscation class dev.nexus.localclient.NetworkScreenKt {
+  public static dev.nexus.localclient.DiagnosticResponse diagnosticResponse(java.lang.String,int,java.lang.String,long);
+}
+-keep,allowobfuscation class dev.nexus.localclient.DiagnosticResponse {
+  public java.lang.String getIp();
+  public java.lang.String getMessage();
+}
 -keep,allowobfuscation class dev.nexus.localclient.NodeAddressKt {
   public static boolean allowedNodeAddress(java.net.InetAddress);
 }

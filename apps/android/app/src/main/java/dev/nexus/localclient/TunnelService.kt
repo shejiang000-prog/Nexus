@@ -219,6 +219,7 @@ class TunnelService : VpnService() {
                                 .also { require(it.matches(Regex("[0-9a-fA-F:.]{2,45}"))) }
                         } finally { c.disconnect() }
                     }.getOrNull()
+                    // Failed requests (including non-200 responses) leave the saved exit untouched.
                     if (ip != null) main.post {
                         if (serial==token && prefs.getBoolean("monitor/"+key,false)) {
                             val prior = prefs.getString("exit/"+key,null)

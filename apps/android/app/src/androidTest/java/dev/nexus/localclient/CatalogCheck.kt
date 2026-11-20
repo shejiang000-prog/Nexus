@@ -28,6 +28,22 @@ class CatalogCheck : Instrumentation() {
         val link = "trojan://test-only@node.invalid:443?security=tls#First"
         var code = Activity.RESULT_CANCELED
         try {
+            fun exit(status: Int, body: String? = null) = diagnosticResponse("ipinfo.io", status, body, 12)
+            check(exit(200, """{"ip":"192.0.2.1"}""").ip == "192.0.2.1")
+            check(exit(200, """{"ip":"2001:db8::1"}""").ip == "2001:db8::1")
+            check(exit(403).message == "ipinfo.io 拒绝了这个出口的查询（403）。这是服务方的限制，不代表节点故障。")
+            check(exit(429).message == "ipinfo.io 暂时限制了这个出口的查询（429）。稍后再试或换个节点，不代表节点故障。")
+            check(exit(500).message == "ipinfo.io 返回 HTTP 500，请稍后再试。")
+            for (body in listOf("invalid", "{}", """{"ip":"999.0.2.1"}""", """{"ip":"2001:::1"}""")) {
+                val response = exit(200, body)
+                check(response.ip == null && response.message == "ipinfo.io 返回了无法识别的内容。")
+            }
+            for (status in listOf(403, 429, 500)) {
+                check(diagnosticResponse("example.com", status, null, 12).message == "example.com 返回 HTTP $status，请稍后再试。")
+            }
+            check(diagnosticResponse("example.com", 200, "Example Domain", 12).message == "HTTPS 网页验证成功 · 12 ms")
+            check(diagnosticResponse("example.com", 200, "unexpected", 12).message == "example.com 返回了无法识别的内容。")
+            result.putString("diagnostics", "HTTP status and response content checks passed")
             store.import("$prefix-A", link)
             store.import("$prefix-B", "proxies:\n  - name: Second\n    type: ss\n    method: aes-128-gcm\n    password: test-only\n    server: node.invalid\n    port: 3434")
             store.import("$prefix-C",Base64.encodeToString(link.replace("First","Third").toByteArray(),Base64.NO_WRAP))

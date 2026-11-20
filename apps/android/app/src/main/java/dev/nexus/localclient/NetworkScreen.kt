@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
+import android.system.Os
+import android.system.OsConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -23,6 +25,30 @@ import java.net.URL
 import java.text.DateFormat
 import java.util.Date
 import javax.net.ssl.HttpsURLConnection
+
+internal data class DiagnosticResponse(val message: String, val ip: String? = null)
+
+internal fun diagnosticResponse(site: String, status: Int, content: String?, elapsedMs: Long): DiagnosticResponse {
+    if (status != 200) {
+        val message = when {
+            site == "ipinfo.io" && status == 429 -> "ipinfo.io 暂时限制了这个出口的查询（429）。稍后再试或换个节点，不代表节点故障。"
+            site == "ipinfo.io" && status == 403 -> "ipinfo.io 拒绝了这个出口的查询（403）。这是服务方的限制，不代表节点故障。"
+            else -> "$site 返回 HTTP $status，请稍后再试。"
+        }
+        return DiagnosticResponse(message)
+    }
+    if (site == "ipinfo.io" && content != null) {
+        val body = try { JSONObject(content) } catch (_: org.json.JSONException) { null }
+        val ip = body?.opt("ip") as? String
+        if (ip != null && ip.length in 2..45 && '\u0000' !in ip &&
+            Os.inet_pton(if (':' in ip) OsConstants.AF_INET6 else OsConstants.AF_INET, ip) != null) {
+            return DiagnosticResponse("$ip · ${body.optString("country").take(8)} · ${body.optString("org").take(100)}", ip)
+        }
+    } else if (site == "example.com" && content?.contains("Example Domain") == true) {
+        return DiagnosticResponse("HTTPS 网页验证成功 · $elapsedMs ms")
+    }
+    return DiagnosticResponse("$site 返回了无法识别的内容。")
+}
 
 @Composable
 fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, onSelect: (Profile) -> Unit, close: () -> Unit) {
@@ -84,20 +110,17 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
                         try {
                             c.instanceFollowRedirects = false; c.useCaches = false
                             c.connectTimeout = 6000; c.readTimeout = 6000
-                            check(c.responseCode == 200)
-                            val data = c.inputStream.bounded(32768).toString(Charsets.UTF_8)
-                            if (exit) {
-                                val body = JSONObject(data)
-                                val ip = body.getString("ip")
-                                require(ip.length in 2..45 && ip.matches(Regex("[0-9a-fA-F:.]+")))
+                            val status = c.responseCode
+                            val data = if (status == 200) try {
+                                c.inputStream.bounded(32768).toString(Charsets.UTF_8)
+                            } catch (_: IllegalArgumentException) { null } else null
+                            val (message, ip) = diagnosticResponse(host, status, data, SystemClock.elapsedRealtime() - start)
+                            if (ip != null) {
                                 val previous = prefs.getString("exit/$key", null)
                                 if (previous != null && previous != ip) lines += "出口已变化 · 上次 $previous"
-                                lines += "$ip · ${body.optString("country").take(8)} · ${body.optString("org").take(100)}"
                                 if (!prefs.getBoolean("monitor/$key",false)) prefs.edit().putString("exit/$key", ip).apply()
-                            } else {
-                                check(data.contains("Example Domain"))
-                                lines += "HTTPS 网页验证成功 · ${SystemClock.elapsedRealtime() - start} ms"
                             }
+                            lines += message
                         } finally { c.disconnect() }
                     }.onFailure { lines += "请求失败，请检查节点和所选服务" }
                 }
