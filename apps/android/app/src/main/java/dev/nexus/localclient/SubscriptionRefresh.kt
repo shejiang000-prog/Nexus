@@ -19,6 +19,25 @@ internal object SubscriptionRefresh {
         WorkManager.getInstance(context).enqueueUniqueWork("imported-node-tests",ExistingWorkPolicy.APPEND_OR_REPLACE,work)
     }
 
+    /**
+     * Re-test every source whose last run is older than six hours, so 「自动选最快」 keeps working
+     * without anyone opening the test panel. Called when the app comes to the foreground.
+     */
+    fun testStale(context: Context, now: Long = System.currentTimeMillis()) {
+        if (TunnelService.state.value.active) return
+        val store = Subscriptions(context)
+        for (source in store.all()) {
+            if (now - store.appearance.getLong("tested/" + source.id, 0) < TimeUnit.HOURS.toMillis(6)) continue
+            store.appearance.edit().putLong("tested/" + source.id, now).apply()
+            testImported(context, source.id)
+        }
+    }
+
+    /** Background node tests share the proxy engine with the VPN; a connection always wins. */
+    fun stopTests(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork("imported-node-tests")
+    }
+
     fun schedule(context: Context) {
         // Hourly is enough for 6/12/24-hour intervals and retries; app start, resume and VPN
         // disconnect also enqueue a one-off check. UPDATE replaces the earlier 15-minute period.
@@ -96,9 +115,12 @@ class ImportedNodeTest(context: Context,params:WorkerParameters): CoroutineWorke
         if(nodes.isEmpty()) return Result.success()
         return try {
             NodeProbe.run(applicationContext,nodes) { _,_ -> }
+            Subscriptions(applicationContext).appearance.edit().putLong("tested/"+id,System.currentTimeMillis()).apply()
             synchronized(SubscriptionRefresh) { SubscriptionRefresh.revision.value++ }
             Result.success()
         } catch(e:kotlinx.coroutines.CancellationException) {
+            // Stopped because the user connected: let the next app start test again.
+            Subscriptions(applicationContext).appearance.edit().remove("tested/"+id).apply()
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             Result.retry()
         } catch(_:Exception) { Result.retry() }

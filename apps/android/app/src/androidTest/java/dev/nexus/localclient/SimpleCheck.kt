@@ -40,6 +40,18 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
         val limits=invitationLimits()
         check(limits.getInt("valid_seconds")==604800 && limits.getInt("device_seconds")==604800 && limits.getInt("max_devices")==1 && limits.isNull("quota"))
         check(usageAmount(0)=="0.00 MB" && usageAmount(1500000)=="1.50 MB" && usageAmount(1000000000)=="1.00 GB")
+        // Clipboard subscription prompt: only clear subscription addresses qualify.
+        check(listOf("https://panel.example/api/v1/client/subscribe?token=abc","https://a.example/link/AbC?sub=3",
+            "https://b.example/sub/xyz","https://c.example/s?flag=clash&token=1","https://d.example/feed/a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
+            "https://e.example/x/9f8e7d6c5b4a39281706f5e4d3c2b1a0").all { subscriptionLink(it)!=null })
+        check(listOf("https://news.example/article/1","http://a.example/sub/x","https://a.example/sub x","nexus://invite/x",
+            "https://a.example/subway/map","https://blog.example/how-to-set-up-a-home-network-2024").none { subscriptionLink(it)!=null })
+        val links=Subscriptions(ctx).all().filter { it.url.isNotEmpty() }
+        result.putString("clipboard-sources","recognised ${links.count { subscriptionLink(it.url)!=null }} / ${links.size} saved subscription links")
+        if(args.getString("shape")=="yes") links.forEachIndexed { i,s -> val u=android.net.Uri.parse(s.url)
+            fun mask(v:String)=if(v.matches(Regex("[A-Za-z]{1,12}"))) v else "<${v.length}>"
+            result.putString("shape$i",u.scheme+"://<host>/"+u.pathSegments.joinToString("/",transform=::mask)+
+                (u.queryParameterNames.takeIf { it.isNotEmpty() }?.joinToString("&","?") { mask(it)+"=<v>" } ?: "")) }
         // Reinstalled-server path: forgetting drops only that host's pin, key and readiness.
         val owners=ctx.getSharedPreferences("owner-access",0)
         val saved=owners.all.toMap()

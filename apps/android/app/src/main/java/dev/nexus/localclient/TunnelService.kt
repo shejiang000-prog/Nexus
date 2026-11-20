@@ -40,6 +40,8 @@ class TunnelService : VpnService() {
     companion object { val state = MutableStateFlow(TunnelState())
         /** The last user-started VPN request, replayed when Android restarts a killed service. */
         internal const val RESUME = "resume-request"
+        /** Last request the user started; unlike [RESUME] it survives a manual disconnect. */
+        internal const val LAST = "last-request"
         @Volatile internal var interfaceName: String? = null
     }
     private val main = Handler(Looper.getMainLooper())
@@ -80,11 +82,15 @@ class TunnelService : VpnService() {
         val request = resumed ?: intent
         handle(request)
         val running = tun != null
-        if (running && request?.action in setOf("vpn", "subscription")) prefs.edit().putString(RESUME, request!!.toUri(0)).apply()
+        if (running && request?.action in setOf("vpn", "subscription")) request!!.toUri(0).let {
+            prefs.edit().putString(RESUME, it).putString(LAST, it).apply()
+            ConnectTile.refresh(this)
+        }
         return if (running) START_STICKY else START_NOT_STICKY
     }
 
     private fun handle(intent: Intent?): Int {
+        if (intent?.action in setOf("vpn", "subscription", "connect") && tun == null && cancel == null) SubscriptionRefresh.stopTests(this)
         if (intent?.action == "split-mode") {
             val plan = selected
             if (plan != null && tun != null && network != null && !exitHeld) {

@@ -129,3 +129,10 @@ Android 14 要求声明前台服务类型及对应权限。Android 15 禁止若�
 - **服务器高级：** 字段放进卡片，宽度占满，两个端口并排；「其他登录方式与迁移」和「返回已绑定服务器」改为列表行。
 
 复测（S24，debug 包）：`simple`、`simple-shots`、`simple-overview`、`simple-motion`、`release-update`、默认 CatalogCheck、`split-public -e engine xray -e index 8` 都返回 -1；点选择圈后回到连接页，当前节点已切换。
+
+## 操作简化（Claude）
+
+- **下拉快捷开关（`QuickAccess.kt` 的 `ConnectTile`）：** 点一下即用上次连接的请求连接，再点断开。需要用户决定的情况（尚未授权 VPN、从未连接过）会打开 App，不替用户猜。TunnelService 每次成功启动都另存一份 `last-request`；它与 `resume-request` 不同，手动断开后也保留。设置新增「快捷开关」组，Android 13+ 用 `requestAddTileService` 一键添加。S24 实测：`cmd statusbar add-tile` 后 `click-tile`，3 秒连上，google 204；再点即断开。测试结束已 `remove-tile`。
+- **剪贴板订阅识别：** 回到前台时，对 10 分钟内复制的文本判断是否为订阅链接。条件是 https、无空白、长度不超过 2048，且路径或参数含 sub、clash、token、feed 等标记，或带 16–128 位字母数字混合的令牌段；已添加过的链接跳过。确认后直接导入、开启「自动选最快」并在后台测试。`simple` 用例加入正反样例：本机 Airport-Test 链接（形如 `/feed/<32 位令牌>`）可识别，普通文章链接和 http 链接不会触发。
+- **自动重测：** `SubscriptionRefresh.testStale` 在 onResume 时检查，未连接且某个来源的上次测试超过 6 小时就排队测试。开始连接（vpn、subscription、connect）时取消正在进行的测试，并清除该来源的测试时间戳，下次打开再测。S24 实测：清除时间戳后打开 App，立即点连接，3 秒连上（修复前最长要等测试跑完，约 20–30 秒）；随后时间戳确认已清除。
+- 回归：`simple`、`simple-shots`、`simple-overview`、`simple-motion`、`release-update`、默认 CatalogCheck、`split-public` 均返回 -1；临时签名 release 构建通过，dex 中含 ConnectTile。

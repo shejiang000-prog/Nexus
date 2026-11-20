@@ -21,6 +21,11 @@
         <!-- The scanner library ships CaptureActivity locked to landscape; follow the phone instead. -->
         <activity android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullUser" tools:replace="android:screenOrientation" />
+        <service android:name=".ConnectTile" android:exported="true" android:label="Nexus"
+            android:icon="@drawable/nexus_notification" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>

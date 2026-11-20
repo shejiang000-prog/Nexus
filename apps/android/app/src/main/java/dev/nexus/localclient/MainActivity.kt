@@ -36,6 +36,7 @@ import java.io.ByteArrayOutputStream
 class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<Invitation?>(null)
     private var discovered by mutableStateOf<Invitation?>(null)
+    private var foundSource by mutableStateOf<String?>(null)
     private var checkedClip = -1L
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
             if (System.currentTimeMillis()-desc.timestamp !in 0..600_000L) return
             val item=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text ?: return
             if(item.length<=4200) discovered=sharedInvitation(item.toString())
+            if(discovered==null) subscriptionLink(item.toString())?.takeIf { link -> Subscriptions(this).all().none { it.url==link } }?.let { foundSource=it }
         }
     }
     private fun readInvitation(value: Intent?) {
@@ -64,6 +66,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         SubscriptionRefresh.schedule(this)
+        SubscriptionRefresh.testStale(this)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -266,6 +269,12 @@ class MainActivity : ComponentActivity() {
                                         runCatching { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) }
                                             .onFailure { message="请在系统设置 → 网络 → VPN 中开启" }
                                     }
+                                    if (Build.VERSION.SDK_INT >= 33) {
+                                        SectionLabel("快捷开关")
+                                        ListRow("添加到下拉快捷开关","下拉通知栏点一下即可连接或断开，不用打开 App",GroupPlace.Single) {
+                                            ConnectTile.requestAdd(this@MainActivity) { message=it }
+                                        }
+                                    }
                                     SectionLabel("更新")
                                     UpdateSettings()
                                     SectionLabel("更多")
@@ -296,6 +305,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            foundSource?.let { link -> AlertDialog(onDismissRequest={foundSource=null},title={Text("发现订阅链接，添加？")},
+                text={Text("来自 "+(runCatching { Uri.parse(link).host }.getOrNull() ?: "剪贴板")+"。添加后会自动测试全部节点，并开启「自动选最快」。")},
+                confirmButton={PrimaryAction({
+                    foundSource=null
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { store.import("机场订阅",link) } }.onSuccess { source ->
+                            choose("auto"); SubscriptionRefresh.testImported(this@MainActivity,source.id)
+                            store.appearance.edit().putLong("tested/"+source.id,System.currentTimeMillis()).apply()
+                            synchronized(SubscriptionRefresh) { SubscriptionRefresh.revision.value++ }
+                            message="已添加订阅，正在后台测试节点"
+                        }.onFailure { message="订阅添加失败，请检查链接或网络后重试" }
+                    }
+                }) {Text("添加")}},
+                dismissButton={SecondaryAction({foundSource=null}) {Text("忽略")}}) }
             discovered?.let { found -> AlertDialog(onDismissRequest={discovered=null},title={Text("发现邀请，是否接受？")},
                 text={Text(found.name)},confirmButton={PrimaryAction({discovered=null;incoming=found;page="领取"}) {Text("查看邀请")}},
                 dismissButton={SecondaryAction({discovered=null}) {Text("暂不")}}) }
