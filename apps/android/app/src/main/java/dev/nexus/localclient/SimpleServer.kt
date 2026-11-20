@@ -101,14 +101,24 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             if (!ready && !busy) Text(if (host.isBlank()) "先填写服务器 IP" else "请输入服务器密码",Modifier.fillMaxWidth(),
                 color=c.onSurfaceVariant,fontSize=14.sp,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
             TextButton({ expanded=!expanded }) { Text(if(expanded) "收起高级设置" else "高级设置",color=c.onSurfaceVariant) }
-            androidx.compose.animation.AnimatedVisibility(expanded) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                Text("端口是服务器的网络入口，DNS 用来查找网站地址。")
-                OutlinedTextField(dns,{dns=it},singleLine=true,label={Text("DNS")})
-                OutlinedTextField(port,{port=it},singleLine=true,label={Text("连接端口")})
-                OutlinedTextField(claim,{claim=it},singleLine=true,label={Text("邀请端口")})
-                SecondaryAction({ advanced(null) }) { Text("其他登录方式与迁移") }
-            } }
-            if (access.current!=null) SecondaryAction({ host=access.current!!; password=""; adding=false }) { Text("返回已绑定服务器") }
+            androidx.compose.animation.AnimatedVisibility(expanded) {
+                Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                        Text("一般不用改。端口是服务器的网络入口，DNS 用来查找网站地址。",color=c.onSurfaceVariant,fontSize=14.sp)
+                        val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,unfocusedContainerColor=c.background,focusedContainerColor=c.background)
+                        val shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
+                        OutlinedTextField(dns,{dns=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("DNS")},shape=shape,colors=field)
+                        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                            OutlinedTextField(port,{port=it},Modifier.weight(1f),singleLine=true,label={Text("连接端口")},shape=shape,colors=field)
+                            OutlinedTextField(claim,{claim=it},Modifier.weight(1f),singleLine=true,label={Text("邀请端口")},shape=shape,colors=field)
+                        }
+                    }
+                }
+            }
+            Column {
+                ListRow("其他登录方式与迁移","密钥登录、从旧服务器迁移授权",if(access.current!=null) GroupPlace.First else GroupPlace.Single) { advanced(null) }
+                if (access.current!=null) ListRow("返回已绑定服务器",access.current.orEmpty(),GroupPlace.Last) { host=access.current!!; password=""; adding=false }
+            }
         } else {
             ServerSummary(host,devices){advanced(host)}
             val limits=runCatching {

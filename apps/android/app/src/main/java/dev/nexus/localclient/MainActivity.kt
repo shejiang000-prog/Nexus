@@ -255,36 +255,40 @@ class MainActivity : ComponentActivity() {
                         when(displayed) {
                             "设置" -> {
                                 Text("设置",style=MaterialTheme.typography.headlineMedium)
-                                Text("分流模式");ModeSwitch(bypass,::changeMode)
-                                val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
-                                Surface(shape=signalCard,color=colors.surface,border=androidx.compose.foundation.BorderStroke(1.dp,colors.outlineVariant)) {
-                                    Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        BootPreference()
-                                        HorizontalDivider()
-                                        Text("断线自动恢复",fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
-                                        Text(if(alwaysOn) "已开启。Nexus 被系统关闭后会自动重新连接上次的节点。"
-                                            else "手机清理后台时可能关闭 Nexus，网络会变成不经过代理。把 Nexus 设为「始终开启的 VPN」后，系统会自动把它重新连上。",
-                                            color=colors.onSurfaceVariant,fontSize=14.sp)
-                                        if(!alwaysOn) SecondaryAction({
-                                            runCatching { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) }
-                                                .onFailure { message="请在系统设置 → 网络 → VPN 中开启" }
-                                        },Modifier.fillMaxWidth()) { Text("去系统设置开启") }
+                                Column {
+                                    SectionLabel("分流模式")
+                                    ModeSwitch(bypass,::changeMode)
+                                    Text(if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",Modifier.padding(start=4.dp,top=8.dp),
+                                        color=colors.onSurfaceVariant,fontSize=14.sp)
+                                    SectionLabel("自动恢复")
+                                    val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
+                                    RecoverySettings(alwaysOn) {
+                                        runCatching { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) }
+                                            .onFailure { message="请在系统设置 → 网络 → VPN 中开启" }
                                     }
+                                    SectionLabel("更新")
+                                    UpdateSettings()
+                                    SectionLabel("更多")
+                                    ListRow("按应用代理与出口诊断","选择哪些应用走代理，检查出口与连通",GroupPlace.First) { page="诊断" }
+                                    ListRow("高级","旧版配置文件、本机公钥、本地端口转发",GroupPlace.Middle) { page="高级" }
+                                    ListRow("关于 Nexus","版本 "+BuildConfig.VERSION_NAME+" · 隐私与开源许可",GroupPlace.Last) { page="关于" }
                                 }
-                                UpdatePreference()
-                                SecondaryAction({page="关于"}) {Text("关于")}
-                                SecondaryAction({page="诊断"}) { Text("按应用代理与出口诊断") }
-                                SecondaryAction({page="高级"}) {Text("高级")}
                             }
                             "高级" -> {
                                 Text("高级",style=MaterialTheme.typography.headlineMedium)
-                                Text("旧版配置可通过公钥和配置文件授权。这些操作需要先断开连接。")
-                                SecondaryAction({ export.launch("nexus-device.pub") },enabled=!tunnel.active) {Text("导出公钥")}
-                                SecondaryAction({ import.launch(arrayOf("*/*")) },enabled=!tunnel.active) {Text("导入配置")}
-                                SecondaryAction({rotate=true},enabled=!tunnel.active) {Text("轮换本机公钥")}
-                                SecondaryAction({ startForegroundService(Intent(this@MainActivity,TunnelService::class.java).setAction("connect"));page="连接" },
-                                    enabled=profile!=null && !tunnel.active) {Text("本地端口转发")}
-                                if(profile==null) Text("添加私人服务器后可开启本地转发")
+                                Text("旧版私人节点用公钥和配置文件授权。以下操作需要先断开连接。",color=colors.onSurfaceVariant,fontSize=14.sp)
+                                Column {
+                                    SectionLabel("旧版配置")
+                                    ListRow("导出本机公钥","交给服务器拥有者签发配置",GroupPlace.First,enabled=!tunnel.active) { export.launch("nexus-device.pub") }
+                                    ListRow("导入配置","选择拥有者发来的配置文件",GroupPlace.Middle,enabled=!tunnel.active) { import.launch(arrayOf("*/*")) }
+                                    ListRow("轮换本机公钥","生成新的设备身份，旧配置随即失效",GroupPlace.Last,enabled=!tunnel.active) { rotate=true }
+                                    SectionLabel("其他")
+                                    ListRow("本地端口转发",if(profile==null) "添加私人服务器后可用" else "在本机开放端口，转发到私人节点",GroupPlace.Single,
+                                        enabled=profile!=null && !tunnel.active) {
+                                        startForegroundService(Intent(this@MainActivity,TunnelService::class.java).setAction("connect"));page="连接"
+                                    }
+                                    if(tunnel.active) Text("请先在连接页断开",Modifier.padding(start=4.dp,top=10.dp),color=colors.onSurfaceVariant,fontSize=14.sp)
+                                }
                             }
 
                         }

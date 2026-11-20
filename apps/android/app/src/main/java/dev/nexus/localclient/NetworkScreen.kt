@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,78 +107,72 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
         }
     }
     BackHandler(onBack = close)
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = close) { Text("返回我的网络") }
+    val theme = MaterialTheme.colorScheme
+    @Composable fun toggle(checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) =
+        Switch(checked, change, enabled = enabled, colors = switchColors())
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp)) {
         Text("出口与诊断", style = MaterialTheme.typography.headlineMedium)
-        Text("分流模式", style = MaterialTheme.typography.titleMedium)
-        SingleChoiceSegmentedButtonRow(Modifier.widthIn(max = 320.dp).fillMaxWidth()) {
-            listOf(true,false).forEachIndexed { index, value ->
-                SegmentedButton(selected = bypass == value, onClick = { changeMode(value) },
-                    colors = SegmentedButtonDefaults.colors(activeContainerColor = MaterialTheme.colorScheme.primary,
-                        activeContentColor = MaterialTheme.colorScheme.onPrimary),
-                    shape = SegmentedButtonDefaults.itemShape(index,2)) { Text(SplitRouting.label(value)) }
+        SectionLabel("分流模式")
+        ModeSwitch(bypass, changeMode)
+        if (servers.isNotEmpty()) {
+            SectionLabel("私人节点出口")
+            servers.forEachIndexed { i, server ->
+                val chosen = server.server == current?.server && server.fingerprint == current.fingerprint
+                val open = !chosen && !tunnel.active && pinned == null
+                ListRow(server.name, server.server, groupPlace(i, servers.lastIndex, false, false),
+                    trailing = { Text(if (chosen) "当前出口" else "选择", color = if (chosen) theme.onSurfaceVariant else theme.primary,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) },
+                    onClick = if (open) ({ runCatching { server.save(context) }.onSuccess { onSelect(server) }.onFailure { result = "切换失败" } }) else null)
             }
         }
-        servers.forEach { server ->
-            val chosen = server.server == current?.server && server.fingerprint == current.fingerprint
-            ListItem(headlineContent = { Text(server.name) }, supportingContent = { Text(server.server) },
-                trailingContent = { TextButton(enabled = !chosen && !tunnel.active && pinned == null, onClick = {
-                    runCatching { server.save(context) }.onSuccess { onSelect(server) }.onFailure { result = "切换失败" }
-                }) { Text(if (chosen) "当前出口" else "选择") } })
-        }
         if (current != null) {
-            TextButton(enabled=!tunnel.active && pinned==null,onClick={newAddress=current.server}) { Text("更新迁移后的服务器地址") }
+            SectionLabel("私人节点设置")
+            val rows = buildList<Pair<String, @Composable (GroupPlace) -> Unit>> {
+                if (current.dns != null) {
+                    add("lock" to { place -> ListRow("锁定当前私人节点", "固定使用这台服务器，网络中断时保留 VPN 路由", place,
+                        trailing = { toggle(pinned != null, !tunnel.active) { lock ->
+                            val next = if (lock) key else null
+                            if (prefs.edit().putString("pinned", next).commit()) pinned = next
+                        } }) })
+                    add("apps" to { place -> ListRow("应用范围", if (apps.isEmpty()) "全设备都走代理" else "只有选中的 ${apps.size} 个应用走代理", place,
+                        enabled = !tunnel.active) { pickApps = true } })
+                    add("monitor" to { place -> ListRow("持续检查出口 IP", "每五分钟经 VPN 查询一次，出口变化时通知", place,
+                        trailing = { toggle(monitoring, !tunnel.active) {
+                            if (it) monitorConsent = true else if (prefs.edit().putBoolean("monitor/$key", false).commit()) monitoring = false
+                        } }) })
+                    if (monitoring) add("hold" to { place -> ListRow("出口变化时暂停业务流量", "", place,
+                        trailing = { toggle(hold, !tunnel.active) { if (prefs.edit().putBoolean("hold/$key", it).commit()) hold = it } }) })
+                    add("failover" to { place -> ListRow("失败时切换到其他私人节点", if (pinned != null || apps.isNotEmpty()) "锁定或限定应用时不可用" else "", place,
+                        trailing = { toggle(failover && pinned == null && apps.isEmpty(), !tunnel.active && pinned == null && apps.isEmpty()) {
+                            if (prefs.edit().putBoolean("failover", it).commit()) failover = it
+                        } }) })
+                }
+                add("move" to { place -> ListRow("更新迁移后的服务器地址", "服务器换了 IP 或端口时在这里修改", place,
+                    enabled = !tunnel.active && pinned == null) { newAddress = current.server } })
+            }
+            rows.forEachIndexed { i, (_, row) -> row(groupPlace(i, rows.lastIndex, false, false)) }
             newAddress?.let { address ->
-                AlertDialog(onDismissRequest={newAddress=null},title={Text("更新私人节点地址")},text={Column {
+                AlertDialog(onDismissRequest={newAddress=null},title={Text("更新私人节点地址")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
                     Text("向拥有者确认新地址及端口。下次连接继续校验原 CA 和本机设备证书。")
                     OutlinedTextField(address,{newAddress=it.take(96)},singleLine=true,label={Text("新 IP:端口")})
-                }},confirmButton={ TextButton(onClick={
+                }},confirmButton={ PrimaryAction(onClick={
                     runCatching { current.moveEndpoint(context,address.trim()) }.onSuccess {
                         onSelect(it); servers=Profile.servers(context);newAddress=null
                     }.onFailure { result="地址无效、已存在或节点已锁定";newAddress=null }
-                }) { Text("更新地址") } },dismissButton={TextButton(onClick={newAddress=null}) { Text("取消") }})
+                }) { Text("更新地址") } },dismissButton={SecondaryAction(onClick={newAddress=null}) { Text("取消") }})
             }
         }
-        if (current?.dns != null) {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text("锁定当前私人节点", Modifier.weight(1f))
-                Switch(enabled = !tunnel.active, checked = pinned != null, onCheckedChange = { lock ->
-                    val next = if (lock) key else null
-                    if (prefs.edit().putString("pinned", next).commit()) pinned = next
-                })
-            }
-            Text("锁定期间固定使用这台服务器，网络中断时保留 VPN 路由。主动断开会恢复系统网络。")
-            TextButton(enabled = !tunnel.active,onClick = { pickApps=true }) { Text(if (apps.isEmpty()) "应用范围 · 全设备" else "业务应用 · ${apps.size} 个") }
-            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-                Text("持续检查出口 IP",Modifier.weight(1f))
-                Switch(enabled=!tunnel.active,checked=monitoring,onCheckedChange={
-                    if (it) monitorConsent=true else if (prefs.edit().putBoolean("monitor/$key",false).commit()) monitoring=false
-                })
-            }
-            if (monitoring) Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-                Text("出口变化时暂停业务流量",Modifier.weight(1f))
-                Switch(enabled=!tunnel.active,checked=hold,onCheckedChange={
-                    if (prefs.edit().putBoolean("hold/$key",it).commit()) hold=it
-                })
-            }
-            TextButton(onClick = {
-                runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) }
-                    .onFailure { result = "请在系统设置中打开 VPN" }
-            }) { Text("系统级断线保护设置") }
-            Text("如需在进程退出或重启时阻止直连，请在系统 VPN 设置中启用始终开启和阻止未使用 VPN 的连接。系统将使用当前保存的全设备私人节点。")
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text("连接失败时切换到其他已保存的私人节点", Modifier.weight(1f))
-                Switch(enabled = !tunnel.active && pinned == null && apps.isEmpty(), checked = failover && pinned == null && apps.isEmpty(), onCheckedChange = {
-                    if (prefs.edit().putBoolean("failover",it).commit()) failover = it
-                })
-            }
+        SectionLabel("检测")
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PrimaryAction(enabled = !busy && (current != null || subscription), modifier = Modifier.fillMaxWidth(), onClick = { diagnose(false) }) {
+                Text(if (subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
+            SecondaryAction(enabled = !busy && (selected?.dns != null || subscription) && tunnel.vpn, modifier = Modifier.fillMaxWidth(), onClick = { ipConsent = true }) {
+                Text("查询公网出口") }
+            if (!tunnel.vpn) Text("连接 VPN 后可以检测连通性、查询公网出口", color = theme.onSurfaceVariant, fontSize = 13.sp)
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (result.isNotEmpty()) Notice(result)
         }
-        HorizontalDivider()
-        PrimaryAction(enabled = !busy && (current != null || subscription), onClick = { diagnose(false) }) { Text(if (subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
-        TextButton(enabled = !busy && (selected?.dns != null || subscription) && tunnel.vpn, onClick = { ipConsent = true }) { Text("查询公网出口") }
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (result.isNotEmpty()) Text(result)
+        Spacer(Modifier.height(16.dp))
     }
     if (monitorConsent) AlertDialog(onDismissRequest={monitorConsent=false},title={Text("允许定期查询公网出口？")},
         text={Text("连接此节点时，Nexus 每五分钟通过 VPN 向 ipinfo.io 查询一次公网 IP，地址变化时发出通知。业务应用模式需把 Nexus 加入所选应用。")},

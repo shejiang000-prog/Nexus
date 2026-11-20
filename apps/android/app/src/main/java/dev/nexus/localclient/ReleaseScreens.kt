@@ -15,6 +15,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -24,14 +30,25 @@ private fun browse(ctx:Context,url:String) {
     catch(_:android.content.ActivityNotFoundException){android.widget.Toast.makeText(ctx,"请先安装浏览器",android.widget.Toast.LENGTH_SHORT).show()}
 }
 
+/** The two ways Nexus comes back on its own: always-on VPN (reliable) and the boot receiver. */
 @Composable
-internal fun BootPreference(){
+internal fun RecoverySettings(alwaysOn:Boolean,openVpnSettings:()->Unit){
+    val c=MaterialTheme.colorScheme
     val p=LocalContext.current.getSharedPreferences("local",0)
     var enabled by remember {mutableStateOf(p.getBoolean("boot-connect",false))}
-    Row(verticalAlignment=Alignment.CenterVertically){Text("开机后自动连接",Modifier.weight(1f))
-        Switch(enabled,{enabled=it;p.edit().putBoolean("boot-connect",it).apply()})}
-    Text("手机重启并首次解锁后，恢复关机前仍在使用的连接。手动断开后不会自动连接。三星等部分手机会拦截开机启动，更可靠的做法是开启下面的「始终开启的 VPN」，它在重启后同样会自动连接。",color=MaterialTheme.colorScheme.onSurfaceVariant)
+    Column {
+        ListRow("断线自动恢复",if(alwaysOn) "已设为始终开启的 VPN，被系统关闭或重启后自动重连"
+            else "系统清理后台时可能关闭 Nexus。设为「始终开启的 VPN」后会自动重连",GroupPlace.First,
+            trailing={ Text(if(alwaysOn) "已开启" else "去开启 ›",color=c.primary,fontWeight=FontWeight.SemiBold) },
+            onClick=if(alwaysOn) null else openVpnSettings)
+        ListRow("开机后自动连接","重启解锁后恢复上次的连接。三星等手机可能拦截，以上一项为准",GroupPlace.Last,
+            trailing={ Switch(enabled,{enabled=it;p.edit().putBoolean("boot-connect",it).apply()},colors=switchColors()) })
+    }
 }
+
+@Composable
+internal fun switchColors()=SwitchDefaults.colors(checkedTrackColor=signal,checkedThumbColor=Color(0xFF03140C),
+    uncheckedTrackColor=MaterialTheme.colorScheme.surfaceVariant,uncheckedThumbColor=MaterialTheme.colorScheme.onSurfaceVariant)
 
 @Composable
 internal fun ReleaseStartup(){
@@ -58,29 +75,39 @@ internal fun ReleaseStartup(){
 }
 
 @Composable
-internal fun UpdatePreference(){
+internal fun UpdateSettings(){
     val ctx=LocalContext.current
+    val c=MaterialTheme.colorScheme
     val prefs=remember {ctx.getSharedPreferences("release-check",0)}
     var auto by remember {mutableStateOf(prefs.getBoolean("automatic",true))}
     var checked by remember {mutableStateOf(false)}
     var busy by remember {mutableStateOf(false)}
     val scope=rememberCoroutineScope()
     val latest by ReleaseUpdates.available.collectAsState()
-    Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
-        Row(verticalAlignment=Alignment.CenterVertically){Text("自动检查更新",Modifier.weight(1f))
-            Switch(auto,{auto=it;prefs.edit().putBoolean("automatic",it).apply()})}
-        Text("自动检查每天最多联系 GitHub 一次。",color=MaterialTheme.colorScheme.onSurfaceVariant)
-        SecondaryAction({busy=true;scope.launch {try{checked=ReleaseUpdates.check(ctx,true)}finally{busy=false}}},enabled=!busy){Text(if(busy)"正在检查…" else "检查更新")}
+    Column {
+        ListRow("自动检查更新","每天最多联系 GitHub 一次，不发送设备信息",GroupPlace.First,
+            trailing={ Switch(auto,{auto=it;prefs.edit().putBoolean("automatic",it).apply()},colors=switchColors()) })
         val release=latest
-        if(release!=null){Text("有新版本 "+release.version);if(release.summary.isNotBlank())Text(release.summary)
-            PrimaryAction({browse(ctx,release.page)}){Text("去下载")}}
-        else if(checked)Text("当前已是最新版本")
+        if(release!=null) ListRow("有新版本 "+release.version,release.summary.lines().firstOrNull { it.isNotBlank() }.orEmpty().take(80),GroupPlace.Last,
+            trailing={ Text("去下载 ›",color=c.primary,fontWeight=FontWeight.SemiBold) }) { browse(ctx,release.page) }
+        else ListRow("检查更新",when { busy->"正在检查…"; checked->"当前 "+BuildConfig.VERSION_NAME+" 已是最新"; else->"当前版本 "+BuildConfig.VERSION_NAME },
+            GroupPlace.Last,enabled=!busy) { busy=true;scope.launch {try{checked=ReleaseUpdates.check(ctx,true)}finally{busy=false}} }
     }
+}
+
+private fun licenseTitle(path:String):Pair<String,String> {
+    val parts=path.removePrefix("licenses/").split('/')
+    val file=parts.last().substringBeforeLast('.')
+    val owner=parts.first()
+    val generic=file.equals("LICENSE",true) || file.equals("SOURCES",true)
+    val title=if(parts.size==1 || !generic) file else owner
+    return title to (if(parts.size==1 || title==owner) "许可证全文" else owner)
 }
 
 @Composable
 internal fun AboutScreen(){
     val ctx=LocalContext.current
+    val c=MaterialTheme.colorScheme
     var document by androidx.compose.runtime.saveable.rememberSaveable {mutableStateOf("")}
     var feedback by remember {mutableStateOf(false)}
     var logs by remember {mutableStateOf(false)}
@@ -95,36 +122,58 @@ internal fun AboutScreen(){
             files("licenses").sorted()
         }
     }
-    androidx.activity.compose.BackHandler(document.isNotEmpty()||logs){document="";logs=false;report=""}
+    androidx.activity.compose.BackHandler(document.isNotEmpty()||logs){ if(report.isNotEmpty()) report="" else {document="";logs=false} }
     val lines by produceState(emptyList<String>(),document){
         value=if(document.isEmpty()||document=="licenses") emptyList() else withContext(Dispatchers.IO){
-            assets.open(document).bufferedReader().useLines {it.chunked(16).map {part->part.joinToString("\n")}.toList()}
+            assets.open(document).bufferedReader().readLines()
         }
     }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal=20.dp),contentPadding=PaddingValues(vertical=16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    val built=remember { runCatching { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",java.util.Locale.ROOT)
+        .format(java.util.Date(java.time.Instant.parse(BuildConfig.BUILT_AT).toEpochMilli())) }.getOrDefault(BuildConfig.BUILT_AT) }
+    val crashes=remember(logs) { CrashReports.files(ctx) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal=20.dp),contentPadding=PaddingValues(vertical=16.dp)){
         if(logs){
             item{Text("本机崩溃记录",style=MaterialTheme.typography.headlineMedium)}
-            val files=CrashReports.files(ctx)
-            if(files.isEmpty())item{Text("尚无崩溃记录")}
-            items(files){file->SecondaryAction({report=file.readText()}){Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(file.lastModified())))}}
-            if(report.isNotBlank()){item{Text(report)};item{SecondaryAction({
-                ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Nexus 崩溃堆栈",report))
-            }){Text("复制这份堆栈")}}}
+            item{Text("只含 App 内部的类名和方法名，不含链接、地址或密钥。",Modifier.padding(top=6.dp,bottom=10.dp),color=c.onSurfaceVariant,fontSize=14.sp)}
+            if(crashes.isEmpty())item{Text("尚无崩溃记录",color=c.onSurfaceVariant)}
+            if(report.isBlank()) items(crashes.size){i->
+                val file=crashes[i]
+                ListRow(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(file.lastModified())),"",groupPlace(i,crashes.lastIndex,false,false)){report=file.readText()}
+            } else {
+                item{Surface(shape=signalCard,color=c.surface){Text(report,Modifier.padding(14.dp),fontSize=12.sp,lineHeight=16.sp,fontFamily=FontFamily.Monospace)}}
+                item{Spacer(Modifier.height(12.dp));PrimaryAction({
+                    ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Nexus 崩溃堆栈",report))
+                },Modifier.fillMaxWidth()){Text("复制这份堆栈")}}
+            }
         }else if(document=="licenses"){
             item{Text("开源许可",style=MaterialTheme.typography.headlineMedium)}
-            items(licenses){path->SecondaryAction({document=path}){Text(path.removePrefix("licenses/"))}}
+            item{Text("Nexus 使用的第三方组件及其许可证全文。",Modifier.padding(top=6.dp,bottom=10.dp),color=c.onSurfaceVariant,fontSize=14.sp)}
+            items(licenses.size){i->
+                val (title,owner)=licenseTitle(licenses[i])
+                ListRow(title,owner,groupPlace(i,licenses.lastIndex,false,false)){document=licenses[i]}
+            }
         }else if(document.isNotEmpty()){
-            item{Text(if(document=="PRIVACY.md")"隐私说明" else document.substringAfterLast('/'),style=MaterialTheme.typography.headlineMedium)}
-            items(lines){Text(it)}
+            if(document!="PRIVACY.md") item{Text(licenseTitle(document).first,Modifier.padding(bottom=12.dp),style=MaterialTheme.typography.headlineMedium)}
+            item{
+                if(document.endsWith(".md")) SimpleDocument(lines)
+                else Text(lines.joinToString("\n"),fontSize=13.sp,lineHeight=19.sp,fontFamily=FontFamily.Monospace)
+            }
         }else{
-            item{Text("关于 Nexus",style=MaterialTheme.typography.headlineMedium)}
-            item{Text("版本 "+BuildConfig.VERSION_NAME+" · "+BuildConfig.VERSION_CODE);Text("构建时间 "+BuildConfig.BUILT_AT)}
-            item{Text("Nexus 以 GPL-3.0 发布")}
-            item{SecondaryAction({browse(ctx,REPOSITORY)}){Text("查看 GitHub 源码")}}
-            item{SecondaryAction({document="PRIVACY.md"}){Text("隐私说明")}}
-            item{SecondaryAction({document="licenses"}){Text("开源许可")}}
-            item{SecondaryAction({logs=true}){Text("查看本机崩溃记录")}}
-            item{SecondaryAction({feedback=true}){Text("反馈问题")}}
+            item{
+                Column(Modifier.fillMaxWidth().padding(top=12.dp,bottom=4.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(6.dp)){
+                    Box(Modifier.size(72.dp).background(signal,RoundedCornerShape(22.dp)),contentAlignment=Alignment.Center){ Mark(Modifier.size(34.dp),Color(0xFF03140C)) }
+                    Text("Nexus",style=MaterialTheme.typography.headlineMedium.copy(fontFamily=numberFont))
+                    Text("版本 "+BuildConfig.VERSION_NAME+" · 构建于 "+built,color=c.onSurfaceVariant,fontSize=14.sp)
+                    Text("以 GPL-3.0 开源发布",color=c.onSurfaceVariant,fontSize=14.sp)
+                }
+            }
+            item{SectionLabel("说明")}
+            item{ListRow("GitHub 源码","github.com/shejiang000-prog/Nexus",GroupPlace.First){browse(ctx,REPOSITORY)}}
+            item{ListRow("隐私说明","App 不收集、不上传任何数据",GroupPlace.Middle){document="PRIVACY.md"}}
+            item{ListRow("开源许可","${licenses.size} 份第三方许可证",GroupPlace.Last){document="licenses"}}
+            item{SectionLabel("遇到问题")}
+            item{ListRow("本机崩溃记录",if(crashes.isEmpty()) "暂无" else "最近 ${crashes.size} 次",GroupPlace.First){logs=true}}
+            item{ListRow("反馈问题","在 GitHub 提交，由你确认后发送",GroupPlace.Last){feedback=true}}
         }
     }
     if(feedback){

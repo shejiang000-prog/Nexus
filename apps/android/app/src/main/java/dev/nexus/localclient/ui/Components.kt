@@ -181,6 +181,52 @@ internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,se
     }
 }
 
+/** Small grey heading above a grouped list. */
+@Composable
+internal fun SectionLabel(text:String,modifier:Modifier=Modifier) {
+    Text(text,modifier.padding(start=4.dp,top=14.dp,bottom=6.dp),color=MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize=14.sp,fontWeight=FontWeight.SemiBold)
+}
+
+/**
+ * One row of a grouped settings-style list. [trailing] replaces the default chevron (a switch,
+ * a status word); rows without [onClick] are not clickable.
+ */
+@Composable
+internal fun ListRow(title:String,detail:String="",place:GroupPlace=GroupPlace.Single,enabled:Boolean=true,
+                     titleColor:Color=Color.Unspecified,trailing:(@Composable ()->Unit)?=null,onClick:(()->Unit)?=null) {
+    val c=MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface)) {
+        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=16.dp),color=c.outlineVariant)
+        Row(Modifier.fillMaxWidth().then(if(onClick!=null)Modifier.clickable(enabled=enabled,role=Role.Button,onClick=onClick) else Modifier)
+            .heightIn(min=60.dp).padding(start=16.dp,end=12.dp,top=10.dp,bottom=10.dp),
+            verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f).graphicsLayer{alpha=if(enabled)1f else .5f}) {
+                Text(title,fontWeight=FontWeight.SemiBold,color=if(titleColor==Color.Unspecified)c.onSurface else titleColor)
+                if(detail.isNotEmpty()) Text(detail,color=c.onSurfaceVariant,fontSize=13.sp,lineHeight=18.sp)
+            }
+            if(trailing!=null) trailing() else if(onClick!=null) Text("›",color=c.onSurfaceVariant,fontSize=22.sp)
+        }
+    }
+}
+
+/** Renders the small Markdown subset used by PRIVACY.md and notices: headings, bullets, paragraphs. */
+@Composable
+internal fun SimpleDocument(lines:List<String>) {
+    val c=MaterialTheme.colorScheme
+    Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
+        lines.forEach { raw -> val line=raw.trimEnd(); when {
+            line.isBlank() -> Spacer(Modifier.height(4.dp))
+            line.startsWith("# ") -> Text(line.removePrefix("# "),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
+            line.startsWith("## ") || line.startsWith("### ") -> Text(line.trimStart('#',' '),Modifier.padding(top=8.dp),
+                style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold)
+            line.trimStart().startsWith("- ") || line.trimStart().startsWith("* ") -> Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                Text("•",color=c.primary); Text(line.trimStart().drop(2).replace("**",""),color=c.onSurface,fontSize=15.sp,lineHeight=22.sp) }
+            else -> Text(line.replace("**",""),color=c.onSurface,fontSize=15.sp,lineHeight=22.sp)
+        } }
+    }
+}
+
 /** The connection page's current-node card: the whole card opens the node list. */
 @Composable
 internal fun CurrentNode(region:String,name:String,detail:String,latency:Long?,private:Boolean,open:()->Unit) {
