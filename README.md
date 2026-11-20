@@ -8,7 +8,7 @@ Nexus 是无需注册的 Android 代理客户端，支持机场订阅、自建�
 ## 下载与安装
 
 1. 在 [GitHub Releases](https://github.com/shejiang000-prog/Nexus/releases/latest) 下载 APK 和同一版本的 `SHA256SUMS.txt`。多数手机选 `arm64`，x86_64 模拟器或不确定架构时选 `universal`。
-2. 校验下载文件。Windows 使用 `Get-FileHash .\Nexus-1.0.0-arm64.apk -Algorithm SHA256`；Linux 使用 `sha256sum Nexus-1.0.0-arm64.apk`。核对校验文件中同名 APK 的整串摘要。
+2. 校验下载文件。Windows 使用 `Get-FileHash .\Nexus-1.0.0-arm64.apk -Algorithm SHA256`；Linux 使用 `sha256sum Nexus-1.0.0-arm64.apk`。核对校验文件中同名 APK 的整串摘要。如需进一步确认签名，可用 Android SDK 的 `apksigner verify --print-certs Nexus-1.0.0-arm64.apk`，签名证书 SHA-256 应为 `D6:9F:CF:1C:0B:B7:60:DF:D7:EA:DD:21:D8:61:2C:30:B0:56:46:FD:0B:1D:A0:56:95:50:24:59:A4:02:83:B3`。所有正式版本都使用这一证书。
 3. 在手机打开 APK，为当前浏览器或文件管理器允许「安装未知应用」，安装后可以关闭这项授权。后续从相同发布渠道覆盖更新。
 
 ## 首次使用
