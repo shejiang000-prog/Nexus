@@ -203,7 +203,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
             }) { Text("保存") } }, dismissButton = { SecondaryAction(onClick = { pickApps=false }) { Text("取消") } })
     }
     if (ipConsent) AlertDialog(onDismissRequest = { ipConsent = false }, title = { Text("通过 ipinfo.io 查询出口？") },
-        text = { Text("ipinfo.io 会看到私人节点的公网地址。返回的国家、网络运营方和出口地址仅在本机显示。") },
+        text = { Text("ipinfo.io 会看到当前节点的公网出口地址。返回的国家、网络运营方和出口地址仅在本机显示。") },
         confirmButton = { PrimaryAction(onClick = { ipConsent = false; diagnose(true) }) { Text("查询一次") } },
         dismissButton = { SecondaryAction(onClick = { ipConsent = false }) { Text("取消") } })
 }
