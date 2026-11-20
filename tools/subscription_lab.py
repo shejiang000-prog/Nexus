@@ -97,8 +97,12 @@ def full_device(args, root, nodes, inbounds, shoes):
                     outbounds.append(dict(tag=tag, protocol="freedom", settings=dict(redirect=f"127.0.0.1:{mapped}",
                         finalRules=[dict(action="allow", network=network, ip=["127.0.0.1/32"], port=str(mapped)), dict(action="block")])))
                     rules.append(dict(type="field", ip=[addr], port=str(port), network=network, outboundTag=tag))
-                outbounds.extend([dict(tag="web", protocol="freedom"), dict(tag="deny", protocol="blackhole")])
+                outbounds.extend([dict(tag="web", protocol="freedom", settings=dict(domainStrategy="UseIPv4")),
+                                  dict(tag="deny", protocol="blackhole")])
+                # The client sniffs TLS and connects by domain (routeOnly=false), so allow the same
+                # public test hosts by name as well as by their resolved addresses.
                 rules += [dict(type="field", ip=allowed_ips, port="443", network="tcp", outboundTag="web"),
+                          dict(type="field", domain=["full:"+h.decode() for h in hosts], port="443", network="tcp", outboundTag="web"),
                           dict(type="field", network="tcp,udp", outboundTag="deny")]
                 cfg = dict(log=dict(loglevel="none"), inbounds=[inbounds[number]], outbounds=outbounds,
                            routing=dict(rules=rules))

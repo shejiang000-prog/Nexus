@@ -478,6 +478,10 @@ class CatalogCheck : Instrumentation() {
                     val settings = Subscriptions(ctx).appearance
                     val key = "auto/"+source.id
                     val previous = settings.all[key] as? Boolean
+                    // Receipt targets use reserved TEST-NET addresses, which bypass mode sends direct.
+                    val local = ctx.getSharedPreferences("local",0)
+                    val split = local.all[SplitRouting.KEY] as? Boolean
+                    check(local.edit().putBoolean(SplitRouting.KEY,false).commit())
                     val signal = File(ctx.cacheDir,"subscription-qa-stop")
                     signal.delete()
                     require(android.net.VpnService.prepare(ctx) == null)
@@ -505,6 +509,7 @@ class CatalogCheck : Instrumentation() {
                         val restore = settings.edit()
                         if (previous == null) restore.remove(key) else restore.putBoolean(key,previous)
                         restore.commit()
+                        local.edit().apply { if (split == null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY,split) }.commit()
                         File(ctx.cacheDir,"subscription-qa-state").delete()
                         signal.delete()
                         runOnMainSync { home.finish() }

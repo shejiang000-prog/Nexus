@@ -58,3 +58,25 @@ README 替换为连接、节点、我的服务器、设置四个页面的真机�
 - **大字号修复。** 1.3 倍字号下「我的服务器」累计流量「375.00 MB」折成两行、两格高度不一；改为单行自动缩小字号（13–22sp），重拍确认。其余页面只有个别行尾单字换行，未改。
 - **仍未完成。** 雷电实验室回归、耗电测试、完整域名抓包、其他 ROM 设备。
 
+## 雷电实验室回归（Claude）
+
+雷电 emulator-5554（Android 14）与 WSL NexusLab。debug 包、临时签名 release 通用包（x86_64）分别安装测试。
+
+| 测试 | 结果 |
+|---|---|
+| verify_subscription_vpn.py（7 协议、文档导入、浏览器回执、断开节点后切换备用、断网恢复、按需测速） | 全部通过，0 项失败。按需测速 2.74 / 2.07 Mbps。 |
+| verify_compat_interop.py（16 种节点格式与传输） | 16 项均为 node-side HTTP receipt，-1。 |
+| verify_compat_interop.py --probe（批量真连） | 16 / 16 通过，峰值并发 8，2144 ms；正常与取消批次都释放了监听和 shoes。 |
+| split-lab Xray | 全局、绕过的 TCP/UDP 与 DNS 回执全部匹配；实验室 1 MiB 绕过 629 / 360 Mbps，全局 839 / 503 Mbps。 |
+| split-lab shoes | 全局、绕过四项匹配（shoes 按设计全部经节点），-1。 |
+| debug：security、formats、simple、simple-motion、默认 CatalogCheck | 均为 -1。 |
+| release：security、formats、refresh、simple、simple-overview、simple-motion、release-update、默认 CatalogCheck | 均为 -1。 |
+
+测试夹具修正（产品代码未改）：
+
+- 上一轮为 IPv6 修复把 Xray 嗅探改为 routeOnly=false 后，Xray 按嗅探到的域名连接。实验室临时节点只按 IP 放行，所有 Xray 协议的健康检查被拦截后都切到了 tuic。`tools/subscription_lab.py` 按名称另行放行同一组公网测试站点；`SplitCheck` 的实验室测速改用 IP 作为 Host。
+- 「绕过大陆」默认开启，192.0.2.0/24 等保留地址按设计直连，而订阅验收的回执目标正位于该网段。`subscription-vpn` 模式改为在全局模式下运行，结束后恢复原设置。
+- `verify_subscription_vpn.py` 的导入按钮文案同步为「从文件或图片导入」。
+
+未覆盖：私人节点全流程（部署、绑定、邀请、领取、撤销、迁移）、私人引擎 split-lab 和 vpnprobe 断网恢复。原因是实验 VM 没有 SSH 服务端，apt 也无法联网安装。本轮私人节点相关代码只改了管理密钥缓冲区擦除和邀请名校验。
+

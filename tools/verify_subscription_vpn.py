@@ -199,7 +199,7 @@ def verify(args):
         call("shell","am","start","-W","-f","0x04000000","-n",PACKAGE+"/.MainActivity")
         tap("节点")
         tap("添加节点",True)
-        tap("选择文件或二维码图片（可多选）",True)
+        tap("从文件或图片导入",True)
         # A fresh file appears first when Downloads is sorted by modification time.
         for _ in range(2):
             if any(n.get("text")==name for n in tree().iter("node")):

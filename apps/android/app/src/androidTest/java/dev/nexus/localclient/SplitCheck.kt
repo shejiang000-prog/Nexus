@@ -64,7 +64,9 @@ private fun labRate(vpn:Network,fixture:JSONObject,up:Boolean):Double {
             socket.connect(address,6000)
             val out=socket.getOutputStream()
             val head=if(up)"POST /up HTTP/1.1\r\nContent-Length: 1048576" else "GET /down HTTP/1.1"
-            out.write((head+"\r\nHost: relay.split.test\r\nConnection: close\r\n\r\n").toByteArray())
+            // An address as Host: Xray connects by the sniffed host (routeOnly=false), and the lab
+            // peer cannot resolve made-up names.
+            out.write((head+"\r\nHost: "+fixture.getString("proxy")+"\r\nConnection: close\r\n\r\n").toByteArray())
             val input=DataInputStream(socket.getInputStream().buffered())
             if(up) repeat(32){out.write(chunk)}
             out.flush()
