@@ -30,6 +30,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 
+private val fetchTimeouts = java.util.concurrent.ScheduledThreadPoolExecutor(1) { task ->
+    Thread(task,"Nexus subscription timeout").apply {isDaemon=true}
+}.apply {removeOnCancelPolicy=true}
+
 private const val MAX_BYTES = 512 * 1024
 private val protocols = setOf("vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic", "anytls")
 internal fun nodeKey(source: String, node: JSONObject) = source + ":" + Base64.encodeToString(
@@ -57,6 +61,29 @@ private class TextResolver : Resolver() {
     }
 }
 
+// Validate before org.json builds its recursive tree. Keep duplicate-key semantics unambiguous.
+internal fun checkedObject(text:String):JSONObject {
+    android.util.JsonReader(text.reader()).use { reader ->
+        fun value(depth:Int){
+            require(depth<=24)
+            when(reader.peek()){
+                android.util.JsonToken.BEGIN_OBJECT -> {
+                    reader.beginObject()
+                    val keys=HashSet<String>()
+                    while(reader.hasNext()){require(keys.add(reader.nextName()));value(depth+1)}
+                    reader.endObject()
+                }
+                android.util.JsonToken.BEGIN_ARRAY -> {
+                    reader.beginArray();while(reader.hasNext())value(depth+1);reader.endArray()
+                }
+                else -> reader.skipValue()
+            }
+        }
+        value(0)
+        require(reader.peek()==android.util.JsonToken.END_DOCUMENT)
+    }
+    return JSONObject(text)
+}
 private fun decode64(s: String): String = runCatching { Base64.decode(s, Base64.DEFAULT) }
     .recoverCatching { Base64.decode(s, Base64.URL_SAFE) }.getOrThrow().toString(Charsets.UTF_8)
 
@@ -145,7 +172,7 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
         val source = input.trim()
         val url = if (!source.contains('\n') && source.startsWith("https://")) source else ""
         var usage = ""
-        val content = if (url.isEmpty()) source else (download?.invoke(url) ?: fetch(url)).let { (body, info) -> usage = info; body }
+        val content = if (url.isEmpty()) source else (download?.invoke(url) ?: fetch(URL(url), 30000)).let { (body, info) -> usage = info; body }
         val nodes = parse(content)
         synchronized(SubscriptionRefresh) {
             if (previous != null) {
@@ -158,10 +185,15 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
     }
 
     /** Downloads a subscription. Providers commonly redirect to a CDN; only HTTPS hops are followed. */
-    private fun fetch(url: String): Pair<String, String> {
-        var target = URL(url)
+    internal fun fetch(url: URL, budgetMillis: Long): Pair<String, String> {
+        var target = url
+        require(target.protocol=="https" && target.host.isNotEmpty() && target.userInfo==null)
+        val deadline=android.os.SystemClock.elapsedRealtime()+budgetMillis
         repeat(4) { hop ->
             val connection = target.openConnection() as HttpsURLConnection
+            val remaining=deadline-android.os.SystemClock.elapsedRealtime()
+            check(remaining>0)
+            val timer=fetchTimeouts.schedule({connection.disconnect()},remaining,java.util.concurrent.TimeUnit.MILLISECONDS)
             try {
                 connection.instanceFollowRedirects = false
                 connection.connectTimeout = 10000
@@ -179,14 +211,31 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
                 check(code == 200)
                 val usage = connection.getHeaderField("subscription-userinfo").orEmpty().take(256)
                     .split(';').map { it.trim() }.filter { it.matches(Regex("(upload|download|total|expire)=[0-9]{1,19}")) }.joinToString(";")
-                return connection.inputStream.bounded(MAX_BYTES).toString(Charsets.UTF_8) to usage
-            } finally { connection.disconnect() }
+                val body = connection.inputStream.bounded(MAX_BYTES)
+                check(android.os.SystemClock.elapsedRealtime() < deadline)
+                return body.toString(Charsets.UTF_8) to usage
+            } finally { timer.cancel(false);connection.disconnect() }
         }
         error("too many redirects")
     }
     private fun parse(content: String): JSONArray {
         val raw = content.trim().removePrefix("\uFEFF").trim()
         val body = if (raw.matches(Regex("[A-Za-z0-9+/=_\\s-]+"))) decode64(raw).trim() else raw
+        val json=if(body.startsWith("{")) checkedObject(body) else null
+        if (json==null && !body.lineSequence().any {it.trim().substringBefore("://") in protocols}) {
+            val loader = Yaml(SafeConstructor(LoaderOptions()))
+            var depth = 0
+            var events = 0
+            for (event in loader.parse(body.reader())) {
+                require(++events<=100000)
+                when(event) {
+                    is org.yaml.snakeyaml.events.AliasEvent -> error("不支持订阅别名")
+                    is org.yaml.snakeyaml.events.CollectionStartEvent -> require(++depth<=24)
+                    is org.yaml.snakeyaml.events.CollectionEndEvent -> depth--
+                    else -> Unit
+                }
+            }
+        }
         val nodes = JSONArray()
         fun add(type: String, name: String, data: Any) {
             require(nodes.length() < 2048)
@@ -195,8 +244,8 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
                 nodes.put(JSONObject().put("type", type).put("name", label).put("config", data))
             }
         }
-        if (body.startsWith("{") && runCatching { JSONObject(body).optString("format") }.getOrNull() == "nexus-nodes/1") {
-            val items = JSONObject(body).getJSONArray("nodes")
+        if (json?.optString("format") == "nexus-nodes/1") {
+            val items = json.getJSONArray("nodes")
             require(items.length() in 1..2048)
             for (index in 0 until items.length()) {
                 val n = items.getJSONObject(index)
@@ -211,7 +260,7 @@ class Subscriptions(context: Context, private val download: ((String) -> Pair<St
                 if (type !in protocols) continue
                 val uri = Uri.parse(line)
                 val name = if (type == "vmess") runCatching {
-                    JSONObject(decode64(line.substringAfter("://").substringBefore('#'))).optString("ps")
+                    checkedObject(decode64(line.substringAfter("://").substringBefore('#'))).optString("ps")
                 }.getOrDefault("") else ""
                 add(type, uri.fragment ?: name, line)
             }

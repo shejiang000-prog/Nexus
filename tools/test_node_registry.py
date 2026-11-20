@@ -94,7 +94,24 @@ def test(binaries):
         echo.shutdown()
         print("PASS: two devices, idempotent claim, redemption limit, byte quota, live revoke, owner continuity, audit")
 
+def check_connection_deadline():
+    import socket
+    from node_admin import connection_deadline
+    left, right = socket.socketpair()
+    with left, right, connection_deadline(left, 0.05):
+        right.settimeout(2)
+        assert right.recv(1) == b""
+    left, right = socket.socketpair()
+    with left, right:
+        with connection_deadline(left, 2):
+            left.sendall(b"x")
+        assert right.recv(1) == b"x"
+    print("PASS: request deadline and cancellation")
+
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir",type=Path,required=True)
-    test(parser.parse_args().bin_dir.resolve())
+    args = parser.parse_args()
+    check_connection_deadline()
+    test(args.bin_dir.resolve())

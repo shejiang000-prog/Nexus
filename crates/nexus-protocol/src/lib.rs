@@ -99,6 +99,31 @@ pub async fn write_packet(w: &mut (impl AsyncWrite + Unpin), payload: &[u8]) -> 
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn deterministic_frame_inputs() {
+        let mut state = 0x612c_02adu32;
+        let mut wire = [0; 32];
+        let mut packet = [0; MAX_PACKET];
+        for i in 0..100_000 {
+            for b in &mut wire {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                *b = (state >> 24) as u8;
+            }
+            if i % 2 == 0 {
+                wire[..5].copy_from_slice(b"NXUS\x01");
+                wire[5] = 1 + wire[5] % 2;
+                wire[6] = if i % 4 == 0 { 4 } else { 6 };
+            }
+            let input = &wire[..(state as usize % 33)];
+            if let Ok((_, target)) = read_open(&mut &input[..]).await {
+                assert_ne!(target.port(), 0);
+            }
+            if let Ok(n) = read_packet(&mut &input[..], &mut packet).await {
+                assert!(n + 2 <= input.len());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn open_vectors() {
         for flow in [Flow::Tcp, Flow::Udp] {
             for addr in ["127.0.0.1:443", "[::1]:53"] {

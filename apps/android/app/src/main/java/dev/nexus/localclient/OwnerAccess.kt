@@ -56,13 +56,16 @@ internal class OwnerAccess(private val context: Context) {
         val pair = try { KeyPair.genKeyPair(JSch(), KeyPair.ED25519) }
             catch (_: Exception) { KeyPair.genKeyPair(JSch(), KeyPair.ECDSA, 256) }
         try {
-            val output = ByteArrayOutputStream()
-            pair.writePrivateKey(output)
-            val raw = output.toByteArray()
+            val output = object:ByteArrayOutputStream(){
+                fun wipe(){buf.fill(0);reset()}
+            }
+            val raw = try {pair.writePrivateKey(output);output.toByteArray()} finally {output.wipe()}
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE,wrappingKey())
-            cipher.updateAAD("$host/$pin".toByteArray())
-            val locked = try { cipher.doFinal(raw) } finally { raw.fill(0) }
+            val locked = try {
+                cipher.init(Cipher.ENCRYPT_MODE,wrappingKey())
+                cipher.updateAAD("$host/$pin".toByteArray())
+                cipher.doFinal(raw)
+            } finally { raw.fill(0) }
             output.reset()
             pair.writePublicKey(output,"Nexus")
             val json = JSONObject().put("pin",pin).put("public",output.toString("US-ASCII").trim())

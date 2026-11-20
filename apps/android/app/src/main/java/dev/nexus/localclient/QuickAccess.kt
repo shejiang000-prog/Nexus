@@ -44,6 +44,10 @@ class ConnectTile : TileService() {
     }
 
     override fun onClick() {
+        afterTileUnlock(isLocked,{ action -> unlockAndRun { action() } },::toggle)
+    }
+
+    private fun toggle() {
         val state = TunnelService.state.value
         if (state.active) {
             startService(Intent(this, TunnelService::class.java).setAction("stop"))
@@ -80,6 +84,11 @@ class ConnectTile : TileService() {
             }
         }
     }
+}
+
+/** On the lock screen, toggling waits for the system unlock prompt. */
+internal fun afterTileUnlock(locked:Boolean, unlock: (() -> Unit) -> Unit, toggle:() -> Unit) {
+    if(locked) unlock(toggle) else toggle()
 }
 
 /**

@@ -2,7 +2,7 @@
 import argparse
 import base64
 from functools import lru_cache
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import ipaddress
 import json
@@ -254,6 +254,25 @@ def initialize(root, args):
         if migration is not None: restore_rows(conn,migration)
     return {"ok":True}
 
+@contextmanager
+def connection_deadline(request, seconds):
+    # SSLContext takes ownership of the original descriptor during the handshake.
+    with request.dup() as guard:
+        def expire():
+            try:
+                guard.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        timer = threading.Timer(seconds, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
+            timer.join()
+
+
 def serve(registry):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -297,7 +316,7 @@ def serve(registry):
         def process_request_thread(self, request, addr):
             try:
                 request.settimeout(5)
-                with ctx.wrap_socket(request,server_side=True) as channel:
+                with connection_deadline(request, 15), ctx.wrap_socket(request,server_side=True) as channel:
                     Handler(channel,addr,self)
             except (OSError,ValueError):
                 pass

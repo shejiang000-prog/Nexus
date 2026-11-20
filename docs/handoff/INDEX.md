@@ -1,5 +1,9 @@
 # Nexus · Android 优先
 
+## 2026-11-26 Android 发布准备第二轮
+
+[安全审查、设备回归与大字体截图](2026-11-26-release-prep-2.md)
+
 ## 2026-11-25 Android GitHub 发布准备
 
 [公开版签名、检查更新、开机连接与设备验收](2026-11-25-release-prep-1.md)

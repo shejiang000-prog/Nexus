@@ -142,6 +142,7 @@ pub fn directives(mut text: &str) -> Option<(Vec<SocketAddr>, Vec<IpAddr>, &str)
     fn list<T: std::str::FromStr>(line: &str) -> Option<Vec<T>> {
         let items = line
             .split(',')
+            .take(3)
             .map(str::parse)
             .collect::<Result<Vec<T>, _>>()
             .ok()?;
@@ -163,6 +164,10 @@ pub fn directives(mut text: &str) -> Option<(Vec<SocketAddr>, Vec<IpAddr>, &str)
         }
         text = rest;
     }
+}
+
+pub fn dns_frame_length(len: usize) -> std::io::Result<u16> {
+    u16::try_from(len).map_err(|_| std::io::ErrorKind::InvalidData.into())
 }
 
 fn short(packet: &[u8], pos: usize) -> Option<u16> {
@@ -325,6 +330,32 @@ pub fn answers(query: &[u8], response: &[u8]) -> Option<Vec<(IpAddr, u32)>> {
 mod tests {
     use super::*;
     const QUERY: &[u8] = b"\0\x11\x01\0\0\x01\0\0\0\0\0\0\x03WWW\x04test\0\0\x01\0\x01";
+    #[test]
+    fn deterministic_dns_inputs() {
+        let mut state = 0x772ae003u32;
+        for i in 0..100_000 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let length = state as usize % 131072;
+            assert_eq!(dns_frame_length(length).is_ok(), length <= 65535);
+            let mut reply = QUERY.to_vec();
+            reply[2] = 0x81;
+            reply[7] = 1;
+            reply.extend_from_slice(&[192, 12, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 1]);
+            let pos = (state as usize) % reply.len();
+            reply[pos] ^= (state >> 24) as u8;
+            if i % 2 == 0 {
+                reply.truncate(pos);
+            }
+            if let Some(records) = answers(QUERY, &reply) {
+                assert!(records.len() <= 1);
+            }
+            let line = format!("resolvers:{}\n", String::from_utf8_lossy(&reply));
+            if let Some((r, _, _)) = directives(&line) {
+                assert!(r.len() <= 2);
+            }
+        }
+    }
+
     #[test]
     fn domains_and_cidrs() {
         let r = Rules::parse("domain:test\nfull:only.example\nip:192.0.2.0/24\nip:2001:db8::/127")

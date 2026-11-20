@@ -48,7 +48,9 @@ async fn framed_query(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     query: &[u8],
 ) -> io::Result<Vec<u8>> {
-    stream.write_u16(query.len() as u16).await?;
+    stream
+        .write_u16(super::split::dns_frame_length(query.len())?)
+        .await?;
     stream.write_all(query).await?;
     stream.flush().await?;
     let mut reply = vec![0; usize::from(stream.read_u16().await?)];
@@ -214,7 +216,9 @@ impl Forwarding {
                 let mut query = vec![0; usize::from(n)];
                 timeout(SETUP, stream.read_exact(&mut query)).await??;
                 let reply = timeout(SETUP, self.dns(remote, &query, true)).await??;
-                stream.write_u16(reply.len() as u16).await?;
+                stream
+                    .write_u16(super::split::dns_frame_length(reply.len())?)
+                    .await?;
                 stream.write_all(&reply).await?;
                 stream.flush().await?;
             },

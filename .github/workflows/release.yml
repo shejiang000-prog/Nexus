@@ -8,6 +8,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      release_manifest: ${{ steps.manifest.outputs.digest }}
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -66,6 +68,9 @@ jobs:
             "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
           done
       - run: python3 tools/prepare_android_release.py "$GITHUB_REF_NAME" apps/android/app/build/outputs/apk/release release-assets
+      - id: manifest
+        working-directory: release-assets
+        run: echo "digest=$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: signed-android
@@ -85,7 +90,9 @@ jobs:
       - name: Publish verified tag
         working-directory: assets
         env:
+          EXPECTED_MANIFEST: ${{ needs.build.outputs.release_manifest }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum --check SHA256SUMS.txt
+          test "$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" = "$EXPECTED_MANIFEST"
+          sha256sum --check --strict SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md Nexus-*.apk SHA256SUMS.txt

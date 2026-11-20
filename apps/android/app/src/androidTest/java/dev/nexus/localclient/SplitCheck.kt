@@ -106,6 +106,8 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
     check(!override.exists() && !TunnelService.state.value.active && VpnService.prepare(ctx)==null)
     var home: android.app.Activity? = null
     val saved = prefs.all[SplitRouting.KEY] as? Boolean
+    val last = prefs.getString(TunnelService.LAST,null)
+    val resume = prefs.getString(TunnelService.RESUME,null)
     var temporary: String? = null
     fun awaitVpn(previous: Long): Network {
         val deadline = SystemClock.elapsedRealtime()+30000
@@ -129,7 +131,12 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
                 check(store.all().none { it.label==label })
                 store.import(label,fixture.toString())
             }
-            val source=store.all().single { it.label==label }
+            val source=if(fixture==null && args.getString("any-source")=="yes")store.all().first {sub->
+                (0 until sub.nodes.length()).any { index->
+                    val node=sub.nodes.getJSONObject(index)
+                    node.optString("type") in CompatEngine.types-ShoesEngine.types && CompatEngine.problem(node)==null
+                }
+            } else store.all().single { it.label==label }
             if (fixture!=null) temporary=source.id
             val types=if (engine=="xray") CompatEngine.types-ShoesEngine.types else ShoesEngine.types
             val candidates=(0 until source.nodes.length()).map { NodeRow(source,it,source.nodes.getJSONObject(it)) }
@@ -196,7 +203,9 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
         while(TunnelService.state.value.active && SystemClock.elapsedRealtime()<deadline) Thread.sleep(80)
         override.delete()
         temporary?.let(store::remove)
-        prefs.edit().apply { if(saved==null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY,saved) }.commit()
+        check(prefs.edit().putString(TunnelService.LAST,last).putString(TunnelService.RESUME,resume).apply {
+            if(saved==null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY,saved)
+        }.commit())
         home?.let { runOnMainSync(it::finish) }
     }
 }

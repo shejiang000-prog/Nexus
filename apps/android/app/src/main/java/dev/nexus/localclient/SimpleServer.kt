@@ -313,7 +313,7 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
                 .putExtra(Intent.EXTRA_TEXT,message),"发送邀请"))},Modifier.fillMaxWidth()){Text("发送邀请")}
             SecondaryAction({
                 val clip=ClipData.newPlainText("Nexus 发出的邀请",message)
-                if(Build.VERSION.SDK_INT>=33)clip.description.extras=android.os.PersistableBundle().apply{putBoolean("android.content.extra.IS_SENSITIVE",true)}
+                clip.description.extras=android.os.PersistableBundle().apply{putBoolean("android.content.extra.IS_SENSITIVE",true)}
                 context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip);copied=true
             },Modifier.fillMaxWidth()){Text("复制消息（发微信用）")}
             }

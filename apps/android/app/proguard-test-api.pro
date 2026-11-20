@@ -89,11 +89,20 @@
 }
 -keep,allowobfuscation class androidx.compose.runtime.CompositionContext {
 }
+-keep,allowobfuscation class androidx.compose.runtime.CompositionLocalKt {
+  public static void CompositionLocalProvider(androidx.compose.runtime.ProvidedValue,kotlin.jvm.functions.Function2,androidx.compose.runtime.Composer,int);
+}
 -keep,allowobfuscation interface androidx.compose.runtime.CompositionLocalMap {
 }
 -keep,allowobfuscation interface androidx.compose.runtime.MutableState {
   public java.lang.Object getValue();
   public void setValue(java.lang.Object);
+}
+-keep,allowobfuscation class androidx.compose.runtime.ProvidableCompositionLocal {
+  public androidx.compose.runtime.ProvidedValue provides(java.lang.Object);
+}
+-keep,allowobfuscation class androidx.compose.runtime.ProvidedValue {
+  int $stable;
 }
 -keep,allowobfuscation interface androidx.compose.runtime.SnapshotMutationPolicy {
 }
@@ -145,6 +154,9 @@
   public kotlin.jvm.functions.Function2 getSetMeasurePolicy();
   public kotlin.jvm.functions.Function2 getSetModifier();
   public kotlin.jvm.functions.Function2 getSetResolvedCompositionLocals();
+}
+-keep,allowobfuscation class androidx.compose.ui.platform.AndroidCompositionLocals_androidKt {
+  public static androidx.compose.runtime.ProvidableCompositionLocal getLocalContext();
 }
 -keep,allowobfuscation class androidx.compose.ui.text.TextStyle {
 }
@@ -251,6 +263,9 @@
 }
 -keep,allowobfuscation class dev.nexus.localclient.MainActivity {
 }
+-keep,allowobfuscation class dev.nexus.localclient.NodeAddressKt {
+  public static boolean allowedNodeAddress(java.net.InetAddress);
+}
 -keep,allowobfuscation class dev.nexus.localclient.NodeManager {
   public <init>(android.content.Context,java.lang.String,int,java.lang.String,java.lang.String,java.lang.String,byte[],kotlin.jvm.functions.Function0,int,kotlin.jvm.internal.DefaultConstructorMarker);
   public static dev.nexus.localclient.Profile deploy$default(dev.nexus.localclient.NodeManager,java.lang.String,java.lang.String,int,int,org.json.JSONObject,int,java.lang.Object);
@@ -315,12 +330,17 @@
   public java.lang.String getSigningAlias();
   public java.lang.String getTarget();
   public java.lang.String getTlsName();
+  public java.lang.String getVpnHost();
   public void save(android.content.Context);
   dev.nexus.localclient.Profile$Companion Companion;
 }
 -keep,allowobfuscation class dev.nexus.localclient.Profile$Companion {
   public dev.nexus.localclient.Profile load(android.content.Context);
   public dev.nexus.localclient.Profile parse(java.lang.String);
+}
+-keep,allowobfuscation class dev.nexus.localclient.QuickAccessKt {
+  public static void afterTileUnlock(boolean,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function0);
+  public static java.lang.String subscriptionLink(java.lang.String);
 }
 -keep,allowobfuscation class dev.nexus.localclient.ReleaseUpdates {
   public java.lang.Object check(android.content.Context,boolean,kotlin.jvm.functions.Function1,kotlin.coroutines.Continuation);
@@ -362,10 +382,12 @@
   dev.nexus.localclient.SubscriptionRefresh INSTANCE;
 }
 -keep,allowobfuscation class dev.nexus.localclient.SubscriptionScreenKt {
+  public static void SubscriptionScreen(boolean,boolean,kotlin.jvm.functions.Function2,boolean,java.lang.String,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function2,kotlin.jvm.functions.Function3,androidx.compose.runtime.Composer,int,int,int);
   public static java.util.List sourceRows(java.util.List);
   public static android.content.Intent subscriptionRequest(android.content.Context,dev.nexus.localclient.NodeRow,java.util.List,java.lang.String,boolean);
 }
 -keep,allowobfuscation class dev.nexus.localclient.Subscriptions {
+  public kotlin.Pair fetch$app_release(java.net.URL,long);
   public <init>(android.content.Context,kotlin.jvm.functions.Function1);
   public <init>(android.content.Context,kotlin.jvm.functions.Function1,int,kotlin.jvm.internal.DefaultConstructorMarker);
   public java.util.List all();
@@ -470,6 +492,7 @@
   public static java.util.List emptyList();
   public static java.util.List listOf(java.lang.Object[]);
   public static void throwCountOverflow();
+  public static void throwIndexOverflow();
 }
 -keep,allowobfuscation class kotlin.collections.CollectionsKt__IterablesKt {
   public static int collectionSizeOrDefault(java.lang.Iterable,int);
@@ -478,6 +501,7 @@
   public static boolean addAll(java.util.Collection,java.lang.Iterable);
 }
 -keep,allowobfuscation class kotlin.collections.CollectionsKt___CollectionsKt {
+  public static boolean contains(java.lang.Iterable,java.lang.Object);
   public static java.util.List drop(java.lang.Iterable,int);
   public static java.lang.Object first(java.util.List);
   public static java.lang.Object firstOrNull(java.util.List);
@@ -575,6 +599,7 @@
 -keep,allowobfuscation class kotlin.jvm.internal.DefaultConstructorMarker {
 }
 -keep,allowobfuscation class kotlin.jvm.internal.FunctionReferenceImpl {
+  public <init>(int,java.lang.Class,java.lang.String,java.lang.String,int);
   public <init>(int,java.lang.Object,java.lang.Class,java.lang.String,java.lang.String,int);
 }
 -keep,allowobfuscation class kotlin.jvm.internal.Intrinsics {
@@ -611,6 +636,7 @@
 }
 -keep,allowobfuscation class kotlin.ranges.RangesKt___RangesKt {
   public static int coerceAtLeast(int,int);
+  public static int coerceIn(int,int,int);
   public static kotlin.ranges.IntProgression step(kotlin.ranges.IntProgression,int);
   public static kotlin.ranges.IntRange until(int,int);
 }

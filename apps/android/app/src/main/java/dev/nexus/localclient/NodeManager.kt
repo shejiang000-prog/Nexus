@@ -192,14 +192,16 @@ data class Invitation(val name: String, val url: URL, val pin: String, private v
         fun parse(link: String): Invitation {
             val prefix = "nexus://invite/"
             require(link.startsWith(prefix) && link.length in 32..4096 && link.substring(prefix.length).matches(Regex("[A-Za-z0-9_-]+={0,2}")))
-            val value = JSONObject(Base64.decode(link.substring(prefix.length), Base64.URL_SAFE).toString(Charsets.UTF_8))
+            val value = checkedObject(Base64.decode(link.substring(prefix.length), Base64.URL_SAFE).toString(Charsets.UTF_8))
             val uri = URI(value.getString("url"))
             require(value.getInt("v") == 1 && uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null &&
                 uri.path == "/claim" && uri.rawQuery == null && uri.fragment == null)
             val pin = value.getString("pin")
             val token = value.getString("token")
             require(pin.matches(Regex("[a-f0-9]{64}")) && token.matches(Regex("[A-Za-z0-9_-]{43}")))
-            return Invitation(value.getString("name").take(64), uri.toURL(), pin, token)
+            val name=value.getString("name")
+            require(name.isNotBlank() && name.length<=64 && name.none {it.isISOControl() || Character.getType(it)==Character.FORMAT.toInt()})
+            return Invitation(name, uri.toURL(), pin, token)
         }
     }
     fun claim(deviceName: String): Profile {

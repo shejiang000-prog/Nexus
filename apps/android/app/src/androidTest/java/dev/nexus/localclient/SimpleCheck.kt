@@ -175,6 +175,16 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
             val image=requireNotNull(uiAutomation.takeScreenshot())
             try {
                 File(ctx.cacheDir,"simple-$name.png").outputStream().use { check(image.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)) }
+                if(args.getString("export")=="yes"){
+                    val root=home.window.decorView
+                    val top=(root.rootWindowInsets?.stableInsetTop ?: 0).coerceIn(0,image.height-1)
+                    val bottom=(root.rootWindowInsets?.stableInsetBottom ?: 0).coerceIn(0,image.height-top-1)
+                    val crop=android.graphics.Bitmap.createBitmap(image,0,top,image.width,image.height-top-bottom)
+                    try{
+                        val dir=File(requireNotNull(ctx.getExternalFilesDir(null)),"qa-shots").apply {mkdirs()}
+                        File(dir,"$name.png").outputStream().use {check(crop.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}
+                    }finally{if(crop!==image)crop.recycle()}
+                }
                 if(name=="invite"){
                     val bounds=android.graphics.Rect()
                     splitLabel("邀请二维码",false).getBoundsInScreen(bounds)
@@ -190,7 +200,8 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
         }
         try {
             splitLabel("设置",false)
-            clickSplitLabel("节点");shot("nodes","添加节点")
+            clickSplitLabel("设置");shot("settings","分流模式");clickSplitLabel("返回")
+            clickSplitLabel("节点");splitLabel("添加节点",false)
             clickSplitLabel("添加节点");clickSplitLabel("导入设备邀请",true);splitLabel("粘贴邀请消息",false)
             clickSplitLabel("返回")
             clickSplitLabel("我的服务器")
@@ -222,6 +233,22 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
                         ConnectionHome(state,first,true,"演示线路",true,"",{},{},{},{},{},receive={},nodeInfo="演示订阅",region="SG")
                     }
                 } } }
+                val demo=object:android.content.ContextWrapper(receiver){
+                    override fun getSharedPreferences(name:String,mode:Int)=baseContext.getSharedPreferences("qa-shots-$name",mode)
+                }
+                val store=Subscriptions(demo)
+                store.all().forEach {store.remove(it.id)}
+                try{
+                    store.import("演示订阅",listOf("香港 · 标准","新加坡 · 标准","东京 · 标准").joinToString("\n"){
+                        "trojan://sample@demo.test:443?security=tls#"+android.net.Uri.encode(it)
+                    })
+                    runOnMainSync { receiver.setContent { NexusTheme { SimpleShell("节点",{},{}) {
+                        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalContext provides demo){
+                            SubscriptionScreen(true,true,onInvite={}){}
+                        }
+                    } } } }
+                    shot("nodes","香港 · 标准")
+                }finally{store.all().forEach {store.remove(it.id)}}
                 connectionSample(true);shot("first","添加机场订阅")
                 connectionSample(false,TunnelState(starting=true));shot("connecting","正在连接")
                 connectionSample(false,TunnelState(vpn=true,connectedAt=android.os.SystemClock.elapsedRealtime()-65000));shot("connect","已连接")

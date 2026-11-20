@@ -85,6 +85,12 @@ class BootReceiver:BroadcastReceiver(){
 }
 
 class NexusApp:Application(){
+    @android.annotation.SuppressLint("RestrictedApi")
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        // WorkManager 2.10.1 keeps the first logger, including one created before its configuration.
+        androidx.work.Logger.setLogger(androidx.work.Logger.LogcatLogger(android.util.Log.ERROR))
+    }
     override fun onCreate(){
         super.onCreate()
         val next=Thread.getDefaultUncaughtExceptionHandler()

@@ -85,7 +85,7 @@ object ShoesEngine {
     }
     internal fun resolvedClient(out: JSONObject, physical: Network): JSONObject {
         val client = JSONObject(out.getJSONObject("shoesClient").toString())
-        val ip = physical.getAllByName(out.getString("bootstrap")).first().hostAddress!!
+        val ip = nodeAddress(physical,out.getString("bootstrap")).hostAddress!!
         val port = client.getString("address").substringAfterLast(':')
         client.put("address",(if (':' in ip) "[$ip]" else ip)+":"+port)
         return client

@@ -59,6 +59,9 @@ class CatalogCheck : Instrumentation() {
             if (fail) throw java.io.IOException()
             FormatSamples.clash to "download=20;total=100"
         }
+        val prefs = ctx.getSharedPreferences("local",0)
+        val last = prefs.getString(TunnelService.LAST,null)
+        val resume = prefs.getString(TunnelService.RESUME,null)
         val prefix = "Nexus-QA-" + UUID.randomUUID().toString().take(8)
         val home = startActivitySync(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         var started = false
@@ -103,7 +106,11 @@ class CatalogCheck : Instrumentation() {
             check(downloads == 6)
             result.putString("refresh","failure preserved snapshot; backoff, id, nodeKey, VPN primary/backup skip and disconnect catch-up passed")
         } finally {
-            if (started) ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+            if (started) {
+                ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
+                waitVpn(false)
+            }
+            check(prefs.edit().putString(TunnelService.LAST,last).putString(TunnelService.RESUME,resume).commit())
             store.all().filter { it.label.startsWith(prefix) }.forEach { store.remove(it.id) }
             runOnMainSync { home.finish() }
         }
@@ -214,7 +221,7 @@ class CatalogCheck : Instrumentation() {
         val seen = mutableSetOf<String>()
         repeat(28) {
             val tree = uiAutomation.rootInActiveWindow?.let(::nodes)?.toList().orEmpty()
-            val label = tree.firstOrNull { it.text?.toString() == "测试筛选结果的真实连通" }
+            val label = tree.firstOrNull { it.text?.toString() == "测试真实连通" }
             if (label != null && tree.any { it.text?.toString() == "请先断开 VPN" }) {
                 check(generateSequence(label) { it.parent }.any { !it.isEnabled })
                 check(TunnelService.state.value.vpn)
@@ -222,7 +229,7 @@ class CatalogCheck : Instrumentation() {
                 return
             }
             tree.firstOrNull()?.packageName?.let { seen.add(it.toString()) }
-            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加节点","仅收藏","请先断开 VPN","测试筛选结果的真实连通","连接","收藏") }.forEach(seen::add)
+            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加节点","仅收藏","请先断开 VPN","测试真实连通","连接","收藏") }.forEach(seen::add)
             result.putString("seen",seen.joinToString())
             val metrics = targetContext.resources.displayMetrics
             val x = metrics.widthPixels / 2
@@ -352,6 +359,64 @@ class CatalogCheck : Instrumentation() {
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "security" -> {
+                    val store=Subscriptions(targetContext)
+                    val expired=java.util.concurrent.CountDownLatch(1)
+                    val interruptedRead=java.util.concurrent.atomic.AtomicBoolean()
+                    val handler=object:java.net.URLStreamHandler(){
+                        override fun openConnection(url:java.net.URL)=object:javax.net.ssl.HttpsURLConnection(url){
+                            override fun connect() {}
+                            override fun disconnect() { expired.countDown() }
+                            override fun usingProxy()=false
+                            override fun getCipherSuite()="fixture"
+                            override fun getLocalCertificates():Array<java.security.cert.Certificate>?=null
+                            override fun getServerCertificates()=emptyArray<java.security.cert.Certificate>()
+                            override fun getResponseCode():Int {
+                                return if(url.path=="/redirect") 302 else 200
+                            }
+                            override fun getHeaderField(name:String)=if(name=="Location") "http://demo.test/" else null
+                            override fun getInputStream():java.io.InputStream {
+                                interruptedRead.set(expired.await(3,java.util.concurrent.TimeUnit.SECONDS))
+                                return "fixture".byteInputStream()
+                            }
+                        }
+                    }
+                    fun endpoint(path:String)=java.net.URL(null,"https://demo.test/"+path,handler)
+                    check(runCatching {store.fetch(endpoint("budget"),100)}.isFailure && interruptedRead.get())
+                    check(runCatching {store.fetch(endpoint("redirect"),5000)}.isFailure)
+                    fun refuses(input:String){
+                        val added=runCatching {store.import("Nexus-QA-security",input)}.getOrNull()
+                        if(added!=null)store.remove(added.id)
+                        check(added==null)
+                    }
+                    val link="trojan://sample@demo.test:443"
+                    refuses(link+"?path="+"a".repeat(17000))
+                    refuses(List(2049){link}.joinToString("\n"))
+                    refuses(Base64.encodeToString(Base64.encode(link.toByteArray(),Base64.NO_WRAP),Base64.NO_WRAP))
+                    refuses("""{"format":"nexus-nodes/1","nodes":[],"nodes":[]}""")
+                    refuses("proxies: &items []\noutbounds: *items")
+                    refuses("{\"nested\":"+"[".repeat(25)+"0"+"]".repeat(25)+"}")
+                    refuses("proxies:\n - type: trojan\n   type: trojan")
+                    for(parameter in listOf("path=%0A","extra=sample")){
+                        val n=JSONObject().put("type","trojan").put("name","演示").put("config","$link?$parameter")
+                        check(CompatEngine.problem(n)!=null)
+                    }
+                    val label="test\"{}"
+                    val source=store.import("Nexus-QA-security",link+"#"+android.net.Uri.encode(label))
+                    try{check(source.nodes.getJSONObject(0).getString("name")==label)}finally{store.remove(source.id)}
+                    for(ip in listOf("127.0.0.2","::1","0.0.0.0","fe80::1","224.0.0.1","240.0.0.1","::ffff:127.0.0.1"))
+                        check(!allowedNodeAddress(java.net.InetAddress.getByName(ip)))
+                    for(ip in listOf("192.168.0.1","10.0.2.2","100.64.0.1","198.18.0.1","fd00::1","203.0.113.7","2001:db8::1"))
+                        check(allowedNodeAddress(java.net.InetAddress.getByName(ip)))
+                    var toggles=0
+                    var pending:(()->Unit)?=null
+                    afterTileUnlock(true,{pending=it}){toggles++}
+                    check(toggles==0)
+                    requireNotNull(pending).invoke()
+                    afterTileUnlock(false,{error("unexpected prompt")}){toggles++}
+                    check(toggles==2)
+                    result.putString("security","input bounds, ambiguous encoding, control characters, literals and local endpoints checked")
+                }
                 "release-icons","release-import","release-update","release-key","release-private","release-boot","release-state","release-stop" -> releaseCheck(args,result)
                 "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
                 "split-lab", "split-public" -> splitCheck(args,result)

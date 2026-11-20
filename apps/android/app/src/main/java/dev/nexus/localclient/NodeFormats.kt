@@ -101,7 +101,7 @@ internal object NodeFormats {
         ensure(s.optJSONObject("ech-opts")?.flag("enable") != true) { "ECH 暂不支持" }
         val tls = s.optJSONObject("tls")
         if (tls != null) {
-            for (key in tls.keys()) ensure(key in tlsKeys) { "TLS 参数 $key 暂不支持" }
+            for (key in tls.keys()) ensure(key in tlsKeys) { "节点包含不支持的 TLS 参数" }
             ensure(!tls.flag("insecure")) { "节点要求跳过证书验证，已拒绝" }
             ensure(tls.optJSONObject("ech")?.flag("enabled") != true) { "ECH 暂不支持" }
         }
@@ -192,7 +192,7 @@ internal object NodeFormats {
             "vless" -> {
                 val flow = s.text("flow")
                 if (flow != null) {
-                    ensure(flow.matches(Regex("xtls-rprx-vision(-udp443)?"))) { "VLESS flow $flow 暂不支持" }
+                    ensure(flow.matches(Regex("xtls-rprx-vision(-udp443)?"))) { "节点包含不支持的 VLESS 流控参数" }
                     q["flow"] = flow
                 }
                 s.text("encryption")?.takeIf { it != "none" }?.let {
@@ -246,7 +246,7 @@ internal object NodeFormats {
     fun vmessJson(raw: String): String {
         val encoded = raw.substringAfter("vmess://").substringBefore('#').trim()
         val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrElse { Base64.decode(encoded, Base64.URL_SAFE) }
-        val old = JSONObject(bytes.toString(Charsets.UTF_8))
+        val old = checkedObject(bytes.toString(Charsets.UTF_8))
         val host = old.text("add") ?: unsupported("缺少服务器地址")
         ensure(host.matches(hostPattern)) { "服务器地址格式无效" }
         val port = old.text("port")?.toIntOrNull() ?: unsupported("缺少端口")
