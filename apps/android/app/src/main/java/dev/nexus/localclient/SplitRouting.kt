@@ -67,6 +67,17 @@ internal object SplitRouting {
         } finally { Os.close(a); Os.close(b) }
     }
 
+    /**
+     * Connect by the sniffed domain instead of the address the app picked. Many subscription
+     * nodes have no IPv6 egress; the TUN accepts an IPv6 connection locally before the node
+     * fails, so the app never falls back to IPv4. With the domain, the node resolves it and
+     * uses whatever family it has. Used in both bypass and global mode.
+     */
+    fun sniff(inbound: JSONObject) {
+        inbound.put("sniffing", JSONObject().put("enabled", true)
+            .put("destOverride", JSONArray(listOf("http","tls","quic"))).put("routeOnly", false))
+    }
+
     fun configure(config: JSONObject, bytes: ByteArray, socket: File) {
         val domains = JSONArray()
         val ips = JSONArray()
@@ -78,8 +89,7 @@ internal object SplitRouting {
             }
         }
         val inputs = config.getJSONArray("inbounds")
-        inputs.getJSONObject(0).put("sniffing", JSONObject().put("enabled", true)
-            .put("destOverride", JSONArray(listOf("http","tls","quic"))).put("routeOnly", true))
+        sniff(inputs.getJSONObject(0))
         inputs.put(JSONObject().put("protocol", "http").put("listen", socket.absolutePath)
             .put("tag", "dns-tcp"))
         config.getJSONArray("outbounds").put(JSONObject().put("protocol","freedom").put("tag","direct"))

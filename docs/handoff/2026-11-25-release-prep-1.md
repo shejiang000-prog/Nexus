@@ -104,3 +104,10 @@ Android 14 要求声明前台服务类型及对应权限。Android 15 禁止若�
 复测：用临时签名构建 release、release androidTest、debug 均成功。在 S24 上用 release 包（`dev.nexus.android`）跑 `simple`、`simple-shots`、`simple-overview`、`simple-motion`、`release-update`、默认 CatalogCheck、`split-public -e engine xray`，都返回 -1。界面连接、断开正常，速率显示真实数值。
 
 **新发现的发布阻断项（问题早已存在，不是本轮引入）：** 节点本身没有 IPv6 出口时（例如 Airport-Test 的「新加坡-流媒体05」），在 VPN 中 `curl -4` 访问 google、example.com、cloudflare 都正常，`curl -6` 和默认请求全部失败。原因是 Xray 的 TUN 先在本地接受 IPv6 连接，再到节点上失败，应用因此不会回退到 IPv4。debug 和 release 包表现一致。应用自身的 `split-public` 能通过，是因为测试请求走了 IPv4。下一步要处理：对经节点的 DNS 查询不返回 AAAA（或按节点能力决定），并覆盖全局模式。
+
+## 修复：节点无 IPv6 时境外站点打不开（Claude）
+
+- **原因：** Xray 的 TUN 会先在本地接受应用发起的 IPv6 连接，再交给节点；节点没有 IPv6 出口时连接随即失败。在应用看来是「已连上又断开」，不会回退到 IPv4。之前绕过模式的嗅探设置了 `routeOnly: true`，嗅探到的域名只用来选路，仍然连原始 IP；全局模式则根本没有开嗅探。
+- **修改：** 新增 `SplitRouting.sniff()`，统一设置 `destOverride` 为 http、tls、quic，并改为 `routeOnly: false`，绕过模式和全局模式都用它。这样可嗅探的流量按域名交给节点解析，节点用自己支持的地址族连接。国内 IP 段与已学习的 IP 仍由原生栈在 Xray 之前直连处理，分流出口不变。
+- **仍有的缺口：** 应用直接用 IPv6 字面地址、且流量无法嗅探（没有 SNI / Host 的 TCP、非 QUIC 的 UDP）时，仍会在无 IPv6 的节点上失败，这种情况少见。
+- **验证（S24，Airport-Test「新加坡-流媒体05」，debug 包和临时签名的 release 包结果一致）：** 修复前 `curl -6` 访问 google、example.com、cloudflare 都返回 000；修复后绕过、全局两种模式下 `curl -6` 和默认请求（走 v6）都正常返回 204/200。绕过模式下百度仍走 IPv4 直连。`split-public -e engine xray` 用 index 0 和 8（第 8 个即该节点）在 debug、release 包上都返回 -1，绕过时国内出口与物理网络一致、境外与全局一致。切网时间线测试中，Wi-Fi→5G、5G→Wi-Fi 各 70 次采样全部成功。release 包的 `simple`、`simple-motion`、`release-update` 也都返回 -1。

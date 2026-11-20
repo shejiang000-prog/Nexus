@@ -154,7 +154,10 @@ object CompatEngine {
                     waitForStop(cancel, health, running)
                 } finally { runCatching { invoke("stopXray") } }
             }
-            if (split.isEmpty()) session() else {
+            if (split.isEmpty()) {
+                SplitRouting.sniff(config.getJSONArray("inbounds").getJSONObject(0))
+                session()
+            } else {
                 SplitRouting.withXray(service,tun,split,requireNotNull(socketProtection)) { fd, dns, running ->
                     config.getJSONObject("env").put("xray.tun.fd",fd.toString())
                     SplitRouting.configure(config,split,dns)
