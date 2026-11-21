@@ -1,0 +1,55 @@
+# V2 客户端传输接口 · M0
+
+桌面 Go 客户端和 Android 共用仓库根目录下的 `v2/`。模块路径为 `github.com/shejiang000-prog/Nexus/v2`，便于导入两个平台共用的实现，并让 Rust workspace 和 V1 独立构建。首版仅提供 Go API 和 gomobile 绑定，尚未接入产品 VPN。
+
+## 生命周期和拨号
+
+|Go 接口|调用约定|
+|---|---|
+|`transport.Start(parent context.Context, c transport.Config) (*transport.Client, error)`|等待第一个通过证书校验和签名的通道就绪。连接持有期间保持 parent 有效。|
+|`c.State() string`、`c.Stop()`|状态为 h3、h2 或 stopped。Stop 可重复调用，取消使用中的通道。调用方仍应 Close 自己的业务句柄。|
+|`c.DialTCP(ctx, target, initial) (io.ReadWriteCloser, error)`|target 为带显式端口的主机名或 IP。最多可附带 16 KiB 乐观数据。收到 2xx 及认证确认头后才返回流。ctx 管理流的整个生命周期。|
+|`c.OpenUDP(ctx, target) (*transport.Association, error)`|在成功响应及 capsule 协商后返回。ReadPacket、WritePacket 各处理一个报文，允许空报文，最大载荷 65,507 字节。调用 Close 结束关联。|
+
+`Authority` 是验证证书与生成 exporter context 的入口，始终包含端口。`Endpoint` 是实际拨号地址，默认等于 Authority。Roots 为空时用系统信任库。ClientHello 可选，接受调用方提供的受信 H2 配置样本。缺省使用固定版本 uTLS 的 Chrome 预设，本轮未重新测量它与 Chrome 157 的字段一致性。Device 为 16 字节 ID。Sign 接受完整待签字节，须用 ECDSA P-256/SHA-256 签名并返回 64 字节大端 r||s。连接竞速可能并行向签名器提出请求，每条成功建立的传输连接各有自己的证明。
+
+`Mode` 支持 auto（默认）、h3、h2。HealthPath 默认是同源的 `/health.bin`，部署应在此提供可读取的 32,768 字节静态对象。OnState 收到初始通道和切换成功后的通道名，由单独的 goroutine 串行回调；回调应迅速返回。Stop 后可通过 State 查询终止状态。每个物理网络或入口配置使用独立 Client，变更时调用 Stop 并重建。Android 物理网络套接字绑定仍属于 VPN 层接入工作。
+
+首次竞速给 H3 250 ms 先发时间。已有业务的 H3 首个静默窗口预建 H2，两个 500 ms 弱进展窗口后比较两条连接的同源健康对象。H2 可用且 H3 无响应或超过 H2 用时的四倍时，新流转到 H2。H3 仍有收包时旧流排空，持续静默再主动关闭。H2 至少驻留 30 秒才探测回切。旧流上的数据不会自动转发到新连接。H3 路径 MTU 放不下的报文退回关联自己的 capsule。
+
+## 错误和重试
+
+用 `errors.As(err, &transportError)` 检查启动和打开业务流返回的 `*transport.Error`。连接已打开后的 Read/Write 返回底层 I/O 错误或 EOF。严格区分拨号失败和应用已经写出的数据。
+
+|Code|意义及调用方动作|
+|---:|---|
+|1|配置或输入不合法，修正配置或报文大小。|
+|2|证书验证失败，检查入口、信任锚和时间。|
+|3|设备签名或认证确认失败，检查该设备的绑定。|
+|4|并发、额度或资源不足，遵从调用方退避策略。|
+|5|目标被策略拒绝、解析或拨号失败，检查目标。|
+|6|传输中断。重新打开业务前确认其重试语义。|
+|7|乐观数据可能已经发出，结果未知。有副作用的请求交给业务层核对。|
+
+## Android
+
+gomobile 包 `mobile` 的 `Mobile.start(authority, endpoint, mode, ca, id, hello, signer, observer)` 返回 Client。可提供 PEM 信任锚或使用系统信任；id 必须为 16 字节。Java 实现 `Signer.sign(byte[] message): byte[]`（可抛异常），调用 Android Keystore 的 `SHA256withECDSA` 签原消息。返回 ASN.1 DER，Go 验证整数范围并转换为 r||s。私钥留在 Keystore 中。Observer.stateChanged(String) 接收通道名。Stream.read(max) 限 1–65,536 字节，write 返回写入长度。Association 按包读写；绑定层可能把空字节数组映射为 null，成功返回时两者都代表空报文。当前 JNI 错误通道为异常，Go 的结构化错误码还没有独立的 Java getter。
+
+Android 在 Application.attachBaseContext 调用 Os.setenv，再加载合编库。构建 AAR 使用 http2legacy 标签。桌面客户端入口须在 main 或 TestMain 的第一步完成 GODEBUG 初始化和必要的重新执行。传输包自身不重启宿主进程。
+
+## 可复现构建
+
+使用 Go 1.27.4、Python 3.11+，以及 git 或 patch。在仓库根运行下列命令，OUT 指向仓库外**尚不存在**的目录。prepare_v2 同时校验固定 go.mod 和模块 zip 的 h1，生成的本地 replace 仅写入 OUT。AAR 构建还需要同版 gomobile/gobind、已有 Android SDK/NDK 和指定提交的本地 libXray。
+
+```sh
+python3 tools/prepare_v2.py "$OUT" --android
+cd v2
+export GOFLAGS="-modfile=$OUT/v2.mod -mod=readonly"
+go build -o "$OUT/nexus-node" ./cmd/nexus-node
+go vet -tags http2legacy ./...
+NEXUS_NODE_TEST_BINARY="$OUT/nexus-node" go test -race -tags http2legacy ./...
+```
+
+节点读取 Caddy JSON。服务器的 `enable_datagrams` 控制监听上的原生 H3 DATAGRAM。nexus handler 接收 authority、只含公钥的 device_keys，可选 allow_exact 放行精确 IP:port。文件站点作为后续 handler。默认策略检查本次解析的所有结果，并只拨已经核验的字面地址。公开文件目录与身份和证书目录必须独立。systemd 示例位于 `v2/deploy/`。
+
+互通字节见 `v2/proof/testdata/connection.json`，包含普通 exporter 标签、主机和 IPv6 context、设备签名、邀请签名和拒绝样例。exporter 字节为确定性输入。对真实握手的验证在 integration 包中进行。邀请事务、额度账本和活动撤销归 M1。[TLS exporter](https://www.rfc-editor.org/rfc/rfc8446#section-7.5) · [CONNECT-UDP](https://www.rfc-editor.org/rfc/rfc9298)

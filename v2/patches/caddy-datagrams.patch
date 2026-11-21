@@ -1,0 +1,76 @@
+--- a/modules/caddyhttp/server.go
++++ b/modules/caddyhttp/server.go
+@@ -44,6 +44,9 @@
+ 
+ // Server describes an HTTP server.
+ type Server struct {
++	// Enable HTTP and QUIC datagrams on this dedicated listener.
++	EnableDatagrams bool `json:"enable_datagrams,omitempty"`
++
+ 	// Socket addresses to which to bind listeners. Accepts
+ 	// [network addresses](/docs/conventions#network-addresses)
+ 	// that may include port ranges. Listener addresses must
+@@ -1075,7 +1078,7 @@
+ 		return fmt.Errorf("starting HTTP/3 QUIC listener: %v", err)
+ 	}
+ 	addr.Network = h3net
+-	h3ln, err := addr.ListenQUIC(s.ctx, 0, net.ListenConfig{}, tlsCfg, s.packetConnWrappers, s.Allow0RTT)
++	h3ln, err := addr.ListenQUIC(s.ctx, 0, net.ListenConfig{}, tlsCfg, s.packetConnWrappers, s.Allow0RTT, s.EnableDatagrams)
+ 	if err != nil {
+ 		return fmt.Errorf("starting HTTP/3 QUIC listener: %v", err)
+ 	}
+@@ -1085,6 +1088,7 @@
+ 		s.h3server = &http3.Server{
+ 			Handler:        s,
+ 			TLSConfig:      tlsCfg,
++			EnableDatagrams: s.EnableDatagrams,
+ 			MaxHeaderBytes: s.MaxHeaderBytes,
+ 			// QUICConfig is deliberately unset: http3.Server only reads it when it
+ 			// creates its own listener (ListenAndServe/Serve). We bring our own
+--- a/listeners.go
++++ b/listeners.go
+@@ -436,7 +436,8 @@
+ //
+ // NOTE: This API is EXPERIMENTAL and may be changed or removed.
+ // NOTE: user should close the returned listener twice, once to stop accepting new connections, the second time to free up the packet conn.
+-func (na NetworkAddress) ListenQUIC(ctx context.Context, portOffset uint, config net.ListenConfig, tlsConf *tls.Config, pcWrappers []PacketConnWrapper, allow0rttconf *bool) (http3.QUICListener, error) {
++func (na NetworkAddress) ListenQUIC(ctx context.Context, portOffset uint, config net.ListenConfig, tlsConf *tls.Config, pcWrappers []PacketConnWrapper, allow0rttconf *bool, datagrams ...bool) (http3.QUICListener, error) {
++	enableDatagrams := len(datagrams) > 0 && datagrams[0]
+ 	lnKey := listenerKey("quic"+na.Network, na.JoinHostPort(portOffset))
+ 
+ 	sharedEarlyListener, _, err := listenerPool.LoadOrNew(lnKey, func() (Destructor, error) {
+@@ -485,6 +486,7 @@
+ 		earlyLn, err := tr.ListenEarly(
+ 			http3.ConfigureTLSConfig(quicTlsConfig),
+ 			&quic.Config{
++				EnableDatagrams: enableDatagrams,
+ 				InitialPacketSize: 1200,
+ 				Allow0RTT:         allow0rtt,
+ 				Tracer:            h3qlog.DefaultConnectionTracer,
+@@ -495,13 +497,17 @@
+ 		}
+ 		// TODO: figure out when to close the listener and the transport
+ 		// using the original net.PacketConn to close them properly
+-		return &sharedQuicListener{EarlyListener: earlyLn, packetConn: ln, sqs: sqs, key: lnKey}, nil
++		return &sharedQuicListener{datagrams: enableDatagrams, EarlyListener: earlyLn, packetConn: ln, sqs: sqs, key: lnKey}, nil
+ 	})
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+ 	sql := sharedEarlyListener.(*sharedQuicListener)
++	if sql.datagrams != enableDatagrams {
++		_, _ = listenerPool.Delete(lnKey)
++		return nil, fmt.Errorf("restart listener to change datagram support")
++	}
+ 	// add current tls.Config to sqs, so GetConfigForClient will always return the latest tls.Config in case of context cancellation
+ 	ctx, cancel := sql.sqs.addState(tlsConf)
+ 
+@@ -596,6 +602,7 @@
+ 
+ // sharedQuicListener is like sharedListener, but for quic.EarlyListeners.
+ type sharedQuicListener struct {
++	datagrams bool
+ 	*quic.EarlyListener
+ 	packetConn net.PacketConn // we have to hold these because quic-go won't close listeners it didn't create
+ 	sqs        *sharedQUICState

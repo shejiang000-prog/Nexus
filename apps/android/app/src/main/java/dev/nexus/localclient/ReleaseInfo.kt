@@ -87,6 +87,11 @@ class BootReceiver:BroadcastReceiver(){
 class NexusApp:Application(){
     @android.annotation.SuppressLint("RestrictedApi")
     override fun attachBaseContext(base: Context) {
+        // The Go HTTP/2 package snapshots GODEBUG when libgojni is loaded.
+        val kept = android.system.Os.getenv("GODEBUG").orEmpty().split(',').filter {
+            it.isNotEmpty() && !it.startsWith("http2xconnect=")
+        }
+        android.system.Os.setenv("GODEBUG", (kept + "http2xconnect=1").joinToString(","), true)
         super.attachBaseContext(base)
         // WorkManager 2.10.1 keeps the first logger, including one created before its configuration.
         androidx.work.Logger.setLogger(androidx.work.Logger.LogcatLogger(android.util.Log.ERROR))

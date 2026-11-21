@@ -1,0 +1,22 @@
+--- a/http3/server.go
++++ b/http3/server.go
+@@ -473,7 +473,7 @@
+ 	if qlogTrace := conn.QlogTrace(); qlogTrace != nil {
+ 		qlogger = qlogTrace.AddProducer()
+ 	}
+-	connCtx := conn.Context()
++	connCtx := context.WithValue(conn.Context(), nexusConnKey{}, conn)
+ 	connCtx = context.WithValue(connCtx, ServerContextKey, s)
+ 	connCtx = context.WithValue(connCtx, http.LocalAddrContextKey, conn.LocalAddr())
+ 	connCtx = context.WithValue(connCtx, RemoteAddrContextKey, conn.RemoteAddr())
+@@ -807,3 +807,10 @@
+ 		return err
+ 	}
+ }
++
++type nexusConnKey struct{}
++
++func NexusConn(ctx context.Context) *quic.Conn {
++	c, _ := ctx.Value(nexusConnKey{}).(*quic.Conn)
++	return c
++}

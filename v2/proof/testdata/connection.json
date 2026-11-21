@@ -1,0 +1,64 @@
+{
+  "purpose": "Public synthetic P-256 interoperability vector only. Never use this fixture as a credential.",
+  "authority": "Nexus.Test:00443",
+  "canonical": "nexus.test:443",
+  "ipv6_authority": "[2001:0db8::1]:443",
+  "label": "EXPORTER-Nexus-V2",
+  "context": "52eac3bd892a077895d46c0a92c054d8cf261540c9f86b6418b8aa9038dadbef",
+  "ipv6_context": "53143c1f9d63493141057087c114c41a01a8cc724c3208cd53de20cade89d8c4",
+  "exporter": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "device": "000102030405060708090a0b0c0d0e0f",
+  "public": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+  "message": "4e65787573563202000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000102030405060708090a0b0c0d0e0f",
+  "signature": "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2967ccf44f86b932c5a97b8401e6d1f6fc3945fe297e33f40bd8f1968885ae197b7",
+  "authorization": "Nexus2 AgABAgMEBQYHCAkKCwwNDg9rF9Hy4SxCR_i85uVjpEDydwN9gS3rM6D0oTlF2JjClnzPRPhrkyxal7hAHm0fb8OUX-KX4z9AvY8ZaIha4Ze3",
+  "request": "101112131415161718191a1b1c1d1e1f",
+  "invite_hash": "72dbb7336c76780023f83da4c355f2eeea85733b13d3477697917790c1229084",
+  "redeem": "4e65787573563201000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f101112131415161718191a1b1c1d1e1f00000000000000000000000000000000004172dbb7336c76780023f83da4c355f2eeea85733b13d3477697917790c1229084036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+  "redeem_signature": "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296f46fb81b3dede5465f3d99aa2025dfe53ed889105e1769d0f5c7ff693a8e4923",
+  "rejected_headers": [
+    "Nexus2 AQABAgMEBQYHCAkKCwwNDg9rF9Hy4SxCR_i85uVjpEDydwN9gS3rM6D0oTlF2JjClnzPRPhrkyxal7hAHm0fb8OUX-KX4z9AvY8ZaIha4Ze3",
+    "Nexus2 AgABAgMEBQYHCAkKCwwNDg9rF9Hy4SxCR_i85uVjpEDydwN9gS3rM6D0oTlF2JjClnzPRPhrkyxal7hAHm0fb8OUX-KX4z9AvY8ZaIha4Zc",
+    "Nexus2 AgABAgMEBQYHCAkKCwwNDg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "Nexus2 Av____________________9rF9Hy4SxCR_i85uVjpEDydwN9gS3rM6D0oTlF2JjClnzPRPhrkyxal7hAHm0fb8OUX-KX4z9AvY8ZaIha4Ze3"
+  ],
+  "redeem_request": {
+    "invite": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "public_key": "A2sX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKW",
+    "request_id": "EBESExQVFhcYGRobHB0eHw",
+    "proof": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpb0b7gbPe3lRl89maogJd_lPtiJEF4XadD1x_9pOo5JIw"
+  },
+  "scenarios": [
+    {
+      "case": "0-RTT CONNECT or redemption",
+      "handshake_complete": false,
+      "forward": false,
+      "consume": 0
+    },
+    {
+      "case": "same proof on a different connection",
+      "exporter": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forward": false
+    },
+    {
+      "case": "one-use invitation, eight concurrent identical requests",
+      "initial_remaining": 1,
+      "requests": 8,
+      "created_devices": 1,
+      "remaining": 0,
+      "same_device_id": true
+    },
+    {
+      "case": "expired invitation",
+      "expires_unix": 1000,
+      "at_unix": 1000,
+      "created_devices": 0,
+      "consume": 0
+    },
+    {
+      "case": "same request ID reused with a different public key",
+      "created_devices": 0,
+      "consume": 0
+    }
+  ]
+}

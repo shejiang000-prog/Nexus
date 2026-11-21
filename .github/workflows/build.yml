@@ -50,3 +50,18 @@ jobs:
         with: {persist-credentials: false}
       - run: rustup toolchain install 1.100.0 --profile minimal
       - run: cargo +1.100.0 build --locked --manifest-path apps/desktop/Cargo.toml
+  v2-transport:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: go1.27.4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - run: python3 tools/prepare_v2.py "$RUNNER_TEMP/nexus-v2" --android
+      - working-directory: v2
+        run: |
+          export GOFLAGS="-modfile=$RUNNER_TEMP/nexus-v2/v2.mod -mod=readonly"
+          go build -o "$RUNNER_TEMP/nexus-node" ./cmd/nexus-node
+          go vet -tags http2legacy ./...
+          NEXUS_NODE_TEST_BINARY="$RUNNER_TEMP/nexus-node" go test -race -tags http2legacy ./...

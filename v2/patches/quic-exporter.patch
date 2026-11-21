@@ -1,0 +1,31 @@
+--- /dev/null
++++ b/nexus_exporter.go
+@@ -0,0 +1,15 @@
++package quic
++
++import "errors"
++
++func (c *Conn) ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error) {
++	c.connStateMutex.Lock()
++	defer c.connStateMutex.Unlock()
++	h, ok := c.cryptoStreamHandler.(interface {
++		ExportKeyingMaterial(string, []byte, int) ([]byte, error)
++	})
++	if !ok {
++		return nil, errors.New("TLS exporter unavailable")
++	}
++	return h.ExportKeyingMaterial(label, context, length)
++}
+--- /dev/null
++++ b/internal/handshake/nexus_exporter.go
+@@ -0,0 +1,10 @@
++package handshake
++
++func (h *cryptoSetup) ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error) {
++	if c, ok := h.conn.(*utlsQUICConn); ok {
++		state := c.conn.ConnectionState()
++		return state.ExportKeyingMaterial(label, context, length)
++	}
++	state := h.conn.ConnectionState()
++	return state.ExportKeyingMaterial(label, context, length)
++}

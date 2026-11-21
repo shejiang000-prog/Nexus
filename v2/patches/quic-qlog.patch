@@ -1,0 +1,8 @@
+--- /dev/null
++++ b/http3/qlog/caddy_compat.go
+@@ -0,0 +1,5 @@
++package qlog
++
++import quiclog "github.com/quic-go/quic-go/qlog"
++
++var DefaultConnectionTracer = quiclog.DefaultConnectionTracer

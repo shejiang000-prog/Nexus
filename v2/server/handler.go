@@ -1,0 +1,282 @@
+package server
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/tls"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/nexus/congestion/bbr"
+	"github.com/shejiang000-prog/Nexus/v2/proof"
+	"github.com/shejiang000-prog/Nexus/v2/udp"
+)
+
+type MemoryDevices map[proof.ID]*ecdsa.PublicKey
+
+func (m MemoryDevices) Lookup(id proof.ID) *ecdsa.PublicKey { return m[id] }
+
+type bindingKey struct{}
+type Handler struct {
+	Authority  string            `json:"authority"`
+	DeviceKeys map[string]string `json:"device_keys"`
+	AllowExact []string          `json:"allow_exact,omitempty"`
+	devices    proof.Devices
+	exact      map[netip.AddrPort]bool
+	sessions   *sync.Map
+	slots      chan struct{}
+}
+
+func init() { caddy.RegisterModule(Handler{}) }
+func (Handler) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{ID: "http.handlers.nexus", New: func() caddy.Module { return new(Handler) }}
+}
+func (h *Handler) Provision(ctx caddy.Context) error {
+	var e error
+	h.Authority, e = proof.Authority(h.Authority)
+	if e != nil {
+		return e
+	}
+	devices := MemoryDevices{}
+	for id, point := range h.DeviceKeys {
+		b, e := hex.DecodeString(id)
+		if e != nil || len(b) != 16 {
+			return errors.New("invalid device ID")
+		}
+		p, e := hex.DecodeString(point)
+		if e != nil {
+			return errors.New("invalid device key")
+		}
+		x, y := elliptic.UnmarshalCompressed(elliptic.P256(), p)
+		if x == nil {
+			return errors.New("invalid P-256 point")
+		}
+		k := proof.ID(b)
+		if devices[k] != nil {
+			return errors.New("duplicate device ID")
+		}
+		devices[k] = &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
+	}
+	h.devices = devices
+	h.exact = make(map[netip.AddrPort]bool)
+	for _, v := range h.AllowExact {
+		a, e := netip.ParseAddrPort(v)
+		if e != nil || a.Addr().Zone() != "" || a.Port() == 0 {
+			return errors.New("invalid exact destination")
+		}
+		h.exact[a] = true
+	}
+	h.slots = make(chan struct{}, 4096)
+	h.sessions = new(sync.Map)
+	app, e := ctx.App("http")
+	if e != nil {
+		return e
+	}
+	for _, s := range app.(*caddyhttp.App).Servers {
+		s.RegisterConnContext(func(ctx context.Context, _ net.Conn) context.Context {
+			if ctx.Value(bindingKey{}) != nil {
+				return ctx
+			}
+			return context.WithValue(ctx, bindingKey{}, new(sync.Map))
+		})
+	}
+	return nil
+}
+func (h *Handler) authenticate(r *http.Request) bool {
+	vals := r.Header.Values("Proxy-Authorization")
+	if len(vals) > 1 {
+		return false
+	}
+	header := r.Header.Get("Proxy-Authorization")
+	secret := func() ([]byte, error) { return proof.Secret(h.Authority, r.TLS.ExportKeyingMaterial) }
+	q := http3.NexusConn(r.Context())
+	if q == nil {
+		m, _ := r.Context().Value(bindingKey{}).(*sync.Map)
+		if m == nil {
+			return false
+		}
+		b, _ := m.LoadOrStore(h, new(proof.Binding))
+		return b.(*proof.Binding).Accept(header, h.devices, secret)
+	}
+	if q.ConnectionState().Used0RTT {
+		return false
+	}
+	if v, ok := h.sessions.Load(q); ok {
+		return v.(*proof.Binding).Accept(header, h.devices, secret)
+	}
+	fresh := new(proof.Binding)
+	if !fresh.Accept(header, h.devices, secret) {
+		return false
+	}
+	v, loaded := h.sessions.LoadOrStore(q, fresh)
+	if loaded {
+		return v.(*proof.Binding).Accept(header, h.devices, secret)
+	}
+	context.AfterFunc(q.Context(), func() { h.sessions.Delete(q) })
+	size := bbr.GetInitialPacketSize(q.RemoteAddr())
+	if x := q.InitialPacketSize(); x > 0 {
+		size = min(size, x)
+	}
+	q.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
+	return true
+}
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if r.Method != "CONNECT" || r.TLS == nil || !r.TLS.HandshakeComplete || r.TLS.Version != tls.VersionTLS13 {
+		return next.ServeHTTP(w, r)
+	}
+	proto := r.Header.Get(":protocol")
+	if r.ProtoMajor == 3 && r.Proto != "HTTP/3.0" {
+		proto = r.Proto
+	}
+	if (proto != "" && proto != "connect-udp") || !h.authenticate(r) {
+		return next.ServeHTTP(w, r)
+	}
+	dest := r.Host
+	network := "tcp"
+	if proto == "connect-udp" {
+		if r.Host != h.Authority || r.Header.Get("Capsule-Protocol") != "?1" {
+			return caddyhttp.Error(400, denied)
+		}
+		path, ok := strings.CutPrefix(r.URL.Path, udp.Path)
+		parts := strings.Split(path, "/")
+		if !ok || len(parts) != 3 || parts[2] != "" || r.URL.RawQuery != "" {
+			return caddyhttp.Error(400, denied)
+		}
+		dest = net.JoinHostPort(parts[0], parts[1])
+		network = "udp"
+	}
+	select {
+	case h.slots <- struct{}{}:
+		defer func() { <-h.slots }()
+	default:
+		return caddyhttp.Error(429, errors.New("flow limit"))
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	addr, e := target(ctx, dest, h.exact, net.DefaultResolver.LookupNetIP)
+	if errors.Is(e, denied) {
+		return caddyhttp.Error(403, denied)
+	}
+	if e != nil {
+		return caddyhttp.Error(502, errors.New("resolve failed"))
+	}
+	conn, e := (&net.Dialer{}).DialContext(ctx, network, addr)
+	if e != nil {
+		return caddyhttp.Error(502, errors.New("dial failed"))
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(r.Context(), func() { conn.Close() })
+	defer stop()
+	w.Header().Set("Proxy-Authentication-Info", "Nexus2")
+	if network == "udp" {
+		w.Header().Set("Capsule-Protocol", "?1")
+	}
+	w.WriteHeader(200)
+	flush := http.NewResponseController(w)
+	if e = flush.Flush(); e != nil {
+		return e
+	}
+	if network == "udp" {
+		return relayUDP(w, r, conn, addr)
+	}
+	go func() { io.Copy(conn, r.Body); conn.(*net.TCPConn).CloseWrite() }()
+	_, e = io.Copy(flushingWriter{w, flush}, conn)
+	return e
+}
+
+type flushingWriter struct {
+	io.Writer
+	f *http.ResponseController
+}
+
+func (w flushingWriter) Write(p []byte) (int, error) {
+	n, e := w.Writer.Write(p)
+	if e == nil {
+		e = w.f.Flush()
+	}
+	return n, e
+}
+
+func relayUDP(w http.ResponseWriter, r *http.Request, c net.Conn, addr string) error {
+	var reader io.Reader = r.Body
+	var writer io.Writer = flushingWriter{w, http.NewResponseController(w)}
+	closeStream := func() { r.Body.Close() }
+	var d udp.Datagrams
+	if r.ProtoMajor == 3 {
+		for {
+			v, ok := w.(interface{ Unwrap() http.ResponseWriter })
+			if !ok {
+				break
+			}
+			w = v.Unwrap()
+		}
+		streamer, ok := w.(http3.HTTPStreamer)
+		if !ok {
+			return errors.New("missing H3 stream")
+		}
+		stream, e := streamer.HTTPStream()
+		if e != nil {
+			return e
+		}
+		reader = stream
+		writer = stream
+		closeStream = func() { stream.CancelRead(0); stream.Close() }
+		if caps, ok := w.(interface {
+			ReceivedSettings() <-chan struct{}
+			Settings() *http3.Settings
+		}); ok {
+			select {
+			case <-caps.ReceivedSettings():
+				if caps.Settings().EnableDatagrams && http3.NexusConn(r.Context()).ConnectionState().SupportsDatagrams.Local {
+					d = stream
+				}
+			case <-r.Context().Done():
+				closeStream()
+				return r.Context().Err()
+			}
+		}
+	}
+	a := udp.New(r.Context(), reader, writer, d, func(err error) bool { var x *quic.DatagramTooLargeError; return errors.As(err, &x) }, closeStream)
+	defer a.Close()
+	idle := 60 * time.Second
+	if strings.HasSuffix(addr, ":53") {
+		idle = 10 * time.Second
+	}
+	c.SetReadDeadline(time.Now().Add(idle))
+	go func() {
+		defer c.Close()
+		for {
+			packet, e := a.ReadPacket()
+			if e != nil {
+				return
+			}
+			if _, e = c.Write(packet); e != nil {
+				return
+			}
+			c.SetReadDeadline(time.Now().Add(idle))
+		}
+	}()
+	buf := make([]byte, 65507)
+	for {
+		n, e := c.Read(buf)
+		if e != nil {
+			return nil
+		}
+		c.SetReadDeadline(time.Now().Add(idle))
+		if e = a.WritePacket(buf[:n]); e != nil {
+			return e
+		}
+	}
+}
