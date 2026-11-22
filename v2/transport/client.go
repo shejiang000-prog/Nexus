@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type Config struct {
 	Sign                                  proof.Sign
 	OnState                               func(string)
 	Protect                               func(fd int) bool
+	Resolve                               func(context.Context, string) ([]netip.Addr, error)
 }
 type Code uint8
 
@@ -173,7 +175,12 @@ func networkError(e error) error {
 	}
 	return &Error{Interrupted, e}
 }
-func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err error) {
+func dialLane(ctx context.Context, c Config, kind string) (*transportLane, error) {
+	return dialEndpoint(ctx, c, func(ctx context.Context, peer netip.AddrPort) (*transportLane, error) {
+		return dialAddress(ctx, c, kind, peer)
+	})
+}
+func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort) (_ *transportLane, err error) {
 	name, _, _ := net.SplitHostPort(c.Authority)
 	l := &transportLane{authority: c.Authority, kind: kind, health: "https://" + c.Authority + c.HealthPath}
 	var export proof.Exporter
@@ -183,7 +190,7 @@ func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err
 		}
 	}()
 	if kind == "h2" {
-		sock, e := dialTCP(ctx, c.Endpoint, name, c.ClientHello, c.Roots, c.Protect)
+		sock, e := dialTCP(ctx, peer.String(), name, c.ClientHello, c.Roots, c.Protect)
 		if e != nil {
 			return nil, e
 		}
@@ -201,7 +208,7 @@ func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err
 		l.usable = h.CanTakeNewRequest
 		l.round = h.RoundTrip
 	} else {
-		q, closeAll, e := dialQUIC(ctx, c.Endpoint, name, c.Roots, c.Protect)
+		q, closeAll, e := dialQUIC(ctx, net.UDPAddrFromAddrPort(peer), name, c.Roots, c.Protect)
 		if e != nil {
 			return nil, e
 		}

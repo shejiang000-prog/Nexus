@@ -44,10 +44,19 @@ object M0Check {
             val config = org.json.JSONObject(File(dir, "m0-lab.json").readText())
             val protects = java.util.concurrent.atomic.AtomicInteger()
             val protector = mobile.Protector { fd -> protects.incrementAndGet(); fd >= 0 }
+            val resolves = java.util.concurrent.atomic.AtomicInteger()
+            val endpoint = config.getString("endpoint")
+            val name = "peer.m0.test"
+            val namedEndpoint = name + ":" + endpoint.substringAfterLast(':')
+            val resolver = mobile.Resolver { host ->
+                check(host == name)
+                resolves.incrementAndGet()
+                endpoint.substringBeforeLast(':').removeSurrounding("[", "]")
+            }
             var stage = "start"
             try {
-                val client = Mobile.start(config.getString("authority"), config.getString("endpoint"), "h2",
-                    config.getString("ca").toByteArray(), ByteArray(16), null, signer, protector, null)
+                val client = Mobile.start(config.getString("authority"), namedEndpoint, "h2",
+                    config.getString("ca").toByteArray(), ByteArray(16), null, signer, protector, resolver, null)
                 try {
                     stage = "association"
                     val assoc = client.openUDP(config.getString("echo"))
@@ -59,25 +68,25 @@ object M0Check {
                             check(assoc.readPacket().orEmptyBytes().contentEquals(packet))
                         }
                     } finally { assoc.close() }
-                    check(signs == 1 && protects.get() == 1 && client.state() == "h2")
+                    check(signs == 1 && protects.get() == 1 && resolves.get() == 1 && client.state() == "h2")
                     try {
                         client.openUDP("invalid")
                         error("expected target validation failure")
                     } catch (e: Exception) { check(Mobile.errorCode(e) == 1) }
                     try {
-                        val unexpected = Mobile.start(config.getString("authority"), config.getString("endpoint"), "h2",
+                        val unexpected = Mobile.start(config.getString("authority"), namedEndpoint, "h2",
                             config.getString("ca").toByteArray(), ByteArray(16), null, signer,
-                            mobile.Protector { false }, null)
+                            mobile.Protector { false }, resolver, null)
                         unexpected.stop()
                         error("expected socket protection failure")
                     } catch (e: Exception) { check(Mobile.errorCode(e) == 1) }
                     check(signs == 1)
-                    result.putString("h2", "4, 0, 65507 byte echoes verified; one Keystore signature, one protect callback, rejected fd and invalid target both code 1")
+                    result.putString("h2", "4, 0, 65507 byte echoes verified; one Keystore signature, one resolver and one protect callback, rejected fd and invalid target both code 1")
                 } finally { client.stop() }
             } catch (e: Exception) {
                 val msg = e.message.orEmpty()
                 val cause = listOf("extended connect", "connection refused", "timeout", "certificate", "invalid", "EOF", "export", "broken pipe", "unknown authority", "unreachable", "closed", "signature").firstOrNull { msg.contains(it, true) } ?: e.javaClass.simpleName
-                result.putString("stage", "$stage / $cause")
+                result.putString("stage", "$stage / $cause / code ${Mobile.errorCode(e)} / resolves ${resolves.get()} / protects ${protects.get()}")
                 throw e
             }
         }

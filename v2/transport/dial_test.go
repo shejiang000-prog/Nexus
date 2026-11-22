@@ -4,14 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	quic "github.com/apernet/quic-go"
 )
 
 func TestProtectBeforeAttempts(t *testing.T) {
@@ -44,18 +41,44 @@ func TestProtectBeforeAttempts(t *testing.T) {
 	}
 }
 
-func TestQUICAddressFallback(t *testing.T) {
+func TestEndpointResolver(t *testing.T) {
 	ips := []netip.Addr{netip.IPv6Loopback(), netip.MustParseAddr("127.0.0.1")}
-	count := 0
-	_, _, e := dialQUICAddresses(t.Context(), ips, 443, func(ctx context.Context, p *net.UDPAddr) (*quic.Conn, func(), error) {
-		count++
-		if p.IP.To4() == nil {
-			return nil, nil, errors.New("no IPv6 route")
+	cfg := Config{Endpoint: "node.invalid:443", Resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
+		if host != "node.invalid" {
+			t.Fatal(host)
 		}
-		return new(quic.Conn), func() {}, nil
+		return ips, nil
+	}}
+	var count int
+	_, err := dialEndpoint(t.Context(), cfg, func(ctx context.Context, p netip.AddrPort) (*transportLane, error) {
+		if p.Addr() != ips[count] || p.Port() != 443 {
+			t.Fatal(p)
+		}
+		count++
+		if count == 1 {
+			return nil, errors.New("no IPv6 route")
+		}
+		return &transportLane{}, nil
 	})
-	if e != nil || count != 2 {
-		t.Fatalf("attempts %d: %v", count, e)
+	if err != nil || count != 2 {
+		t.Fatalf("attempts %d: %v", count, err)
+	}
+	for _, mode := range []string{"h2", "h3"} {
+		cfg.Authority = "example.test:443"
+		cfg.Protect = func(int) bool { return false }
+		_, err := dialLane(t.Context(), cfg, mode)
+		var e *Error
+		if !errors.As(err, &e) || e.Code != Configuration {
+			t.Fatalf("%s failed before protected socket: %v", mode, err)
+		}
+		for _, failure := range []error{nil, errors.New("DNS unavailable")} {
+			invalid := cfg
+			invalid.Resolve = func(context.Context, string) ([]netip.Addr, error) { return nil, failure }
+			_, err := dialLane(t.Context(), invalid, mode)
+			if !errors.As(err, &e) || e.Code != Interrupted {
+				t.Fatalf("%s resolve: %v", mode, err)
+			}
+		}
 	}
 }
 func TestOptimisticFailure(t *testing.T) {

@@ -9,6 +9,8 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net/netip"
+	"strings"
 
 	"github.com/shejiang000-prog/Nexus/v2/proof"
 	"github.com/shejiang000-prog/Nexus/v2/transport"
@@ -16,6 +18,9 @@ import (
 
 type Signer interface {
 	Sign(message []byte) ([]byte, error)
+}
+type Resolver interface {
+	Resolve(host string) (string, error)
 }
 type Protector interface{ Protect(fd int32) bool }
 
@@ -51,7 +56,7 @@ func rawSignature(b []byte) ([]byte, error) {
 	p.S.FillBytes(out[32:])
 	return out, nil
 }
-func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, observer Observer) (*Client, error) {
+func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, resolver Resolver, observer Observer) (*Client, error) {
 	if len(id) != 16 || signer == nil {
 		return nil, &transport.Error{Code: transport.Configuration, Cause: errors.New("device ID and signer required")}
 	}
@@ -71,6 +76,26 @@ func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer
 	}}
 	if protector != nil {
 		cfg.Protect = func(fd int) bool { return protector.Protect(int32(fd)) }
+	}
+	if resolver != nil {
+		cfg.Resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			list, err := resolver.Resolve(host)
+			if err != nil {
+				return nil, err
+			}
+			var ips []netip.Addr
+			for field := range strings.SplitSeq(list, ",") {
+				ip, err := netip.ParseAddr(strings.TrimSpace(field))
+				if err != nil {
+					return nil, errors.New("invalid resolver address")
+				}
+				ips = append(ips, ip)
+			}
+			return ips, ctx.Err()
+		}
 	}
 	if observer != nil {
 		cfg.OnState = observer.StateChanged

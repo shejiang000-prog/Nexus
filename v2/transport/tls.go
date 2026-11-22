@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"strconv"
@@ -38,7 +39,20 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	var e error
 	if len(raw) == 0 {
 		var preset utls.ClientHelloSpec
-		preset, e = utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+		// libXray selects a newer uTLS in the AAR. Pin the common base explicitly.
+		preset, e = utls.UTLSIdToSpec(utls.HelloChrome_133)
+		if e == nil {
+			for _, ext := range preset.Extensions {
+				if sigs, ok := ext.(*utls.SignatureAlgorithmsExtension); ok {
+					sigs.SupportedSignatureAlgorithms = append([]utls.SignatureScheme(nil), chrome157Signatures[:]...)
+					// uTLS writes signature IDs verbatim, including the GREASE slot.
+					sigs.SupportedSignatureAlgorithms[0] = utls.SignatureScheme(0x0a0a + 0x1010*rand.Uint32N(16))
+				}
+			}
+			// Preserve the trailing GREASE extension when shuffling the preset.
+			i := len(preset.Extensions) - 1
+			preset.Extensions = append(preset.Extensions[:i], &utls.GenericExtension{Id: 0xca34, Data: chrome157Anchors[:]}, preset.Extensions[i])
+		}
 		spec = &preset
 	} else {
 		fp := utls.Fingerprinter{AllowBluntMimicry: true}
@@ -75,61 +89,75 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	return c, nil
 }
 
-func dialQUIC(ctx context.Context, addr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), error) {
-	host, port, e := net.SplitHostPort(addr)
+func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), error) {
+	family, bind := "udp4", "0.0.0.0:0"
+	if peer.IP.To4() == nil {
+		family, bind = "udp6", "[::]:0"
+	}
+	sock, e := (&net.ListenConfig{Control: socketControl(protect)}).ListenPacket(ctx, family, bind)
 	if e != nil {
 		return nil, nil, e
 	}
-	ips, e := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if e == nil && len(ips) == 0 {
-		e = errors.New("empty address list")
-	}
+	tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
+	closeAll := func() { tr.Close(); sock.Close() }
+	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
 	if e != nil {
+		closeAll()
 		return nil, nil, e
 	}
-	n, _ := strconv.Atoi(port)
-	return dialQUICAddresses(ctx, ips, n, func(ctx context.Context, peer *net.UDPAddr) (*quic.Conn, func(), error) {
-		family, bind := "udp4", "0.0.0.0:0"
-		if peer.IP.To4() == nil {
-			family, bind = "udp6", "[::]:0"
-		}
-		sock, e := (&net.ListenConfig{Control: socketControl(protect)}).ListenPacket(ctx, family, bind)
-		if e != nil {
-			return nil, nil, e
-		}
-		tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
-		closeAll := func() { tr.Close(); sock.Close() }
-		c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
-		if e != nil {
-			closeAll()
-			return nil, nil, e
-		}
-		size := bbr.GetInitialPacketSize(c.RemoteAddr())
-		if x := c.InitialPacketSize(); x > 0 {
-			size = min(size, x)
-		}
-		c.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
-		return c, closeAll, nil
-	})
+	size := bbr.GetInitialPacketSize(c.RemoteAddr())
+	if x := c.InitialPacketSize(); x > 0 {
+		size = min(size, x)
+	}
+	c.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
+	return c, closeAll, nil
 }
 
-func dialQUICAddresses(ctx context.Context, ips []netip.Addr, port int, dial func(context.Context, *net.UDPAddr) (*quic.Conn, func(), error)) (*quic.Conn, func(), error) {
-	var last error
+func dialEndpoint(ctx context.Context, c Config, dial func(context.Context, netip.AddrPort) (*transportLane, error)) (*transportLane, error) {
+	host, port, err := net.SplitHostPort(c.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := netip.ParseAddr(host)
+	if err == nil {
+		return dial(ctx, netip.AddrPortFrom(ip, uint16(n)))
+	}
+	var ips []netip.Addr
+	if c.Resolve != nil {
+		ips, err = c.Resolve(ctx, host)
+	} else {
+		ips, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	}
+	if err != nil {
+		return nil, &Error{Interrupted, err}
+	}
+	if len(ips) == 0 {
+		return nil, &Error{Interrupted, errors.New("empty node address list")}
+	}
+	for _, ip := range ips {
+		if !ip.IsValid() {
+			return nil, &Error{Interrupted, errors.New("invalid node address")}
+		}
+	}
 	for i, ip := range ips {
 		if ctx.Err() != nil {
-			return nil, nil, ctx.Err()
+			return nil, ctx.Err()
 		}
 		attempt := ctx
 		cancel := func() {}
 		if end, ok := ctx.Deadline(); ok && len(ips)-i > 1 {
 			attempt, cancel = context.WithTimeout(ctx, time.Until(end)/time.Duration(len(ips)-i))
 		}
-		q, close, e := dial(attempt, &net.UDPAddr{IP: ip.AsSlice(), Port: port, Zone: ip.Zone()})
+		lane, e := dial(attempt, netip.AddrPortFrom(ip, uint16(n)))
 		cancel()
 		if e == nil || terminalDialError(e) {
-			return q, close, e
+			return lane, e
 		}
-		last = e
+		err = e
 	}
-	return nil, nil, last
+	return nil, err
 }
