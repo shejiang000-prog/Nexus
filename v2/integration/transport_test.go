@@ -28,7 +28,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,10 +39,11 @@ import (
 )
 
 func TestNode(t *testing.T) {
-	t.Run("static", func(t *testing.T) { testNode(t, false) })
-	t.Run("ledger", func(t *testing.T) { testNode(t, true) })
+	t.Run("static", func(t *testing.T) { testNode(t, false, false) })
+	t.Run("ledger", func(t *testing.T) { testNode(t, true, false) })
 }
-func testNode(t *testing.T, useLedger bool) {
+func TestLedgerLoad(t *testing.T) { testNode(t, true, true) }
+func testNode(t *testing.T, useLedger, load bool) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
 		t.Skip("set NEXUS_NODE_TEST_BINARY to a built nexus-node")
@@ -161,6 +164,10 @@ func testNode(t *testing.T, useLedger bool) {
 	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(ca)
+	if load {
+		runLoad(t, ledger, user, authority, endpoint, tcp.Addr().String(), roots)
+		return
+	}
 	for _, mode := range []string{"h2", "h3"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
@@ -227,8 +234,10 @@ func testNode(t *testing.T, useLedger bool) {
 				go func() { _, e := stream.Read(make([]byte, 1)); done <- e }()
 				go func() { _, e := a.ReadPacket(); done <- e }()
 				started := time.Now()
-				if e := ledger.Revoke(ctx, id); e != nil {
-					t.Fatal(e)
+				revoker := exec.CommandContext(ctx, bin, "ledger", filepath.Join(dir, "ledger.db"), "revoke", hex.EncodeToString(id[:]))
+				revoker.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
+				if output, e := revoker.CombinedOutput(); e != nil {
+					t.Fatalf("revoke command: %v %s", e, output)
 				}
 				limit := time.After(time.Second - time.Since(started))
 				for range 2 {
@@ -248,6 +257,10 @@ func testNode(t *testing.T, useLedger bool) {
 }
 
 func redeemOverTLS(t *testing.T, mode, endpoint, authority string, roots *x509.CertPool, token []byte, key *ecdsa.PrivateKey) proof.ID {
+	t.Helper()
+	return testRedemption(t, mode, endpoint, authority, roots, token, key, true)
+}
+func testRedemption(t *testing.T, mode, endpoint, authority string, roots *x509.CertPool, token []byte, key *ecdsa.PrivateKey, wantValid bool) proof.ID {
 	t.Helper()
 	config := &tls.Config{RootCAs: roots, ServerName: "nexus.test", NextProtos: []string{mode}, MinVersion: tls.VersionTLS13}
 	var conn http.RoundTripper
@@ -305,6 +318,12 @@ func redeemOverTLS(t *testing.T, mode, endpoint, authority string, roots *x509.C
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
+	if !wantValid {
+		if res.StatusCode != http.StatusNotFound && res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("unexpected site status %d", res.StatusCode)
+		}
+		return proof.ID{}
+	}
 	var result struct {
 		Version int    `json:"v"`
 		ID      string `json:"device_id"`
@@ -317,4 +336,127 @@ func redeemOverTLS(t *testing.T, mode, endpoint, authority string, roots *x509.C
 		t.Fatal("invalid device ID")
 	}
 	return proof.ID(id)
+}
+
+// Time successful first-byte echoes, so a sample includes authorization and target dial.
+func runLoad(t *testing.T, l *server.Ledger, user proof.ID, authority, endpoint, target string, roots *x509.CertPool) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	start := func() (proof.ID, *transport.Client) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := l.Invite(ctx, user, time.Now().Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := redeemOverTLS(t, "h2", endpoint, authority, roots, token, key)
+		c, err := transport.Start(ctx, transport.Config{Authority: authority, Endpoint: endpoint, Mode: "h2", Device: id, Roots: roots, Sign: func(msg []byte) ([]byte, error) {
+			hash := sha256.Sum256(msg)
+			r, s, err := ecdsa.Sign(rand.Reader, key, hash[:])
+			if err != nil {
+				return nil, err
+			}
+			return append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...), nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Stop)
+		return id, c
+	}
+	const n = 50
+	var clients [n]*transport.Client
+	for i := range clients {
+		_, clients[i] = start()
+		time.Sleep(70 * time.Millisecond) // devices share one loopback source
+	}
+	workers, stop := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() { stop(); wg.Wait() }()
+	var samples [n][]time.Duration
+	var failures atomic.Int64
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for workers.Err() == nil {
+				began := time.Now()
+				conn, err := c.DialTCP(ctx, target, []byte{1})
+				if err == nil {
+					var b [1]byte
+					_, err = io.ReadFull(conn, b[:])
+					conn.Close()
+					if b[0] != 1 && err == nil {
+						err = fmt.Errorf("bad echo")
+					}
+				}
+				if err != nil {
+					failures.Add(1)
+					return
+				}
+				samples[i] = append(samples[i], time.Since(began))
+			}
+		}()
+	}
+	var maxRev time.Duration
+	for range 8 {
+		id, c := start()
+		stream, err := c.DialTCP(ctx, target, []byte{1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf [1]byte
+		if _, err := io.ReadFull(stream, buf[:]); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { _, err := stream.Read(buf[:]); done <- err }()
+		began := time.Now()
+		if err := l.Revoke(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("unexpected data")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("revocation timeout")
+		}
+		maxRev = max(maxRev, time.Since(began))
+		stream.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Run("random_invites", func(t *testing.T) {
+		for batch := range 8 {
+			t.Run(strconv.Itoa(batch), func(t *testing.T) {
+				t.Parallel()
+				key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 16 {
+					token := make([]byte, 32)
+					rand.Read(token)
+					testRedemption(t, "h2", endpoint, authority, roots, token, key, false)
+				}
+			})
+		}
+	})
+	stop()
+	wg.Wait()
+	var all []time.Duration
+	for _, group := range samples {
+		if len(group) == 0 {
+			t.Fatal("idle device")
+		}
+		all = append(all, group...)
+	}
+	slices.Sort(all)
+	t.Logf("H2 devices=50 samples=%d p50=%v p99=%v failed_opens=%d max_revoke=%v", len(all), all[(len(all)-1)/2], all[(99*len(all)+99)/100-1], failures.Load(), maxRev)
+	if failures.Load() != 0 || maxRev >= time.Second {
+		t.Fail()
+	}
 }

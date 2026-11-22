@@ -23,9 +23,10 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument("binary", type=Path)
 p.add_argument("tools", type=Path, help="directory containing the verified official hysteria binary")
 p.add_argument("output", type=Path)
-p.add_argument("--loss", type=int, required=True, choices=(0, 2, 5))
+p.add_argument("--loss", type=int, required=True, choices=(0, 1, 2, 5))
 p.add_argument("--seed", type=int, default=1907)
 p.add_argument("--pairs", type=int, default=20)
+p.add_argument("--competitor", choices=("hy-default","box-tuic"), default="hy-default")
 p.add_argument("--udp", choices=("capsule","datagram"))
 a=p.parse_args()
 if a.pairs < 1:
@@ -54,7 +55,7 @@ with ExitStack() as stack:
         w=csv.writer(f,lineterminator="\n")
         w.writerow(("loss","pair","mode","status","mbps"))
         for i in range(a.pairs):
-            for mode in ("go-bbr","hy-default"):
+            for mode in ("go-bbr",a.competitor):
                 bench.shape(peer,150,a.loss,20,a.seed+i*2)
                 if mode=="go-bbr":
                     server,client=[*peer,a.binary,"server"],[a.binary,"client"]

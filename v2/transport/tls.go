@@ -39,7 +39,7 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	var e error
 	if len(raw) == 0 {
 		var preset utls.ClientHelloSpec
-		// libXray selects a newer uTLS in the AAR. Pin the common base explicitly.
+		// Keep the Chrome base explicit across desktop and Android builds.
 		preset, e = utls.UTLSIdToSpec(utls.HelloChrome_133)
 		if e == nil {
 			for _, ext := range preset.Extensions {

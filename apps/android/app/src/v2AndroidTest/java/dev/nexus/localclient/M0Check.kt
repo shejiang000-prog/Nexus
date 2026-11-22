@@ -53,6 +53,24 @@ object M0Check {
                 resolves.incrementAndGet()
                 endpoint.substringBeforeLast(':').removeSurrounding("[", "]")
             }
+            if (args.getString("mode") == "m0-handshakes") {
+                repeat(50) {
+                    for (mode in listOf("h2", "h3")) {
+                        val client = Mobile.start(config.getString("authority"), namedEndpoint, mode,
+                            config.getString("ca").toByteArray(), ByteArray(16), null, signer, protector, resolver, null)
+                        try {
+                            val udp = client.openUDP(config.getString("echo"))
+                            try {
+                                udp.writePacket(byteArrayOf(1))
+                                check(udp.readPacket().orEmptyBytes().contentEquals(byteArrayOf(1)))
+                            } finally { udp.close() }
+                        } finally { client.stop() }
+                    }
+                }
+                check(signs == 100)
+                result.putString("handshakes", "50 H2 and 50 H3 signed echoes")
+                return
+            }
             var stage = "start"
             try {
                 val client = Mobile.start(config.getString("authority"), namedEndpoint, "h2",

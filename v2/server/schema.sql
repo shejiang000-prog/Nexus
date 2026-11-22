@@ -21,7 +21,7 @@ CREATE TABLE audit (
     seq INTEGER PRIMARY KEY,
     occurred_at INTEGER NOT NULL,
     action TEXT NOT NULL,
-    device_id BLOB NOT NULL REFERENCES devices(id)
+    device_id BLOB REFERENCES devices(id),
+    user_id BLOB REFERENCES users(id)
 );
-CREATE INDEX audit_revocations ON audit(seq) WHERE action='revoke';
-PRAGMA user_version=1;
+PRAGMA user_version=2;

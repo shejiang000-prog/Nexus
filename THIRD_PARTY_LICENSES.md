@@ -498,12 +498,15 @@ AndroidX、AGP、Gradle、Kotlin 使用 Apache-2.0；SDK/NDK 的工具、系统�
 |组件和锁定版本|许可与用途|
 |---|---|
 |[apernet/quic-go 2895f039137a](https://github.com/apernet/quic-go/tree/2895f039137a)；[qpack v0.6.0](https://github.com/quic-go/qpack/tree/v0.6.0)|MIT。H3 和头部编码。Caddy 导入路径的 QUIC 源码亦来自同一分支，加本仓库补丁。|
-|[uTLS v1.8.2](https://github.com/refraction-networking/utls/tree/v1.8.2)|BSD-3-Clause。客户端 TLS。|
-|[Go x/net v0.60.0](https://github.com/golang/net/tree/v0.60.0)；[Go x/mobile 197770444867](https://github.com/golang/mobile/tree/197770444867)|BSD-3-Clause。前者提供 H2，后者用于 gomobile/gobind 及绑定运行时。|
+|[uTLS v1.8.3-0.20261108164504-a13c59ffe98b](https://github.com/refraction-networking/utls/tree/a13c59ffe98b)|BSD-3-Clause。客户端 TLS。|
+|[go-brrr v1.3.1](https://github.com/molecule-man/go-brrr/tree/v1.3.1)|MIT。uTLS 使用的 Brotli 实现。|
+|[Go x/net v0.62.0](https://github.com/golang/net/tree/v0.62.0)；[Go x/mobile 197770444867](https://github.com/golang/mobile/tree/197770444867)|BSD-3-Clause。前者提供 H2，后者用于 gomobile/gobind 及绑定运行时。|
 |[Caddy v2.11.9](https://github.com/caddyserver/caddy/tree/v2.11.9)|Apache-2.0。只链接服务端。再分发保留上游 LICENSE 和适用的 NOTICE。|
 |[Hysteria 拥塞控制 c2b181e](https://github.com/apernet/hysteria/tree/c2b181e0b0e72b077e4b0b7297735af14d1f9929/core/internal/congestion)|MIT。复制的代码文件头标注上游路径和提交，授权全文随 v2/internal/congestion/LICENSE.md 分发。|
 |[libXray v26.11.9](https://github.com/XTLS/libXray/tree/v26.11.9)；[Xray-core 676eaf66f8f0](https://github.com/XTLS/Xray-core/tree/676eaf66f8f0)|MIT / MPL-2.0。合编 AAR 仍须提供受 MPL 涵盖文件的对应源码及本地 CONNECT-IP 修改。|
 
 节点账本使用 [modernc.org/sqlite v1.58.0](https://pkg.go.dev/modernc.org/sqlite@v1.58.0?tab=licenses)。驱动、modernc.org/libc v1.75.6、mathutil v1.7.1、memory v1.12.1 和 bigfft 24d4a6f8daec 的模块根 LICENSE 均为 BSD 三条款。发布节点时需随产物保留各组件版权、许可及所含第三方源文件的声明。该存储驱动只链接节点。
+
+本次同时对齐 Go 官方 x/crypto v0.58.0、x/sys v0.49.0、x/text v0.43.0、x/sync v0.24.0 和 x/term v0.47.0（BSD-3-Clause）。
 
 Go 间接模块及精确版本见 v2/go.mod、v2/go.sum。正式分发需按实际编译目标复核间接组件的版权、许可、NOTICE 和修改源码。本轮未发布构建产物。

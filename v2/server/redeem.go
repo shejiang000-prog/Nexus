@@ -8,7 +8,10 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/shejiang000-prog/Nexus/v2/proof"
@@ -28,7 +31,7 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) bool {
 	if q := http3.NexusConn(r.Context()); q != nil && q.ConnectionState().Used0RTT {
 		return false
 	}
-	if length > 4096 {
+	if !h.ledger.sources.allow(r.RemoteAddr, time.Now()) || length > 4096 {
 		return false
 	}
 	raw, err := io.ReadAll(io.LimitReader(body, 4097))
@@ -100,5 +103,30 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) bool {
 		Version int    `json:"v"`
 		ID      string `json:"device_id"`
 	}{2, base64.RawURLEncoding.EncodeToString(id[:])})
+	return true
+}
+
+type redeemSources struct {
+	mu    sync.Mutex
+	until time.Time
+	count map[netip.Addr]int
+}
+
+func (s *redeemSources) allow(remote string, now time.Time) bool {
+	peer, err := netip.ParseAddrPort(remote)
+	if err != nil {
+		return false
+	}
+	ip := peer.Addr().Unmap()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !now.Before(s.until) {
+		s.until = now.Add(time.Second)
+		s.count = make(map[netip.Addr]int)
+	}
+	if s.count[ip] >= 16 || (s.count[ip] == 0 && len(s.count) >= 4096) {
+		return false
+	}
+	s.count[ip]++
 	return true
 }

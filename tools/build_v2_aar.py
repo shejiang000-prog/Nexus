@@ -1,5 +1,6 @@
 """Bind the pinned libXray and Nexus V2 client into one Go runtime."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -42,4 +43,23 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
     subprocess.run(["gomobile", "bind", "-target", a.target, "-androidapi", "21",
                     "-trimpath", "-ldflags=-checklinkname=0 -s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384",
                     "-o", built, ".", "./nexusmobile"], cwd=lib, check=True)
+    manifest = json.loads(subprocess.check_output(["go", "mod", "edit", "-json"], cwd=V2))
+    checked = {QUIC[0], "github.com/refraction-networking/utls", "golang.org/x/net"}
+    expected = {r["Path"]: r["Version"] for r in manifest["Require"] if r["Path"] in checked}
+    if expected.keys() != checked:
+        p.error("missing transport module pin in v2/go.mod")
+    with zipfile.ZipFile(built) as aar:
+        libraries = [n for n in aar.namelist() if n.startswith("jni/") and n.endswith("/libgojni.so")]
+        if not libraries:
+            p.error("missing native Go library")
+        for name in libraries:
+            binary = aar.extract(name, tmp)
+            info = subprocess.check_output(["go", "version", "-m", binary], text=True)
+            selected = {}
+            for line in info.splitlines():
+                fields = line.split()
+                if len(fields) >= 3 and fields[0] == "dep" and fields[1] in checked:
+                    selected[fields[1]] = fields[2]
+            if selected != expected:
+                p.error(f"{name}: selected {selected}, expected {expected}")
     os.replace(built, output)

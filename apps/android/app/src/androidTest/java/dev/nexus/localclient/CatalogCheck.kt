@@ -435,7 +435,7 @@ class CatalogCheck : Instrumentation() {
                 }
                 "release-icons","release-import","release-update","release-key","release-private","release-boot","release-state","release-stop" -> releaseCheck(args,result)
                 "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
-                "m0-key", "m0-udp" -> Class.forName("dev.nexus.localclient.M0Check")
+                "m0-key", "m0-udp", "m0-handshakes" -> Class.forName("dev.nexus.localclient.M0Check")
                     .getMethod("run", Instrumentation::class.java, Bundle::class.java, Bundle::class.java)
                     .invoke(null, this, args, result)
                 "split-lab", "split-public" -> splitCheck(args,result)
