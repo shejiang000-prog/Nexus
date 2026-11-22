@@ -3,11 +3,12 @@ module github.com/shejiang000-prog/Nexus/v2
 go 1.27.0
 
 require (
-	golang.org/x/net v0.60.0
-	github.com/refraction-networking/utls v1.8.2
 	github.com/apernet/quic-go v0.65.1-0.20261109005002-2895f039137a
 	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/quic-go/quic-go v0.63.0
+	github.com/refraction-networking/utls v1.8.2
+	golang.org/x/net v0.60.0
+	modernc.org/sqlite v1.58.0
 )
 
 require (
@@ -90,6 +91,7 @@ require (
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
@@ -158,4 +160,7 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.1 // indirect
+	modernc.org/libc v1.75.6 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )

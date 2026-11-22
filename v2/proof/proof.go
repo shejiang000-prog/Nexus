@@ -101,6 +101,9 @@ type Binding struct {
 	id     ID
 }
 
+// Device returns the immutable identity after a successful Accept.
+func (b *Binding) Device() ID { b.mu.Lock(); defer b.mu.Unlock(); return b.id }
+
 // Accept serializes the first batch. The caller supplies the exporter of this connection only.
 func (b *Binding) Accept(header string, devices Devices, secret func() ([]byte, error)) bool {
 	b.mu.Lock()

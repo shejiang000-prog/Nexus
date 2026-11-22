@@ -8,15 +8,23 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	quic "github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/http3"
+	"github.com/shejiang000-prog/Nexus/v2/proof"
+	"github.com/shejiang000-prog/Nexus/v2/server"
+	"golang.org/x/net/http2"
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +37,10 @@ import (
 )
 
 func TestNode(t *testing.T) {
+	t.Run("static", func(t *testing.T) { testNode(t, false) })
+	t.Run("ledger", func(t *testing.T) { testNode(t, true) })
+}
+func testNode(t *testing.T, useLedger bool) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
 		t.Skip("set NEXUS_NODE_TEST_BINARY to a built nexus-node")
@@ -100,6 +112,21 @@ func TestNode(t *testing.T) {
 	}
 	type M = map[string]any
 	handler := M{"handler": "nexus", "authority": authority, "device_keys": M{"00000000000000000000000000000000": hex.EncodeToString(elliptic.MarshalCompressed(device.Curve, device.X, device.Y))}, "allow_exact": []string{tcp.Addr().String(), u.LocalAddr().String()}}
+	var ledger *server.Ledger
+	user := proof.ID{1}
+	if useLedger {
+		dbPath := filepath.Join(dir, "ledger.db")
+		ledger, e = server.OpenLedger(dbPath)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer ledger.Close()
+		if e = ledger.CreateUser(t.Context(), user); e != nil {
+			t.Fatal(e)
+		}
+		delete(handler, "device_keys")
+		handler["ledger_path"] = dbPath
+	}
 	cfg := M{"admin": M{"disabled": true}, "apps": M{"tls": M{"certificates": M{"load_files": []M{{"certificate": crt, "key": priv}}}}, "http": M{"servers": M{"node": M{"listen": []string{endpoint}, "automatic_https": M{"disable": true}, "enable_datagrams": true, "tls_connection_policies": []M{{"protocol_min": "tls1.3"}}, "routes": []M{{"handle": []M{handler, {"handler": "file_server", "root": site}}}}}}}}}
 	data, e := json.Marshal(cfg)
 	if e != nil {
@@ -138,8 +165,20 @@ func TestNode(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
 			defer cancel()
+			var id proof.ID
+			if useLedger {
+				device, e = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+				if e != nil {
+					t.Fatal(e)
+				}
+				token, e := ledger.Invite(ctx, user, time.Now().Add(time.Minute))
+				if e != nil {
+					t.Fatal(e)
+				}
+				id = redeemOverTLS(t, mode, endpoint, authority, roots, token, device)
+			}
 			var signs atomic.Int32
-			c, e := transport.Start(ctx, transport.Config{Authority: authority, Endpoint: endpoint, Mode: mode, Roots: roots, Sign: func(m []byte) ([]byte, error) {
+			c, e := transport.Start(ctx, transport.Config{Authority: authority, Endpoint: endpoint, Mode: mode, Device: id, Roots: roots, Sign: func(m []byte) ([]byte, error) {
 				signs.Add(1)
 				d := sha256.Sum256(m)
 				r, s, e := ecdsa.Sign(rand.Reader, device, d[:])
@@ -183,6 +222,99 @@ func TestNode(t *testing.T) {
 				s.Close()
 				t.Fatal("reserved destination accepted")
 			}
+			if useLedger {
+				done := make(chan error, 2)
+				go func() { _, e := stream.Read(make([]byte, 1)); done <- e }()
+				go func() { _, e := a.ReadPacket(); done <- e }()
+				started := time.Now()
+				if e := ledger.Revoke(ctx, id); e != nil {
+					t.Fatal(e)
+				}
+				limit := time.After(time.Second - time.Since(started))
+				for range 2 {
+					select {
+					case e := <-done:
+						if e == nil {
+							t.Fatal("revoked stream still readable")
+						}
+					case <-limit:
+						t.Fatal("revoked stream survived one second")
+					}
+				}
+				t.Logf("active TCP and UDP ended after %v", time.Since(started))
+			}
 		})
 	}
+}
+
+func redeemOverTLS(t *testing.T, mode, endpoint, authority string, roots *x509.CertPool, token []byte, key *ecdsa.PrivateKey) proof.ID {
+	t.Helper()
+	config := &tls.Config{RootCAs: roots, ServerName: "nexus.test", NextProtos: []string{mode}, MinVersion: tls.VersionTLS13}
+	var conn http.RoundTripper
+	var exporter proof.Exporter
+	if mode == "h3" {
+		q, err := quic.DialAddr(t.Context(), endpoint, config, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer q.CloseWithError(0, "")
+		conn = (&http3.Transport{}).NewClientConn(q)
+		exporter = q.ExportKeyingMaterial
+	} else {
+		tcp, err := tls.Dial("tcp", endpoint, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tcp.Close()
+		state := tcp.ConnectionState()
+		exporter = state.ExportKeyingMaterial
+		conn, err = new(http2.Transport).NewClientConn(tcp)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	secret, err := proof.Secret(authority, exporter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request proof.ID
+	rand.Read(request[:])
+	pub := elliptic.MarshalCompressed(key.Curve, key.X, key.Y)
+	msg, err := proof.RedeemMessage(secret, request, sha256.Sum256(token), pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(msg)
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding.EncodeToString
+	fields := map[string]string{"invite": enc(token), "request_id": enc(request[:]), "public_key": enc(pub), "proof": enc(append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...))}
+	data, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), "POST", "https://"+authority+"/.well-known/nexus/v2/redeem", bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := conn.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var result struct {
+		Version int    `json:"v"`
+		ID      string `json:"device_id"`
+	}
+	if res.StatusCode != 200 || json.NewDecoder(res.Body).Decode(&result) != nil || result.Version != 2 {
+		t.Fatalf("redeem HTTP %d", res.StatusCode)
+	}
+	id, err := base64.RawURLEncoding.DecodeString(result.ID)
+	if err != nil || len(id) != 16 {
+		t.Fatal("invalid device ID")
+	}
+	return proof.ID(id)
 }

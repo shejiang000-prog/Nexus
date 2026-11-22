@@ -29,10 +29,13 @@ type MemoryDevices map[proof.ID]*ecdsa.PublicKey
 func (m MemoryDevices) Lookup(id proof.ID) *ecdsa.PublicKey { return m[id] }
 
 type bindingKey struct{}
+type socketKey struct{}
 type Handler struct {
 	Authority  string            `json:"authority"`
 	DeviceKeys map[string]string `json:"device_keys"`
 	AllowExact []string          `json:"allow_exact,omitempty"`
+	LedgerPath string            `json:"ledger_path,omitempty"`
+	ledger     *Ledger
 	devices    proof.Devices
 	exact      map[netip.AddrPort]bool
 	sessions   *sync.Map
@@ -85,19 +88,35 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return e
 	}
 	for _, s := range app.(*caddyhttp.App).Servers {
-		s.RegisterConnContext(func(ctx context.Context, _ net.Conn) context.Context {
+		s.RegisterConnContext(func(ctx context.Context, conn net.Conn) context.Context {
 			if ctx.Value(bindingKey{}) != nil {
 				return ctx
 			}
-			return context.WithValue(ctx, bindingKey{}, new(sync.Map))
+			return context.WithValue(context.WithValue(ctx, socketKey{}, conn), bindingKey{}, new(sync.Map))
 		})
+	}
+	if h.LedgerPath != "" {
+		if len(devices) > 0 {
+			return errors.New("choose a ledger or static device keys")
+		}
+		h.ledger, e = OpenLedger(h.LedgerPath)
+		if e != nil {
+			return e
+		}
+		h.devices = h.ledger
 	}
 	return nil
 }
-func (h *Handler) authenticate(r *http.Request) bool {
+func (h *Handler) Cleanup() error {
+	if h.ledger != nil {
+		return h.ledger.Close()
+	}
+	return nil
+}
+func (h *Handler) authenticate(r *http.Request) *proof.Binding {
 	vals := r.Header.Values("Proxy-Authorization")
 	if len(vals) > 1 {
-		return false
+		return nil
 	}
 	header := r.Header.Get("Proxy-Authorization")
 	secret := func() ([]byte, error) { return proof.Secret(h.Authority, r.TLS.ExportKeyingMaterial) }
@@ -105,24 +124,36 @@ func (h *Handler) authenticate(r *http.Request) bool {
 	if q == nil {
 		m, _ := r.Context().Value(bindingKey{}).(*sync.Map)
 		if m == nil {
-			return false
+			return nil
 		}
 		b, _ := m.LoadOrStore(h, new(proof.Binding))
-		return b.(*proof.Binding).Accept(header, h.devices, secret)
+		bound := b.(*proof.Binding)
+		if bound.Accept(header, h.devices, secret) {
+			return bound
+		}
+		return nil
 	}
 	if q.ConnectionState().Used0RTT {
-		return false
+		return nil
 	}
 	if v, ok := h.sessions.Load(q); ok {
-		return v.(*proof.Binding).Accept(header, h.devices, secret)
+		bound := v.(*proof.Binding)
+		if bound.Accept(header, h.devices, secret) {
+			return bound
+		}
+		return nil
 	}
 	fresh := new(proof.Binding)
 	if !fresh.Accept(header, h.devices, secret) {
-		return false
+		return nil
 	}
 	v, loaded := h.sessions.LoadOrStore(q, fresh)
 	if loaded {
-		return v.(*proof.Binding).Accept(header, h.devices, secret)
+		bound := v.(*proof.Binding)
+		if bound.Accept(header, h.devices, secret) {
+			return bound
+		}
+		return nil
 	}
 	context.AfterFunc(q.Context(), func() { h.sessions.Delete(q) })
 	size := bbr.GetInitialPacketSize(q.RemoteAddr())
@@ -130,9 +161,15 @@ func (h *Handler) authenticate(r *http.Request) bool {
 		size = min(size, x)
 	}
 	q.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
-	return true
+	return fresh
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if h.ledger != nil && r.Method == "POST" && r.URL.Path == "/.well-known/nexus/v2/redeem" {
+		if h.redeem(w, r) {
+			return nil
+		}
+		return next.ServeHTTP(w, r)
+	}
 	if r.Method != "CONNECT" || r.TLS == nil || !r.TLS.HandshakeComplete || r.TLS.Version != tls.VersionTLS13 {
 		return next.ServeHTTP(w, r)
 	}
@@ -140,8 +177,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if r.ProtoMajor == 3 && r.Proto != "HTTP/3.0" {
 		proto = r.Proto
 	}
-	if !h.authenticate(r) {
+	bound := h.authenticate(r)
+	if bound == nil {
 		return next.ServeHTTP(w, r)
+	}
+	if h.ledger != nil {
+		// Wake blocked upstream reads and downstream writes on either carrier.
+		q := http3.NexusConn(r.Context())
+		tcp, _ := r.Context().Value(socketKey{}).(net.Conn)
+		if q == nil && tcp == nil {
+			return next.ServeHTTP(w, r)
+		}
+		unregister, ok := h.ledger.register(bound.Device(), func() {
+			if q != nil {
+				q.CloseWithError(0, "")
+			} else {
+				tcp.Close()
+			}
+		})
+		if !ok {
+			return next.ServeHTTP(w, r)
+		}
+		defer unregister()
 	}
 	dest := r.Host
 	network := "tcp"
