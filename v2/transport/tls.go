@@ -7,14 +7,33 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
+	"syscall"
+	"time"
 
 	quic "github.com/apernet/quic-go"
 	utls "github.com/refraction-networking/utls"
 	"github.com/shejiang000-prog/Nexus/v2/internal/congestion/bbr"
 )
 
-func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.CertPool) (*utls.UConn, error) {
+// Control runs while the descriptor is owned by the dialer, before connect or bind.
+func socketControl(protect func(int) bool) func(string, string, syscall.RawConn) error {
+	if protect == nil {
+		return nil
+	}
+	return func(_, _ string, raw syscall.RawConn) error {
+		ok := false
+		if err := raw.Control(func(fd uintptr) { ok = protect(int(fd)) }); err != nil {
+			return &Error{Configuration, err}
+		}
+		if !ok {
+			return &Error{Configuration, errors.New("socket protection refused")}
+		}
+		return nil
+	}
+}
+func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.CertPool, protect func(int) bool) (*utls.UConn, error) {
 	var spec *utls.ClientHelloSpec
 	var e error
 	if len(raw) == 0 {
@@ -37,7 +56,7 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 		}
 	}
 	spec.Extensions = utls.ShuffleChromeTLSExtensions(spec.Extensions)
-	sock, e := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	sock, e := (&net.Dialer{Control: socketControl(protect)}).DialContext(ctx, "tcp", addr)
 	if e != nil {
 		return nil, e
 	}
@@ -56,7 +75,7 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	return c, nil
 }
 
-func dialQUIC(ctx context.Context, addr, name string, roots *x509.CertPool) (*quic.Conn, func(), error) {
+func dialQUIC(ctx context.Context, addr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), error) {
 	host, port, e := net.SplitHostPort(addr)
 	if e != nil {
 		return nil, nil, e
@@ -69,26 +88,48 @@ func dialQUIC(ctx context.Context, addr, name string, roots *x509.CertPool) (*qu
 		return nil, nil, e
 	}
 	n, _ := strconv.Atoi(port)
-	peer := &net.UDPAddr{IP: net.IP(ips[0].AsSlice()), Port: n}
-	family := "udp4"
-	if peer.IP.To4() == nil {
-		family = "udp6"
+	return dialQUICAddresses(ctx, ips, n, func(ctx context.Context, peer *net.UDPAddr) (*quic.Conn, func(), error) {
+		family, bind := "udp4", "0.0.0.0:0"
+		if peer.IP.To4() == nil {
+			family, bind = "udp6", "[::]:0"
+		}
+		sock, e := (&net.ListenConfig{Control: socketControl(protect)}).ListenPacket(ctx, family, bind)
+		if e != nil {
+			return nil, nil, e
+		}
+		tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
+		closeAll := func() { tr.Close(); sock.Close() }
+		c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
+		if e != nil {
+			closeAll()
+			return nil, nil, e
+		}
+		size := bbr.GetInitialPacketSize(c.RemoteAddr())
+		if x := c.InitialPacketSize(); x > 0 {
+			size = min(size, x)
+		}
+		c.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
+		return c, closeAll, nil
+	})
+}
+
+func dialQUICAddresses(ctx context.Context, ips []netip.Addr, port int, dial func(context.Context, *net.UDPAddr) (*quic.Conn, func(), error)) (*quic.Conn, func(), error) {
+	var last error
+	for i, ip := range ips {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		attempt := ctx
+		cancel := func() {}
+		if end, ok := ctx.Deadline(); ok && len(ips)-i > 1 {
+			attempt, cancel = context.WithTimeout(ctx, time.Until(end)/time.Duration(len(ips)-i))
+		}
+		q, close, e := dial(attempt, &net.UDPAddr{IP: ip.AsSlice(), Port: port, Zone: ip.Zone()})
+		cancel()
+		if e == nil || terminalDialError(e) {
+			return q, close, e
+		}
+		last = e
 	}
-	sock, e := net.ListenUDP(family, nil)
-	if e != nil {
-		return nil, nil, e
-	}
-	tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
-	closeAll := func() { tr.Close(); sock.Close() }
-	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
-	if e != nil {
-		closeAll()
-		return nil, nil, e
-	}
-	size := bbr.GetInitialPacketSize(c.RemoteAddr())
-	if x := c.InitialPacketSize(); x > 0 {
-		size = min(size, x)
-	}
-	c.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
-	return c, closeAll, nil
+	return nil, nil, last
 }

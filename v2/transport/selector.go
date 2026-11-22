@@ -108,6 +108,7 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
+	req.Header.Set("User-Agent", "")
 	start := time.Now()
 	resp, e := l.round(req)
 	if e != nil {
@@ -120,6 +121,12 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	}
 	return time.Since(start)
 }
+func (s *selector) probeH3() (*transportLane, error) {
+	ctx, cancel := context.WithTimeout(s.ctx, time.Second)
+	defer cancel()
+	return s.dial(ctx, "h3")
+}
+
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(s.ctx, 1500*time.Millisecond)
 	ready := make(chan *transportLane)
@@ -144,6 +151,7 @@ func (s *selector) watch() {
 	var prev uint64
 	lastProgress := time.Now()
 	var weak, success int
+	var lastH2 time.Time
 	nextProbe := time.Now().Add(30 * time.Second)
 	backoff := 30 * time.Second
 	// Only watch owns the pending dial. Cancel also closes a completed, unused handshake.
@@ -171,9 +179,7 @@ func (s *selector) watch() {
 			if l.active.Load() == 0 || time.Since(time.Unix(0, l.last.Load())) > 3*time.Second || time.Now().Before(nextProbe) {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(s.ctx, time.Second)
-			q, e := s.dial(ctx, "h3")
-			cancel()
+			q, e := s.probeH3()
 			if e == nil && s.capacity(q) > 0 {
 				success++
 				if success >= 2 {
@@ -217,7 +223,8 @@ func (s *selector) watch() {
 		}
 		weak++
 		if weak < 2 {
-			if delta == 0 {
+			if delta == 0 && time.Since(lastH2) >= 10*time.Second {
+				lastH2 = time.Now()
 				pending, abandon = s.prebuildH2()
 				owner = l
 			}
@@ -230,7 +237,8 @@ func (s *selector) watch() {
 		if pending != nil {
 			alt = <-pending
 			discard()
-		} else {
+		} else if time.Since(lastH2) >= 10*time.Second || gone {
+			lastH2 = time.Now()
 			ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 			alt, _ = s.dial(ctx, "h2")
 			cancel()
@@ -275,7 +283,7 @@ func terminalDialError(e error) bool {
 	var h x509.HostnameError
 	var v x509.CertificateInvalidError
 	var typed *Error
-	return errors.As(e, &a) || errors.As(e, &h) || errors.As(e, &v) || (errors.As(e, &typed) && typed.Code == Authentication)
+	return errors.As(e, &a) || errors.As(e, &h) || errors.As(e, &v) || (errors.As(e, &typed) && (typed.Code == Authentication || typed.Code == Configuration))
 }
 func (s *selector) drainH3(old, backup *transportLane) {
 	prev, since := old.stats(), time.Now()

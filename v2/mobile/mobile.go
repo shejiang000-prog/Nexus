@@ -17,6 +17,20 @@ import (
 type Signer interface {
 	Sign(message []byte) ([]byte, error)
 }
+type Protector interface{ Protect(fd int32) bool }
+
+// ErrorCode maps a gomobile exception back to its original Go error.
+func ErrorCode(err error) int32 {
+	var e *transport.Error
+	if errors.As(err, &e) {
+		return int32(e.Code)
+	}
+	if err != nil {
+		return int32(transport.Interrupted)
+	}
+	return 0
+}
+
 type Observer interface{ StateChanged(state string) }
 type Client struct {
 	client *transport.Client
@@ -37,15 +51,15 @@ func rawSignature(b []byte) ([]byte, error) {
 	p.S.FillBytes(out[32:])
 	return out, nil
 }
-func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, observer Observer) (*Client, error) {
+func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, observer Observer) (*Client, error) {
 	if len(id) != 16 || signer == nil {
-		return nil, errors.New("device ID and signer required")
+		return nil, &transport.Error{Code: transport.Configuration, Cause: errors.New("device ID and signer required")}
 	}
 	var roots *x509.CertPool
 	if len(ca) > 0 {
 		roots = x509.NewCertPool()
 		if !roots.AppendCertsFromPEM(ca) {
-			return nil, errors.New("invalid trust anchor")
+			return nil, &transport.Error{Code: transport.Configuration, Cause: errors.New("invalid trust anchor")}
 		}
 	}
 	cfg := transport.Config{Authority: authority, Endpoint: endpoint, Mode: mode, Roots: roots, Device: proof.ID(id), ClientHello: append([]byte(nil), hello...), Sign: func(m []byte) ([]byte, error) {
@@ -55,6 +69,9 @@ func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer
 		}
 		return rawSignature(der)
 	}}
+	if protector != nil {
+		cfg.Protect = func(fd int) bool { return protector.Protect(int32(fd)) }
+	}
 	if observer != nil {
 		cfg.OnState = observer.StateChanged
 	}

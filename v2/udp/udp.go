@@ -12,6 +12,8 @@ import (
 	"github.com/apernet/quic-go/quicvarint"
 )
 
+const H2FlowHeader = "Nexus-Flow"
+
 const Path = "/.well-known/masque/udp/"
 const maxUDP = 65507
 

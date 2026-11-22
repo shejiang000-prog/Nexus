@@ -140,12 +140,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if r.ProtoMajor == 3 && r.Proto != "HTTP/3.0" {
 		proto = r.Proto
 	}
-	if (proto != "" && proto != "connect-udp") || !h.authenticate(r) {
+	if !h.authenticate(r) {
 		return next.ServeHTTP(w, r)
 	}
 	dest := r.Host
 	network := "tcp"
-	if proto == "connect-udp" {
+	if r.ProtoMajor == 2 && len(r.Header.Values(udp.H2FlowHeader)) != 0 {
+		if proto != "" || len(r.Header.Values(udp.H2FlowHeader)) != 1 || r.Header.Get(udp.H2FlowHeader) != "udp" || r.Header.Get("Capsule-Protocol") != "?1" {
+			return caddyhttp.Error(400, denied)
+		}
+		network = "udp"
+	} else if proto != "" && (r.ProtoMajor != 3 || proto != "connect-udp") {
+		return caddyhttp.Error(400, denied)
+	} else if proto == "connect-udp" {
 		if r.Host != h.Authority || r.Header.Get("Capsule-Protocol") != "?1" {
 			return caddyhttp.Error(400, denied)
 		}
@@ -165,14 +172,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	addr, e := target(ctx, dest, h.exact, net.DefaultResolver.LookupNetIP)
+	addrs, e := target(ctx, dest, h.exact, net.DefaultResolver.LookupNetIP)
 	if errors.Is(e, denied) {
 		return caddyhttp.Error(403, denied)
 	}
 	if e != nil {
 		return caddyhttp.Error(502, errors.New("resolve failed"))
 	}
-	conn, e := (&net.Dialer{}).DialContext(ctx, network, addr)
+	conn, e := dialTargets(ctx, network, addrs, (&net.Dialer{}).DialContext)
 	if e != nil {
 		return caddyhttp.Error(502, errors.New("dial failed"))
 	}
@@ -189,7 +196,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		return e
 	}
 	if network == "udp" {
-		return relayUDP(w, r, conn, addr)
+		return relayUDP(w, r, conn, conn.RemoteAddr().String())
 	}
 	go func() { io.Copy(conn, r.Body); conn.(*net.TCPConn).CloseWrite() }()
 	_, e = io.Copy(flushingWriter{w, flush}, conn)

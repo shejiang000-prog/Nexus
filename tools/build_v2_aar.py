@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
                  "-replace=" + XRAY[0] + "=" + (a.patched.resolve()/"xray").as_posix()]:
         subprocess.run(["go", "mod", "edit", flag], cwd=lib, check=True)
     built = Path(tmp) / "combined.aar"
-    subprocess.run(["gomobile", "bind", "-tags=http2legacy", "-target", a.target, "-androidapi", "21",
+    subprocess.run(["gomobile", "bind", "-target", a.target, "-androidapi", "21",
                     "-trimpath", "-ldflags=-checklinkname=0 -s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384",
                     "-o", built, ".", "./nexusmobile"], cwd=lib, check=True)
     os.replace(built, output)

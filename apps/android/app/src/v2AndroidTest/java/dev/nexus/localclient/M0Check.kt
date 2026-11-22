@@ -42,10 +42,12 @@ object M0Check {
                 Signature.getInstance("SHA256withECDSA").run { initSign(key); update(message); sign() }
             }
             val config = org.json.JSONObject(File(dir, "m0-lab.json").readText())
+            val protects = java.util.concurrent.atomic.AtomicInteger()
+            val protector = mobile.Protector { fd -> protects.incrementAndGet(); fd >= 0 }
             var stage = "start"
             try {
                 val client = Mobile.start(config.getString("authority"), config.getString("endpoint"), "h2",
-                    config.getString("ca").toByteArray(), ByteArray(16), null, signer, null)
+                    config.getString("ca").toByteArray(), ByteArray(16), null, signer, protector, null)
                 try {
                     stage = "association"
                     val assoc = client.openUDP(config.getString("echo"))
@@ -57,8 +59,20 @@ object M0Check {
                             check(assoc.readPacket().orEmptyBytes().contentEquals(packet))
                         }
                     } finally { assoc.close() }
-                    check(signs == 1 && client.state() == "h2")
-                    result.putString("h2", "4, 0, 65507 byte echoes verified; one Keystore signature")
+                    check(signs == 1 && protects.get() == 1 && client.state() == "h2")
+                    try {
+                        client.openUDP("invalid")
+                        error("expected target validation failure")
+                    } catch (e: Exception) { check(Mobile.errorCode(e) == 1) }
+                    try {
+                        val unexpected = Mobile.start(config.getString("authority"), config.getString("endpoint"), "h2",
+                            config.getString("ca").toByteArray(), ByteArray(16), null, signer,
+                            mobile.Protector { false }, null)
+                        unexpected.stop()
+                        error("expected socket protection failure")
+                    } catch (e: Exception) { check(Mobile.errorCode(e) == 1) }
+                    check(signs == 1)
+                    result.putString("h2", "4, 0, 65507 byte echoes verified; one Keystore signature, one protect callback, rejected fd and invalid target both code 1")
                 } finally { client.stop() }
             } catch (e: Exception) {
                 val msg = e.message.orEmpty()

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/netip"
 	"testing"
 )
@@ -18,7 +20,7 @@ func TestDestination(t *testing.T) {
 	calls := 0
 	lookup := func(context.Context, string, string) ([]netip.Addr, error) { calls++; return []netip.Addr{good}, nil }
 	ip, e := target(t.Context(), "site.test:443", nil, lookup)
-	if e != nil || ip != netip.AddrPortFrom(good, 443).String() || calls != 1 {
+	if e != nil || len(ip) != 1 || ip[0] != netip.AddrPortFrom(good, 443).String() || calls != 1 {
 		t.Fatal("not pinned", e)
 	}
 	_, e = target(t.Context(), "mixed.test:443", nil, func(context.Context, string, string) ([]netip.Addr, error) {
@@ -35,4 +37,31 @@ func TestDestination(t *testing.T) {
 			t.Error(s)
 		}
 	}
+}
+
+func TestDialSecondValidatedAddress(t *testing.T) {
+	allow := map[netip.AddrPort]bool{netip.MustParseAddrPort("[::1]:443"): true, netip.MustParseAddrPort("127.0.0.1:443"): true}
+	addresses, e := target(t.Context(), "dual.test:443", allow, func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.IPv6Loopback(), netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	count := 0
+	c, e := dialTargets(t.Context(), "tcp", addresses, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		count++
+		if addr == "[::1]:443" {
+			return nil, errors.New("no route")
+		}
+		if addr != "127.0.0.1:443" {
+			t.Fatal("unchecked target", addr)
+		}
+		c, p := net.Pipe()
+		p.Close()
+		return c, nil
+	})
+	if e != nil || count != 2 {
+		t.Fatalf("count %d: %v", count, e)
+	}
+	c.Close()
 }

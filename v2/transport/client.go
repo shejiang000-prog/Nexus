@@ -29,6 +29,7 @@ type Config struct {
 	Device                                proof.ID
 	Sign                                  proof.Sign
 	OnState                               func(string)
+	Protect                               func(fd int) bool
 }
 type Code uint8
 
@@ -182,7 +183,7 @@ func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err
 		}
 	}()
 	if kind == "h2" {
-		sock, e := dialTCP(ctx, c.Endpoint, name, c.ClientHello, c.Roots)
+		sock, e := dialTCP(ctx, c.Endpoint, name, c.ClientHello, c.Roots, c.Protect)
 		if e != nil {
 			return nil, e
 		}
@@ -200,7 +201,7 @@ func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err
 		l.usable = h.CanTakeNewRequest
 		l.round = h.RoundTrip
 	} else {
-		q, closeAll, e := dialQUIC(ctx, c.Endpoint, name, c.Roots)
+		q, closeAll, e := dialQUIC(ctx, c.Endpoint, name, c.Roots, c.Protect)
 		if e != nil {
 			return nil, e
 		}
@@ -224,6 +225,7 @@ func dialLane(ctx context.Context, c Config, kind string) (_ *transportLane, err
 }
 func (l *transportLane) headers(r *http.Request) {
 	r.Header = make(http.Header)
+	r.Header.Set("User-Agent", "")
 	if !l.ack.Load() {
 		r.Header.Set("Proxy-Authorization", l.proof)
 	}
@@ -297,7 +299,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 			resp.Body.Close()
 		}
 		l.active.Add(-1)
-		if len(initial) > 0 {
+		if len(initial) > 0 && resp == nil {
 			return nil, &Error{OutcomeUnknown, e}
 		}
 		return nil, networkError(e)
@@ -312,7 +314,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 		}
 		if e != nil {
 			s.Close()
-			return nil, &Error{OutcomeUnknown, e}
+			return nil, networkError(e)
 		}
 	}
 	return s, nil
@@ -393,7 +395,9 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 		pr, pw := io.Pipe()
 		req.Body = pr
 		req.ContentLength = -1
-		req.Header.Set(":protocol", "connect-udp")
+		req.Host = a
+		req.URL = &url.URL{Scheme: "https", Host: a}
+		req.Header.Set(udp.H2FlowHeader, "udp")
 		resp, e = l.round(req)
 		closeStream = func() {
 			pw.Close()

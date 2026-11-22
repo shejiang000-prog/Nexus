@@ -39,15 +39,17 @@
  	lnKey := listenerKey("quic"+na.Network, na.JoinHostPort(portOffset))
  
  	sharedEarlyListener, _, err := listenerPool.LoadOrNew(lnKey, func() (Destructor, error) {
-@@ -485,6 +486,7 @@
+@@ -485,6 +486,9 @@
  		earlyLn, err := tr.ListenEarly(
  			http3.ConfigureTLSConfig(quicTlsConfig),
  			&quic.Config{
 +				EnableDatagrams: enableDatagrams,
++				InitialStreamReceiveWindow: 512 << 10,
++				InitialConnectionReceiveWindow: 768 << 10,
  				InitialPacketSize: 1200,
  				Allow0RTT:         allow0rtt,
  				Tracer:            h3qlog.DefaultConnectionTracer,
-@@ -495,13 +497,17 @@
+@@ -495,13 +499,17 @@
  		}
  		// TODO: figure out when to close the listener and the transport
  		// using the original net.PacketConn to close them properly
@@ -66,7 +68,7 @@
  	// add current tls.Config to sqs, so GetConfigForClient will always return the latest tls.Config in case of context cancellation
  	ctx, cancel := sql.sqs.addState(tlsConf)
  
-@@ -596,6 +602,7 @@
+@@ -596,6 +604,7 @@
  
  // sharedQuicListener is like sharedListener, but for quic.EarlyListeners.
  type sharedQuicListener struct {

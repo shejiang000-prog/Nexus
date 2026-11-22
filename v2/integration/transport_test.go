@@ -25,16 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shejiang000-prog/Nexus/v2/internal/xconnect"
 	"github.com/shejiang000-prog/Nexus/v2/transport"
 )
 
-func TestMain(m *testing.M) {
-	if err := xconnect.Ensure(); err != nil {
-		panic(err)
-	}
-	os.Exit(m.Run())
-}
 func TestNode(t *testing.T) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
