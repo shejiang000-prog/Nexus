@@ -48,6 +48,7 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
     expected = {r["Path"]: r["Version"] for r in manifest["Require"] if r["Path"] in checked}
     if expected.keys() != checked:
         p.error("missing transport module pin in v2/go.mod")
+    locked = set((V2 / "go.sum").read_text().splitlines())
     with zipfile.ZipFile(built) as aar:
         libraries = [n for n in aar.namelist() if n.startswith("jni/") and n.endswith("/libgojni.so")]
         if not libraries:
@@ -56,9 +57,16 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
             binary = aar.extract(name, tmp)
             info = subprocess.check_output(["go", "version", "-m", binary], text=True)
             selected = {}
+            previous = None
             for line in info.splitlines():
                 fields = line.split()
-                if len(fields) >= 3 and fields[0] == "dep" and fields[1] in checked:
+                if previous in checked and fields[:1] == ["=>"]:
+                    if previous != QUIC[0] or Path(fields[1]).resolve() != (a.patched / "aper").resolve():
+                        p.error(f"{name}: unexpected replacement for {previous}")
+                previous = fields[1] if len(fields) >= 3 and fields[0] == "dep" else None
+                if previous in checked:
+                    if previous != QUIC[0] and " ".join(fields[1:]) not in locked:
+                        p.error(f"{name}: checksum differs from v2/go.sum for {previous}")
                     selected[fields[1]] = fields[2]
             if selected != expected:
                 p.error(f"{name}: selected {selected}, expected {expected}")
