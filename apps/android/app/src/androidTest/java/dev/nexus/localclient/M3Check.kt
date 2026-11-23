@@ -129,7 +129,10 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                 } else if(phase=="healthy-download") {
                     val began=clock()
                     var received=0L
-                    connect().use { s ->
+                    var sampleAt=began
+                    var sampleBytes=0L
+                    val rates=java.util.ArrayDeque<Long>()
+                    try { connect().use { s ->
                         s.soTimeout=8000
                         val buf=ByteArray(65536)
                         val input=DataInputStream(s.getInputStream())
@@ -139,12 +142,21 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                                 input.readFully(buf)
                                 check(buf.first()==42.toByte() && buf.last()==42.toByte())
                                 received+=buf.size
+                                val t=clock()
+                                if(t-sampleAt>=500) {
+                                    rates.addLast(8*(received-sampleBytes)/(t-sampleAt)) // kbit/s
+                                    if(rates.size>20) rates.removeFirst()
+                                    sampleAt=t;sampleBytes=received
+                                }
                                 check(TunnelService.state.value.bearer.equals("h3",true))
                             }
                         }
                     }
-                    result.putLong("normal-download-ms",clock()-began)
-                    result.putLong("normal-download-bytes",received)
+                    } finally {
+                        result.putLong("normal-download-ms",clock()-began)
+                        result.putLong("normal-download-bytes",received)
+                        result.putString("normal-download-last-kbps",rates.joinToString(","))
+                    }
                 } else {
                     connect().use { demand ->
                         demand.soTimeout=15000
