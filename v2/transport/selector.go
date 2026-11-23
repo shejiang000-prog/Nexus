@@ -14,22 +14,23 @@ import (
 )
 
 type transportLane struct {
-	authority string
-	h3        *http3.ClientConn
-	proof     string
-	kind      string
-	round     func(*http.Request) (*http.Response, error)
-	close     func()
-	stats     func() uint64
-	dead      <-chan struct{}
-	usable    func() bool
-	active    atomic.Int64
-	opening   atomic.Int64
-	wake      chan<- struct{}
-	last      atomic.Int64
-	ack       atomic.Bool
-	expiry    *atomic.Int64
-	health    string
+	authority    string
+	h3           *http3.ClientConn
+	proof        string
+	kind         string
+	round        func(*http.Request) (*http.Response, error)
+	close        func()
+	stats        func() uint64
+	dead         <-chan struct{}
+	usable       func() bool
+	active       atomic.Int64
+	opening      atomic.Int64
+	wake         chan<- struct{}
+	stalledReads atomic.Uint64
+	last         atomic.Int64
+	ack          atomic.Bool
+	expiry       *atomic.Int64
+	health       string
 }
 
 type selector struct {
@@ -206,7 +207,7 @@ func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
 func (s *selector) watch() {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
-	var prev uint64
+	var prev, previousStalls uint64
 	lastProgress := time.Now()
 	var weak, success int
 	var observed *transportLane
@@ -254,6 +255,7 @@ func (s *selector) watch() {
 		if observed != l {
 			weak = 0
 			prev = 0
+			previousStalls = l.stalledReads.Load()
 			lastProgress = time.Now()
 			observed = l
 		}
@@ -306,7 +308,12 @@ func (s *selector) watch() {
 		if s.androidVPN {
 			// Two weak half-second windows trigger measurement below 16 Mbit/s.
 			// QUIC totals include acknowledgements and retransmissions.
-			progress = delta >= 1<<20
+			// A busy downstream can deliver bursts at high average speed while
+			// waiting for missing stream data. Compare paths when the application
+			// actually waited for data in both sampling windows.
+			stalls := l.stalledReads.Load()
+			progress = delta >= 1<<20 && stalls == previousStalls
+			previousStalls = stalls
 			idle = idle && l.opening.Load() == 0
 		}
 		if l.active.Load() == 0 || (!gone && (progress || idle)) {
@@ -345,14 +352,14 @@ func (s *selector) watch() {
 		h3time := <-sample
 		degraded := h3time == 0 || h3time > 4*h2time
 		if s.androidVPN {
-			degraded = h2time > 0 && (h3time == 0 || h3time > 4*max(h2time, 2*time.Millisecond))
+			degraded = slowAndroidSample(h3time, h2time)
 			if degraded && !(h3time == 0 && l.stats() == now) {
 				// Positive QUIC progress can still mean heavy throttling. Confirm
 				// twice on the same carriers before moving new flows to H2.
 				go func() { sample <- s.capacity(l) }()
 				h2time = s.capacity(alt)
 				h3time = <-sample
-				degraded = h2time > 0 && (h3time == 0 || h3time > 4*max(h2time, 2*time.Millisecond))
+				degraded = slowAndroidSample(h3time, h2time)
 			}
 		}
 		if h2time > 0 && degraded {
@@ -372,6 +379,15 @@ func (s *selector) watch() {
 		}
 	}
 }
+func slowAndroidSample(h3, h2 time.Duration) bool {
+	if h2 == time.Nanosecond {
+		// capacity uses 1 ns for success within a single monotonic clock tick.
+		// Only this unmeasurable sample needs a conservative timing floor.
+		h2 = 2 * time.Millisecond
+	}
+	return h2 > 0 && (h3 == 0 || h3 > 4*h2)
+}
+
 func (s *selector) retire(l *transportLane) {
 	for s.ctx.Err() == nil && l.active.Load() > 0 {
 		time.Sleep(250 * time.Millisecond)

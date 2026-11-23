@@ -327,8 +327,15 @@ type stream struct {
 }
 
 func (s *stream) Read(p []byte) (int, error) {
+	var start time.Time
+	if s.l.kind == "h3" && s.l.wake != nil {
+		start = time.Now()
+	}
 	n, e := s.in.Read(p)
 	if n > 0 {
+		if !start.IsZero() && time.Since(start) >= 10*time.Millisecond {
+			s.l.stalledReads.Add(1)
+		}
 		s.l.business()
 	}
 	return n, e

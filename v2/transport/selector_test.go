@@ -293,6 +293,11 @@ func TestAndroidRecoveryActivityPowerAndBackoff(t *testing.T) {
 }
 
 func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
+	t.Run("throttled", func(t *testing.T) { testAndroidSlow(t, 25000, false) })
+	t.Run("bursty-download", func(t *testing.T) { testAndroidSlow(t, 1<<20, true) })
+}
+
+func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty bool) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
@@ -304,26 +309,39 @@ func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
 		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load, close: func() {}}
 		h3.round = func(*http.Request) (*http.Response, error) {
 			if checks.Add(1) == 2 {
-				time.Sleep(2 * time.Millisecond)
+				time.Sleep(time.Millisecond)
 			} else {
-				time.Sleep(140 * time.Millisecond)
+				time.Sleep(5 * time.Millisecond)
 			}
 			return answer(), nil
 		}
 		h2 := &transportLane{kind: "h2", health: h3.health, close: func() {}, usable: func() bool { return true }, round: func(*http.Request) (*http.Response, error) {
-			time.Sleep(8 * time.Millisecond)
+			time.Sleep(500 * time.Microsecond)
 			return answer(), nil
 		}}
 		s := &selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1), dial: func(context.Context, string) (*transportLane, error) { return h2, nil }}
 		h3.active.Store(1)
+		r, w := io.Pipe()
+		defer r.Close()
+		defer w.Close()
+		if bursty {
+			h3.wake = make(chan struct{}, 1)
+			go io.Copy(io.Discard, &stream{in: r, l: h3})
+		}
 		go func() {
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-time.After(100 * time.Millisecond):
-					received.Add(25000)
-					h3.business()
+					received.Add(bytesPerTick)
+					if bursty {
+						if _, err := w.Write([]byte{1}); err != nil {
+							return
+						}
+					} else {
+						h3.business()
+					}
 				}
 			}
 		}()
@@ -334,7 +352,7 @@ func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
 				t.Fatalf("switched to %s after %d measurements", kind, checks.Load())
 			}
 		case <-time.After(10 * time.Second):
-			t.Fatal("sustained 2 Mbit/s did not switch")
+			t.Fatal("weak business progress did not switch with two slow health samples")
 		}
 		h3.active.Store(0)
 		time.Sleep(time.Second)
