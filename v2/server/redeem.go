@@ -31,7 +31,7 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) bool {
 	if q := http3.NexusConn(r.Context()); q != nil && q.ConnectionState().Used0RTT {
 		return false
 	}
-	if !h.ledger.sources.allow(r.RemoteAddr, time.Now()) || length > 4096 {
+	if !nodeRedeemSources.allow(r.RemoteAddr, time.Now()) || length > 4096 {
 		return false
 	}
 	raw, err := io.ReadAll(io.LimitReader(body, 4097))
@@ -105,6 +105,9 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) bool {
 	}{2, base64.RawURLEncoding.EncodeToString(id[:])})
 	return true
 }
+
+// All handlers in the node share the admission budget.
+var nodeRedeemSources redeemSources
 
 type redeemSources struct {
 	mu    sync.Mutex

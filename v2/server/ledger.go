@@ -36,7 +36,6 @@ type Ledger struct {
 	db        *sql.DB
 	cancel    context.CancelFunc
 	done      chan struct{}
-	sources   redeemSources
 	path      string
 	file      os.FileInfo
 	reader    *sql.Conn
