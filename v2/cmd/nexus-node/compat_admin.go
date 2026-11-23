@@ -84,15 +84,22 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	}
 
 	deployedDB := filepath.Join(root, "var/lib/nexus-v2/ledger.db")
-	sameDB := func() bool {
-		want, e1 := os.Stat(deployedDB)
-		got, e2 := os.Stat(args[0])
-		return e1 == nil && e2 == nil && os.SameFile(want, got)
+	if !filepath.IsAbs(args[0]) {
+		return true, errors.New("absolute ledger path required")
 	}
-	if !revoke && !sameDB() {
+	wantFile, e1 := os.Stat(deployedDB)
+	inputFile, e2 := os.Stat(args[0])
+	installed := e1 == nil && e2 == nil && os.SameFile(wantFile, inputFile)
+	if !revoke && !installed {
 		return true, errors.New("compatibility operations require the installed ledger")
 	}
-	l, err := server.OpenLedger(args[0])
+	dbPath := args[0]
+	if installed {
+		// Use a single SQLite WAL and apply lock namespace, including
+		// when the caller named the installed file through an alias.
+		dbPath = deployedDB
+	}
+	l, err := server.OpenLedger(dbPath)
 	if err != nil {
 		return true, err
 	}
@@ -112,7 +119,7 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 		var failed error
 		for _, s := range status {
 			if !s.Enabled && s.Result != "applied" {
-				if !sameDB() {
+				if !installed {
 					return true, errors.New("local revocation recorded; service application requires the installed ledger")
 				}
 				failed = errors.Join(failed, apply(s.Protocol, false))

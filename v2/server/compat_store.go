@@ -151,7 +151,7 @@ func (l *Ledger) compatSnapshot(ctx context.Context, protocol string) (snap comp
 	return snap, applied, rows.Err()
 }
 
-func (l *Ledger) recordCompatApply(ctx context.Context, protocol string, rev int64, success bool) error {
+func (l *Ledger) recordCompatApply(ctx context.Context, protocol string, rev int64, success, verifyAll bool) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -160,16 +160,23 @@ func (l *Ledger) recordCompatApply(ctx context.Context, protocol string, rev int
 	result := "failed"
 	if success {
 		result = "applied"
-		if _, err := tx.ExecContext(ctx, "UPDATE compat_protocols SET applied_revision=? WHERE protocol=?", rev, protocol); err != nil {
+	}
+	if success || verifyAll {
+		ack := rev
+		if !success {
+			// A failed explicit replay cannot confirm the saved configuration.
+			ack = -1
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE compat_protocols SET applied_revision=? WHERE protocol=?", ack, protocol); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit(occurred_at,action,user_id,protocol,generation,result)
-		SELECT unixepoch(),'compat_apply',user_id,protocol,generation,? FROM compat_credentials WHERE protocol=? AND revision<=? AND result!='applied' AND result!=?`, result, protocol, rev, result); err != nil {
+		SELECT unixepoch(),'compat_apply',user_id,protocol,generation,? FROM compat_credentials WHERE protocol=? AND revision<=? AND (result!='applied' OR ?) AND result!=?`, result, protocol, rev, verifyAll, result); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE compat_credentials SET result=?,applied_generation=CASE WHEN ? THEN generation ELSE applied_generation END
-		WHERE protocol=? AND revision<=? AND result!='applied'`, result, success, protocol, rev); err != nil {
+		WHERE protocol=? AND revision<=? AND (result!='applied' OR ?)`, result, success, protocol, rev, verifyAll); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -213,7 +220,7 @@ func (l *Ledger) ApplyCompat(ctx context.Context, protocol string, force bool, a
 		return nil
 	}
 	applyErr := apply(snap)
-	if err := l.recordCompatApply(ctx, protocol, snap.Revision, applyErr == nil); err != nil {
+	if err := l.recordCompatApply(ctx, protocol, snap.Revision, applyErr == nil, force); err != nil {
 		return err
 	}
 	if applyErr != nil {

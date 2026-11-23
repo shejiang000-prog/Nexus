@@ -94,6 +94,18 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	if len(status) != 2 || status[1].AppliedGeneration != 2 {
 		t.Fatal("wrong ack generation")
 	}
+	if err := l.ApplyCompat(ctx, "reality", true, func(compat.Snapshot) error { return errors.New("control unavailable") }); err == nil {
+		t.Fatal("explicit replay did not call service")
+	}
+	unconfirmed, err := l.CompatExport(ctx, user)
+	check(err)
+	if _, ok := unconfirmed["reality"]; ok {
+		t.Fatal("exported after failed explicit replay")
+	}
+	check(apply("reality", &retry, false))
+	if retry != second {
+		t.Fatal("recovery changed credential")
+	}
 	check(l.RevokeUser(ctx, user))
 	if _, err := l.CompatExport(ctx, user); err == nil {
 		t.Fatal("revoked credentials exported")
