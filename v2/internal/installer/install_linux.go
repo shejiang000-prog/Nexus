@@ -41,19 +41,19 @@ func absent(p string) error {
 	}
 	return fmt.Errorf("existing path is not owned by this transaction: %s", p)
 }
-func safeDir(path string, uid int) error {
+func safeDir(path string, uid int, mode os.FileMode) error {
 	fi, e := os.Lstat(path)
 	if e != nil {
 		return e
 	}
-	if !fi.IsDir() || fi.Sys().(*syscall.Stat_t).Uid != uint32(uid) || fi.Mode().Perm()&0022 != 0 {
+	if !fi.IsDir() || fi.Sys().(*syscall.Stat_t).Uid != uint32(uid) || fi.Mode().Perm() != mode {
 		return fmt.Errorf("unexpected owner or permissions for %s", path)
 	}
 	return nil
 }
 func (h host) readManifest() (deployment, error) {
 	var d deployment
-	if e := safeDir(h.path(base), 0); e != nil {
+	if e := safeDir(h.path(base), 0, 0755); e != nil {
 		return d, e
 	}
 	p := h.path(base + "/manifest.json")
@@ -356,8 +356,20 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 			return err
 		}
 	}
+	if err = h.validateOwned(ctx, d); err != nil {
+		return err
+	}
 	if err = h.healthy(ctx, d); err != nil {
 		return err
+	}
+	if retained {
+		for _, p := range []string{"reality", "hysteria2"} {
+			if _, on := d.Ports[p]; on {
+				if err = h.asService(ctx, base+"/bin/nexus-node", "ledger", state+"/ledger.db", "compat", "apply", p); err != nil {
+					return fmt.Errorf("restore %s credentials: %w", p, err)
+				}
+			}
+		}
 	}
 	for _, s := range sockets(d) {
 		fmt.Fprintf(h.out, "Allow cloud ingress %d/%s\n", s.port, s.net)
@@ -373,7 +385,7 @@ func (h host) validateIdentity(ctx context.Context, d deployment) error {
 		return errors.New("service account identity changed")
 	}
 	for _, p := range []string{state, state + "/backups"} {
-		if e := safeDir(h.path(p), u); e != nil {
+		if e := safeDir(h.path(p), u, 0700); e != nil {
 			return e
 		}
 	}
@@ -383,10 +395,10 @@ func (h host) validateOwned(ctx context.Context, d deployment) error {
 	if err := h.validateIdentity(ctx, d); err != nil {
 		return err
 	}
-	if err := safeDir(h.path(cfg), d.UID); err != nil {
+	if err := safeDir(h.path(cfg), d.UID, 0700); err != nil {
 		return err
 	}
-	if err := safeDir(h.path(base+"/bin"), 0); err != nil {
+	if err := safeDir(h.path(base+"/bin"), 0, 0755); err != nil {
 		return err
 	}
 	for _, name := range d.units() {
@@ -395,7 +407,7 @@ func (h host) validateOwned(ctx context.Context, d deployment) error {
 		if err != nil {
 			return err
 		}
-		if !fi.Mode().IsRegular() || fi.Sys().(*syscall.Stat_t).Uid != 0 {
+		if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0644 || fi.Sys().(*syscall.Stat_t).Uid != 0 {
 			return errors.New("unit ownership changed")
 		}
 		content, err := os.ReadFile(path)
@@ -424,8 +436,16 @@ func (h host) validateOwned(ctx context.Context, d deployment) error {
 			return fmt.Errorf("unexpected installation contents: %s", p)
 		}
 		for _, f := range entries {
-			if !f.Type().IsRegular() || !slices.Contains(owned, f.Name()) {
-				return fmt.Errorf("unowned file at %s", p)
+			info, e := f.Info()
+			if e != nil {
+				return e
+			}
+			mode, uid := os.FileMode(0755), 0
+			if p == cfg {
+				mode, uid = 0600, d.UID
+			}
+			if !info.Mode().IsRegular() || int(info.Sys().(*syscall.Stat_t).Uid) != uid || info.Mode().Perm() != mode || !slices.Contains(owned, f.Name()) {
+				return fmt.Errorf("unexpected file or permissions: %s/%s", p, f.Name())
 			}
 		}
 	}

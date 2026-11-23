@@ -38,7 +38,7 @@ func (h host) backup(ctx context.Context, dest string) error {
 	return h.asService(ctx, base+"/bin/nexus-node", "ledger", state+"/ledger.db", "backup", dest)
 }
 
-var ledgerFiles = []string{"ledger.db", "ledger.db-wal", "ledger.db-shm", "compat-reality", "compat-hysteria2"}
+var ledgerFiles = []string{"ledger.db", "ledger.db-wal", "ledger.db-shm", "compat-reality/active.json", "compat-hysteria2/active.json"}
 
 // All accesses to persisted service data run under its unprivileged account.
 func (h host) transferState(ctx context.Context, from, to string, names []string, move bool) error {
@@ -49,11 +49,17 @@ func (h host) transferState(ctx context.Context, from, to string, names []string
 		} else if e != nil {
 			return e
 		}
+		targetDir := filepath.Join(to, filepath.Dir(n))
+		if filepath.Dir(n) != "." {
+			if err := h.asService(ctx, "/usr/bin/mkdir", "-p", "-m", "0700", "--", targetDir); err != nil {
+				return err
+			}
+		}
 		var err error
 		if move {
-			err = h.asService(ctx, "/usr/bin/mv", "--", src, to+"/")
+			err = h.asService(ctx, "/usr/bin/mv", "--", src, targetDir+"/")
 		} else {
-			err = h.asService(ctx, "/usr/bin/cp", "-a", "--", src, to+"/")
+			err = h.asService(ctx, "/usr/bin/cp", "-a", "--", src, targetDir+"/")
 		}
 		if err != nil {
 			return err

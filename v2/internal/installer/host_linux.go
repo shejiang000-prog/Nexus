@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -215,11 +216,22 @@ func (h host) protocolHealth(ctx context.Context, d deployment, p string) error 
 		}
 		return nil
 	}
-	c, e := new(net.Dialer).DialContext(ctx, "unix", h.path(state+"/compat-"+p+"/control.sock"))
+	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return new(net.Dialer).DialContext(ctx, "unix", h.path(state+"/compat-"+p+"/control.sock"))
+	}}
+	req, e := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/ready", nil)
 	if e != nil {
 		return e
 	}
-	return c.Close()
+	resp, e := tr.RoundTrip(req)
+	if e != nil {
+		return e
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("%s health returned %d", p, resp.StatusCode)
+	}
+	return nil
 }
 func (h host) healthy(ctx context.Context, d deployment) error {
 	deadline := time.Now().Add(8 * time.Second)
