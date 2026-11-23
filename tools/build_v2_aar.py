@@ -15,7 +15,6 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("source", type=Path, help="local libXray git checkout")
 p.add_argument("patched", type=Path, help="output of prepare_v2.py --android")
 p.add_argument("output", type=Path)
-p.add_argument("--target", default="android")
 a = p.parse_args()
 output = a.output.resolve()
 if output.is_relative_to(ROOT) or output.exists():
@@ -40,7 +39,7 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
                  "-replace=" + XRAY[0] + "=" + (a.patched.resolve()/"xray").as_posix()]:
         subprocess.run(["go", "mod", "edit", flag], cwd=lib, check=True)
     built = Path(tmp) / "combined.aar"
-    subprocess.run(["gomobile", "bind", "-target", a.target, "-androidapi", "21",
+    subprocess.run(["gomobile", "bind", "-target", "android/arm64,android/amd64", "-androidapi", "21",
                     "-trimpath", "-ldflags=-checklinkname=0 -s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384",
                     "-o", built, ".", "./nexusmobile"], cwd=lib, check=True)
     manifest = json.loads(subprocess.check_output(["go", "mod", "edit", "-json"], cwd=V2))
@@ -51,23 +50,30 @@ with tempfile.TemporaryDirectory(dir=output.parent) as tmp:
     locked = set((V2 / "go.sum").read_text().splitlines())
     with zipfile.ZipFile(built) as aar:
         libraries = [n for n in aar.namelist() if n.startswith("jni/") and n.endswith("/libgojni.so")]
-        if not libraries:
-            p.error("missing native Go library")
+        abis = {"jni/arm64-v8a/libgojni.so": "arm64", "jni/x86_64/libgojni.so": "amd64"}
+        if sorted(libraries) != sorted(abis):
+            p.error(f"unexpected native libraries: {libraries}")
         for name in libraries:
             binary = aar.extract(name, tmp)
             info = subprocess.check_output(["go", "version", "-m", binary], text=True)
+            settings = [line.split() for line in info.splitlines()]
+            if ["build", "GOOS=android"] not in settings or ["build", "GOARCH=" + abis[name]] not in settings:
+                p.error(f"{name}: incorrect target in build info")
             selected = {}
             previous = None
-            for line in info.splitlines():
-                fields = line.split()
+            patched_quic = False
+            for fields in settings:
                 if previous in checked and fields[:1] == ["=>"]:
                     if previous != QUIC[0] or Path(fields[1]).resolve() != (a.patched / "aper").resolve():
                         p.error(f"{name}: unexpected replacement for {previous}")
+                    patched_quic = True
                 previous = fields[1] if len(fields) >= 3 and fields[0] == "dep" else None
                 if previous in checked:
                     if previous != QUIC[0] and " ".join(fields[1:]) not in locked:
                         p.error(f"{name}: checksum differs from v2/go.sum for {previous}")
                     selected[fields[1]] = fields[2]
+            if not patched_quic:
+                p.error(f"{name}: missing patched QUIC replacement")
             if selected != expected:
                 p.error(f"{name}: selected {selected}, expected {expected}")
     os.replace(built, output)
