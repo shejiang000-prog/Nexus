@@ -147,7 +147,12 @@ func initSchema(db *sql.DB) error {
 		if _, err = tx.Exec(schema); err != nil {
 			return err
 		}
+		fallthrough
 	case 4:
+		if _, err = tx.Exec(compatSchema); err != nil {
+			return err
+		}
+	case 5:
 	default:
 		return fmt.Errorf("unsupported ledger schema v%d; rebuild the ledger at a new path", version)
 	}
@@ -461,7 +466,23 @@ func (l *Ledger) Revoke(ctx context.Context, id proof.ID) error {
 }
 
 func (l *Ledger) RevokeUser(ctx context.Context, user proof.ID) error {
-	return l.userWrite(ctx, user, "revoke_user", `UPDATE devices SET revoked_at=? WHERE revoked_at IS NULL AND invite_digest IN (SELECT digest FROM invites WHERE user_id=?)`, time.Now().Unix(), user[:])
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE devices SET revoked_at=unixepoch() WHERE revoked_at IS NULL AND invite_digest IN (SELECT digest FROM invites WHERE user_id=?)`, user[:]); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,user_id) VALUES(unixepoch(),'revoke_user',?)", user[:]); err != nil {
+		return err
+	}
+	for _, p := range []string{"reality", "hysteria2"} {
+		if err := changeCompat(ctx, tx, user, p, "revoke-user"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Backup publishes the verified copy atomically. Link refuses an existing
@@ -511,7 +532,7 @@ func (l *Ledger) List(ctx context.Context, kind string, out io.Writer) error {
 	case "devices":
 		query = `SELECT json_object('id',lower(hex(d.id)),'user_id',lower(hex(i.user_id)),'name',d.name,'revoked_at',d.revoked_at) FROM devices d JOIN invites i ON d.invite_digest=i.digest ORDER BY d.id`
 	case "audit":
-		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
+		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END,'protocol',a.protocol,'generation',a.generation,'result',a.result) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
 	default:
 		return errors.New("unknown listing")
 	}
