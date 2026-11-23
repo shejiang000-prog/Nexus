@@ -4,9 +4,10 @@
 
 ## 变更记录
 
+- 2026-11-23 · M3（`2a566ea`、`56bf5b9`）。Android 增加独立邀请兑换绑定和 TCP 半关闭。调用方可选用 `Stream.closeWrite()`。Go 的 `DialTCP` 保持 `io.ReadWriteCloser` 返回类型，需要半关闭的调用方可断言 `interface{ CloseWrite() error }`。现有调用方可沿用原代码。
 - 2026-11-23 · M0。固定默认 H2 握手配置，Go 与移动端增加可选节点解析回调。原有移动端调用在 Protector 与 Observer 之间补入 Resolver，可传 null。此后接口变更须在本节注明提交、调用方影响和迁移方式。
 
-桌面 Go 客户端和 Android 共用仓库根目录下的 `v2/`。模块路径为 `github.com/shejiang000-prog/Nexus/v2`，便于导入两个平台共用的实现，并让 Rust workspace 和 V1 独立构建。首版仅提供 Go API 和 gomobile 绑定，尚未接入产品 VPN。
+桌面 Go 客户端和 Android 共用仓库根目录下的 `v2/`。模块路径为 `github.com/shejiang000-prog/Nexus/v2`，便于导入两个平台共用的实现，并让 Rust workspace 和 V1 独立构建。Android 产品 VPN 通过合编引擎使用 gomobile 绑定。
 
 ## 生命周期和拨号
 

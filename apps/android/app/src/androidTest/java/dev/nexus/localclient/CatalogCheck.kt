@@ -445,6 +445,7 @@ class CatalogCheck : Instrumentation() {
                     .getMethod("run", Instrumentation::class.java, Bundle::class.java, Bundle::class.java)
                     .invoke(null, this, args, result)
                 "m3" -> m3Check(result)
+                "m3-ui" -> m3UiCheck(result)
                 "split-lab", "split-public" -> splitCheck(args,result)
                 // QA transfer of a saved source between the owner's devices. The link stays in app-private
                 // storage on each side and is never printed.
