@@ -11,31 +11,33 @@ import time
 
 @contextlib.contextmanager
 def advanced_clock(shell):
-    """Shift only the disposable guest clock, preserving elapsed test time on restore."""
-    base = int(shell("date","+%s",check=True).stdout)
-    started = time.monotonic()
+    """Restore the guest clock against its own elapsed realtime, including suspend."""
+    def read_state():
+        state = shell("cmd","time_detector","get_time_state",check=True).stdout
+        m = re.search(rb"mElapsedRealtimeMillis=(\d+), mUnixEpochTimeMillis=(\d+)\}, mUserShouldConfirmTime=(true|false)",state)
+        if m is None:
+            raise RuntimeError("unknown guest clock state")
+        return int(m[1]),int(m[2]),m[3].decode()
+    elapsed, epoch, confidence = read_state()
     automatic = shell("cmd","time_detector","is_auto_detection_enabled",check=True).stdout.strip().decode()
     if automatic not in ("true","false"):
         raise RuntimeError("unknown guest clock settings")
-    state = shell("cmd","time_detector","get_time_state",check=True).stdout
-    confirm = re.search(rb"mUserShouldConfirmTime=(true|false)", state)
-    if confirm is None:
-        raise RuntimeError("unknown guest time confidence")
-    def set_time(seconds):
-        current = shell("cmd","time_detector","get_time_state",check=True).stdout
-        elapsed = re.search(rb"mElapsedRealtimeMillis=(\d+)",current)
-        if elapsed is None:
-            raise RuntimeError("unknown guest elapsed realtime")
-        shell("cmd","time_detector","set_time_state_for_tests","--elapsed_realtime",elapsed[1].decode(),
-              "--unix_epoch_time",str(int(seconds*1000)),"--user_should_confirm_time",confirm[1].decode(),check=True)
-        if abs(int(shell("date","+%s",check=True).stdout) - seconds) > 4:
-            raise RuntimeError("guest clock did not reach requested time")
+    def set_time(offset):
+        # Let the service account for elapsed time since this original guest reference.
+        for _ in range(3):
+            shell("cmd","time_detector","set_time_state_for_tests","--elapsed_realtime",str(elapsed),
+                  "--unix_epoch_time",str(epoch+offset),"--user_should_confirm_time",confidence,check=True)
+            now,wall,_ = read_state()
+            if abs(wall - (epoch + offset + now - elapsed)) <= 2000:
+                return
+            time.sleep(.25)
+        raise RuntimeError("guest clock did not reach requested time")
     try:
         shell("cmd","time_detector","set_auto_detection_enabled","false",check=True)
-        set_time(base + 12*3600)
+        set_time(12*3600*1000)
         yield
     finally:
-        try: set_time(base + time.monotonic() - started)
+        try: set_time(0)
         finally: shell("cmd","time_detector","set_auto_detection_enabled",automatic,check=True)
 
 
