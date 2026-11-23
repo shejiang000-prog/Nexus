@@ -16,6 +16,9 @@
 -keep class go.** { *; }
 -keep class libXray.** { *; }
 -keep interface libXray.** { *; }
+-keep class mobile.** { *; }
+-keep class enrollment.** { *; }
+-keep class v2vpn.** { *; }
 # JSch's algorithm map and ZXing's embedded Activity use class names.
 -keep class com.jcraft.jsch.** { public <init>(...); }
 -keep class com.journeyapps.barcodescanner.CaptureActivity { public <init>(); }

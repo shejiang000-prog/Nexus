@@ -83,17 +83,26 @@ tasks.matching { it.name == 'preReleaseBuild' || it.name == 'validateSigningRele
 
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 
-def engineAar = layout.buildDirectory.file('engines/libXray.aar')
-def engineScript = new File(rootProject.projectDir.parentFile.parentFile, 'tools/fetch_android_engine.py')
-def fetchEngine = tasks.register('fetchEngine', Exec) {
-    inputs.file(engineScript)
+def engineAar = layout.buildDirectory.file('engines/nexus-v2.aar')
+def repoRoot = rootProject.projectDir.parentFile.parentFile
+def buildEngine = tasks.register('buildV2Engine', Exec) {
+    def script = new File(repoRoot, 'tools/build_v2_aar.py')
+    inputs.files(script, new File(repoRoot, 'tools/prepare_v2.py'),
+        new File(repoRoot, 'v2/go.mod'), new File(repoRoot, 'v2/go.sum'),
+        fileTree(new File(repoRoot, 'v2')) {
+            include 'patches/*.patch', 'internal/congestion/**', 'udp/**', 'transport/**', 'proof/**', 'mobile/**', 'enrollment/**'
+            exclude '**/*_test.go', '**/testdata/**'
+        }, fileTree(new File(repoRoot, 'apps/android/engine/v2vpn')))
     outputs.file(engineAar)
-    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), engineScript, engineAar.get().asFile
+    def source = providers.environmentVariable('NEXUS_LIBXRAY_SOURCE').getOrElse(new File(repoRoot, 'target/libXray').absolutePath)
+    environment 'ANDROID_NDK_HOME', android.ndkDirectory.absolutePath
+    if (gradle.startParameter.offline) environment 'GOPROXY', 'off'
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), script, source, engineAar.get().asFile
 }
 dependencies {
     implementation 'androidx.work:work-runtime-ktx:2.10.1'
     if (labAar) implementation files(file(labAar))
-    else implementation files(engineAar).builtBy(fetchEngine)
+    else implementation files(engineAar).builtBy(buildEngine)
     implementation 'com.github.mwiede:jsch:2.28.8'
     implementation 'org.yaml:snakeyaml:2.6'
     implementation 'com.google.zxing:core:3.5.4'
@@ -120,7 +129,7 @@ def rustBuild = tasks.register('buildRust', Exec) {
     commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'),
         new File(repo, 'tools/build_android.py'), android.ndkDirectory, nativeOutput.get().asFile
 }
-tasks.named('preBuild').configure { dependsOn rustBuild, shoesBuild; if (!labAar) dependsOn fetchEngine }
+tasks.named('preBuild').configure { dependsOn rustBuild, shoesBuild; if (!labAar) dependsOn buildEngine }
 
 def adminAssets = tasks.register('prepareNodeAssets', Sync) {
     from(new File(rootProject.projectDir.parentFile.parentFile, 'PRIVACY.md'))
