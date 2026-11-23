@@ -12,6 +12,8 @@ import (
 
 type Options struct {
 	Domain, RealityTarget, CertFile, KeyFile, NodePath, AssetDir string
+	PublicHost, ACMECA, ACMERoot                                 string
+	RealityServerNames                                           []string
 	Ports                                                        map[string]int
 	Purge                                                        bool
 }
