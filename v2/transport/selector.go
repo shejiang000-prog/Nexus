@@ -138,10 +138,10 @@ func (s *selector) initial() (*transportLane, error) {
 
 // The controlled site serves a bounded zero-filled object independent of the target app.
 func (s *selector) capacity(l *transportLane) time.Duration {
-	return s.capacityContext(s.ctx, l)
+	return s.capacityContext(s.ctx, l, nil)
 }
 
-func (s *selector) capacityContext(parent context.Context, l *transportLane) time.Duration {
+func (s *selector) capacityContext(parent context.Context, l *transportLane, measured *packetCounters) time.Duration {
 	ctx, cancel := context.WithTimeout(parent, 850*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
@@ -156,12 +156,31 @@ func (s *selector) capacityContext(parent context.Context, l *transportLane) tim
 	if e != nil || resp.StatusCode != 200 || n != 32768 || l.accepted(resp) != nil {
 		return 0
 	}
+	if measured != nil {
+		*measured = responseCounters(resp)
+	}
 	// Some Android monotonic clocks have a coarser tick than a LAN health GET.
 	// An authenticated TLS response with the exact body length is still success.
 	return max(time.Since(start), time.Nanosecond)
 }
 
 type packetCounters struct{ sent, lost uint64 }
+
+func responseCounters(resp *http.Response) packetCounters {
+	sent, err1 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Sent"), 10, 64)
+	lost, err2 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Lost"), 10, 64)
+	if err1 != nil || err2 != nil || lost > sent {
+		return packetCounters{}
+	}
+	return packetCounters{sent, lost}
+}
+
+func (l *transportLane) localCounters() packetCounters {
+	if l.packets != nil {
+		return l.packets()
+	}
+	return packetCounters{}
+}
 
 func (p packetCounters) impairedSince(start packetCounters) bool {
 	if start.sent == 0 || p.sent <= start.sent || p.lost < start.lost {
@@ -184,17 +203,11 @@ func (w *lossWindow) impaired(ctx context.Context, l *transportLane) bool {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 850*time.Millisecond)
 	defer cancel()
-	var remote, local packetCounters
+	var remote packetCounters
 	if resp, err := l.healthHead(ctx); err == nil && l.accepted(resp) == nil {
-		sent, err1 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Sent"), 10, 64)
-		lost, err2 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Lost"), 10, 64)
-		if err1 == nil && err2 == nil && lost <= sent {
-			remote = packetCounters{sent, lost}
-		}
+		remote = responseCounters(resp)
 	}
-	if l.packets != nil {
-		local = l.packets()
-	}
+	local := l.localCounters()
 	now := time.Now()
 	recent := now.Sub(w.measured) <= 6*time.Second
 	impaired := recent && (remote.impairedSince(w.remote) || local.impairedSince(w.local))
@@ -207,15 +220,19 @@ func (w *lossWindow) impaired(ctx context.Context, l *transportLane) bool {
 
 // Several equal, consecutive transfers put fast LAN measurements above coarse
 // clock resolution and average out the latency of a single lost packet.
-func (s *selector) capacityBatch(l *transportLane, count int) time.Duration {
+func (s *selector) capacityBatch(l *transportLane, count int, measured *packetCounters) time.Duration {
 	if count == 1 {
-		return s.capacity(l)
+		return s.capacityContext(s.ctx, l, measured)
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	for range count {
-		if s.capacityContext(ctx, l) == 0 {
+	for i := range count {
+		var snapshot *packetCounters
+		if i == count-1 {
+			snapshot = measured
+		}
+		if s.capacityContext(ctx, l, snapshot) == 0 {
 			return 0
 		}
 	}
@@ -224,23 +241,36 @@ func (s *selector) capacityBatch(l *transportLane, count int) time.Duration {
 
 // Compare equally loaded carriers. An idle H2 probe must not win solely
 // because the old H3 connection is already serving a saturated download.
-func (s *selector) slowerOnFreshH3(h2 *transportLane) bool {
+func (s *selector) slowerOnFreshH3(h2 *transportLane) (slow, lossy bool) {
 	h3, err := s.probeH3(s.ctx)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer h3.close()
+	var lastLocal, lastRemote packetCounters
 	// Authenticate and warm both connections with the identical object.
 	for _, count := range [...]int{1, 8, 8} {
+		var remote packetCounters
 		done := make(chan time.Duration, 1)
-		go func() { done <- s.capacityBatch(h3, count) }()
-		h2time := s.capacityBatch(h2, count)
+		go func() { done <- s.capacityBatch(h3, count, &remote) }()
+		h2time := s.capacityBatch(h2, count, nil)
 		h3time := <-done
-		if h2time == 0 || h3time == 0 || count > 1 && !slowAndroidSample(h3time, h2time) {
-			return false
+		if h2time == 0 || h3time == 0 {
+			return false, false
 		}
+		local := h3.localCounters()
+		if count > 1 {
+			// A saturated business connection may drop packets locally while
+			// concurrent UDP connections still make normal progress.
+			lossy = remote.impairedSince(lastRemote) || local.impairedSince(lastLocal)
+			// A whole batch inside a clock tick has no measured ratio.
+			if !lossy || h2time == time.Nanosecond || !slowAndroidSample(h3time, h2time) {
+				return false, lossy
+			}
+		}
+		lastLocal, lastRemote = local, remote
 	}
-	return true
+	return true, true
 }
 
 func (s *selector) probeH3(parent context.Context) (*transportLane, error) {
@@ -268,7 +298,7 @@ func (s *selector) recoverH3() (*transportLane, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return q, s.capacityContext(ctx, q) > 0 && (!s.androidVPN || s.capacityContext(ctx, q) > 0) && ctx.Err() == nil
+	return q, s.capacityContext(ctx, q, nil) > 0 && (!s.androidVPN || s.capacityContext(ctx, q, nil) > 0) && ctx.Err() == nil
 }
 
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
@@ -443,7 +473,11 @@ func (s *selector) watch() {
 		}
 		var degraded bool
 		if bursty {
-			degraded = s.slowerOnFreshH3(alt)
+			var lossy bool
+			degraded, lossy = s.slowerOnFreshH3(alt)
+			if !lossy {
+				losses.next = time.Now().Add(3 * time.Second)
+			}
 		} else {
 			h2time := s.capacity(alt)
 			h3time := <-sample

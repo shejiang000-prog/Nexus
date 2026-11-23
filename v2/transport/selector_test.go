@@ -344,13 +344,19 @@ func TestFastDownloadComparesUnloadedCarriers(t *testing.T) {
 			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
 		}
 		h2 := &transportLane{kind: "h2", health: "https://node.test/health.bin", round: round}
-		fresh := &transportLane{kind: "h3", health: h2.health, round: round, close: func() { closed.Store(true) }}
+		fresh := &transportLane{kind: "h3", health: h2.health, close: func() { closed.Store(true) }, round: func(r *http.Request) (*http.Response, error) {
+			time.Sleep(5 * time.Millisecond)
+			resp, err := round(r)
+			resp.Header.Set("Nexus-QUIC-Sent", strconv.Itoa(int(calls.Load())*100))
+			resp.Header.Set("Nexus-QUIC-Lost", "1")
+			return resp, err
+		}}
 		s := selector{ctx: t.Context(), lane: &transportLane{kind: "h3", round: func(*http.Request) (*http.Response, error) {
 			t.Error("sampled saturated lane")
 			return nil, errors.New("busy")
 		}},
 			dial: func(context.Context, string) (*transportLane, error) { return fresh, nil }}
-		if s.slowerOnFreshH3(h2) || calls.Load() != 2*(1+8) || !closed.Load() {
+		if slow, lossy := s.slowerOnFreshH3(h2); slow || lossy || calls.Load() != 2*(1+8) || !closed.Load() {
 			t.Fatal("healthy path downgraded or temporary carrier was left open")
 		}
 	})
@@ -415,7 +421,12 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty, loss bool) {
 				} else {
 					time.Sleep(5 * time.Millisecond)
 				}
-				return answer(), nil
+				res := answer()
+				res.Header.Set("Nexus-QUIC-Sent", strconv.Itoa(100*seen))
+				if loss {
+					res.Header.Set("Nexus-QUIC-Lost", strconv.Itoa(12*seen))
+				}
+				return res, nil
 			}}, nil
 		}}
 		h3.active.Store(1)
