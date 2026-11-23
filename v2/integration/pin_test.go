@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 )
 
 func TestIPInvitationAndCarrierPins(t *testing.T) {
-	testNode(t, true, false, func(t *testing.T, l *nodeLab) {
+	verify := func(t *testing.T, l *nodeLab) {
 		ca, err := os.ReadFile(filepath.Join(l.dir, "server.pem"))
 		if err != nil {
 			t.Fatal(err)
@@ -155,6 +156,17 @@ func TestIPInvitationAndCarrierPins(t *testing.T) {
 				if string(got) != "echo" {
 					t.Fatal("invalid echo")
 				}
+				a, err := c.OpenUDP(l.udp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer a.Close()
+				if err = a.WritePacket([]byte("udp")); err != nil {
+					t.Fatal(err)
+				}
+				if p, err := a.ReadPacket(); err != nil || string(p) != "udp" {
+					t.Fatalf("invalid UDP echo: %v", err)
+				}
 			})
 		}
 		t.Run("auto-stops-after-peer-certificate-changes", func(t *testing.T) {
@@ -210,5 +222,10 @@ func TestIPInvitationAndCarrierPins(t *testing.T) {
 				}
 			}
 		})
-	})
+	}
+	for _, ip := range []string{"127.0.0.1", "::1"} {
+		t.Run(ip, func(t *testing.T) {
+			testNodeAt(t, ip, true, false, func(c net.Conn) { io.Copy(c, c) }, verify)
+		})
+	}
 }

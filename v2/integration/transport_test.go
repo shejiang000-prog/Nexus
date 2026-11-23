@@ -48,6 +48,10 @@ func testNode(t *testing.T, useLedger, load bool, scenarios ...func(*testing.T, 
 }
 
 func testNodeTCP(t *testing.T, useLedger, load bool, serve func(net.Conn), scenarios ...func(*testing.T, *nodeLab)) {
+	testNodeAt(t, "127.0.0.1", useLedger, load, serve, scenarios...)
+}
+
+func testNodeAt(t *testing.T, ip string, useLedger, load bool, serve func(net.Conn), scenarios ...func(*testing.T, *nodeLab)) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
 		t.Skip("set NEXUS_NODE_TEST_BINARY to a built nexus-node")
@@ -58,7 +62,7 @@ func testNodeTCP(t *testing.T, useLedger, load bool, serve func(net.Conn), scena
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Nexus test only"}, DNSNames: []string{"nexus.test"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Nexus test only"}, DNSNames: []string{"nexus.test"}, IPAddresses: []net.IP{net.ParseIP(ip)}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
@@ -77,13 +81,14 @@ func testNodeTCP(t *testing.T, useLedger, load bool, serve func(net.Conn), scena
 	}
 	crt := write("server.pem", ca)
 	priv := write("server.key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pk}))
-	l, e := net.Listen("tcp4", "127.0.0.1:0")
+	listen := net.JoinHostPort(ip, "0")
+	l, e := net.Listen("tcp", listen)
 	if e != nil {
 		t.Fatal(e)
 	}
 	endpoint := l.Addr().String()
 	l.Close()
-	tcp, e := net.Listen("tcp4", "127.0.0.1:0")
+	tcp, e := net.Listen("tcp", listen)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -97,7 +102,7 @@ func testNodeTCP(t *testing.T, useLedger, load bool, serve func(net.Conn), scena
 			go func(c net.Conn) { defer c.Close(); serve(c) }(conn)
 		}
 	}()
-	u, e := net.ListenPacket("udp4", "127.0.0.1:0")
+	u, e := net.ListenPacket("udp", listen)
 	if e != nil {
 		t.Fatal(e)
 	}
