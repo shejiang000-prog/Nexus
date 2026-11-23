@@ -118,6 +118,25 @@ def refused(probe):
         result.close()
     raise AssertionError("unexpected successful echo")
 
+def observe_existing(stream,start,unrelated=None):
+    """Time starts before the administrative CLI. Sample for three seconds after it returns."""
+    end=time.monotonic()+3
+    while True:
+        if unrelated is not None:
+            echo(unrelated)
+        try:
+            echo(stream)
+        except (OSError,AssertionError):
+            return False,time.monotonic()-start
+        if time.monotonic()>=end:
+            return True,time.monotonic()-start
+        time.sleep(.05)
+
+def reality_parameters(uri):
+    parsed=url.urlsplit(uri)
+    query=dict(url.parse_qsl(parsed.query))
+    return parsed.username,query['pbk'],query['sid'],query['sni']
+
 def check_mihomo(document,uris):
     """Parse the exact YAML mapping/list/scalar subset emitted by the local exporter."""
     assert document.splitlines()[0]=='proxies:'
@@ -178,7 +197,7 @@ def main():
         (bindir/'hysteria').write_bytes((opt.asset_dir/'hysteria-linux-amd64').read_bytes())
         for f in bindir.iterdir(): f.chmod(0o700)
         run('openssl','req','-x509','-nodes','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256',
-            '-days','2','-subj','/CN=node.example.test','-addext','subjectAltName=DNS:node.example.test,DNS:*.node.example.test','-keyout',str(etc/'key.pem'),'-out',str(etc/'cert.pem'))
+            '-days','2','-subj','/CN=node.example.test','-addext','subjectAltName=DNS:node.example.test,DNS:tls.example.test','-keyout',str(etc/'key.pem'),'-out',str(etc/'cert.pem'))
         decoy=st.enter_context(Stream(('127.0.0.1',0),TCP))
         tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.set_alpn_protocols(['h2','http/1.1'])
         tls.load_cert_chain(etc/'cert.pem',etc/'key.pem')
@@ -186,8 +205,9 @@ def main():
         decoy.socket=tls.wrap_socket(decoy.socket,server_side=True,do_handshake_on_connect=False)
         tcp=st.enter_context(Stream(('',0),TCP));udp=st.enter_context(Datagram(('',0),UDP))
         for srv in [decoy,tcp,udp]: threading.Thread(target=srv.serve_forever,daemon=True).start()
-        ports={'reality':port(),'hysteria2':port()}
-        write(etc/'deployment.json',{'domain':DOMAIN,'ports':ports,'reality_target':'127.0.0.1:'+str(decoy.server_address[1])})
+        ports={'hysteria2':port(),'reality':port()}
+        hy_stream=None
+        write(etc/'deployment.json',{'domain':DOMAIN,'ports':ports,'reality_target':'127.0.0.1:'+str(decoy.server_address[1]),'reality_server_names':['tls.example.test']})
         # These mounts only exist in this test's private mount namespace.
         db=Path('/var/lib/nexus-v2/ledger.db')
         (root/'var/lib/nexus-v2').mkdir(parents=True)
@@ -212,35 +232,55 @@ def main():
             def factory(uri,target=PUBLIC):
                 return Client(st,root,uri,tcp.server_address[1],udp.server_address[1],target)
             oldlink=exported(a,proto)
-            ac,bc=factory(oldlink),factory(exported(b,proto))
+            b_link=exported(b,proto)
+            if proto=='reality':
+                ia,pa,sa,na=reality_parameters(oldlink)
+                ib,pb,sb,nb=reality_parameters(b_link)
+                assert ia!=ib and (pa,sa,na)==(pb,sb,nb) and na=='tls.example.test'
+            ac,bc=factory(oldlink),factory(b_link)
             time.sleep(.4)
             ast=st.enter_context(ac.tcp());bst=st.enter_context(bc.tcp())
             ac.udp();bc.udp()
             start=time.monotonic();ledger('compat','rotate',a,proto)
-            # Measure sustained old stream while checking B's already-open stream.
-            observed=None
-            for i in range(60):
-                echo(bst)
-                try: echo(ast)
-                except (OSError,AssertionError):observed=time.monotonic()-start;break
-                time.sleep(.05)
-            assert observed is not None,'old stream remained open'
+            live,elapsed=observe_existing(ast,start,bst)
+            print(proto,'A UUID/password rotate: old TCP %s at %.3fs'%('live' if live else 'closed',elapsed),flush=True)
+            if proto=='hysteria2':assert not live
             ledger('compat','apply',proto)
             newlink=exported(a,proto)
             bad,valid=factory(oldlink),factory(newlink)
             time.sleep(.4)
             refused(lambda:bad.tcp(12));refused(bad.udp)
-            valid.tcp().close();valid.udp();echo(bst);bc.udp()
+            current=st.enter_context(valid.tcp());valid.udp();echo(bst);bc.udp()
             private=factory(exported(b,proto),'127.0.0.1')
             mixed=factory(exported(b,proto),'private.example.test')
             time.sleep(.4)
             for denied in [private,mixed]:
                 refused(lambda:denied.tcp(4));refused(denied.udp)
-            ledger('compat','disable',a,proto)
+            start=time.monotonic();ledger('compat','disable',a,proto)
+            live,elapsed=observe_existing(current,start,bst)
+            print(proto,'A disabled: old TCP %s at %.3fs'%('live' if live else 'closed',elapsed),flush=True)
+            if proto=='hysteria2':assert not live
             disabled=factory(newlink)
             refused(lambda:disabled.tcp(12));refused(disabled.udp)
             echo(bst);bc.udp()
-            print(proto,'2 users TCP/UDP, rotation/disable, private literal/name denied; old stream observed closed at %.3fs'%observed,flush=True)
+            if proto=='reality':
+                ledger('compat','enable',a,proto)
+                first_a=exported(a,proto);first_b=exported(b,proto)
+                active_a=st.enter_context(factory(first_a).tcp())
+                start=time.monotonic();ledger('compat','rotate-node-key','reality')
+                for label,stream in [('A',active_a),('B',bst)]:
+                    live,elapsed=observe_existing(stream,start,hy_stream)
+                    assert not live,'old Reality node stream still active'
+                    print('node key rotation: %s old TCP observed closed at %.3fs'%(label,elapsed),flush=True)
+                for user,old in [(a,first_a),(b,first_b)]:
+                    fresh=exported(user,proto)
+                    before,after=reality_parameters(old),reality_parameters(fresh)
+                    assert before[0]==after[0] and before[1]!=after[1] and before[2]!=after[2] and before[3]==after[3]
+                    invalid=factory(old)
+                    refused(lambda:invalid.tcp(12));refused(invalid.udp)
+                    usable=factory(fresh);usable.tcp().close();usable.udp()
+                echo(hy_stream)
+            print(proto,'2 users TCP/UDP; old exports and private destinations rejected',flush=True)
 
             old_b=exported(b,proto)
             service.terminate()
@@ -265,7 +305,8 @@ def main():
             confirmed=status()
             assert confirmed['result']=='applied' and confirmed['applied_generation']==pending['generation']
             restored=factory(exported(b,proto))
-            restored.tcp().close();restored.udp()
+            restored_stream=st.enter_context(restored.tcp());restored.udp()
+            if proto=='hysteria2':hy_stream=restored_stream
             assert not (addr.parent/'active.json').exists()
             print(proto,'offline rotation survived restart; old credential rejected before replay; same generation confirmed',flush=True)
 
