@@ -15,6 +15,7 @@ import socket
 import socketserver
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -32,6 +33,25 @@ class TCP(socketserver.ThreadingTCPServer):
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+def issue(node,work,name):
+    """Create a private configuration for another one-time instrumentation run."""
+    if os.environ.get("WSL_DISTRO_NAME")!="NexusLab" or Path(name).name!=name or not name.endswith(".json"):
+        raise ValueError("expected a new JSON filename in the private NexusLab fixture")
+    os.umask(0o077)
+    cfg=json.loads((work/"device.json").read_bytes())
+    data=json.loads(base64.urlsafe_b64decode(cfg["invitation"].split("#")[1]+"==="))
+    db=work/"ledger.db" if "pin" not in data else Path("/var/lib/nexus-v2/ledger.db")
+    if not db.is_file():raise ValueError("fixture ledger unavailable")
+    def cmd(*args):return subprocess.check_output([node,"ledger",db,*args],text=True).strip()
+    expires=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with (work/name).open("x") as f:
+        user=cmd("create-user",expires)
+        if "pin" in data: cfg["invitation"]=cmd("invite","--link",user,expires)
+        else:
+            data["invite"]=cmd("invite",user,expires)
+            cfg["invitation"]="nexus://invite/v2#"+b64url(json.dumps(data).encode())
+        json.dump(cfg,f)
 
 def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
     if os.environ.get("WSL_DISTRO_NAME") != "NexusLab" or not ipaddress.ip_address(host).is_private or host == echo_ip:
@@ -225,6 +245,11 @@ def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
             time.sleep(.5)
 
 if __name__ == "__main__":
+    if sys.argv[1:2]==["issue"]:
+        p=argparse.ArgumentParser(description=issue.__doc__)
+        p.add_argument("node",type=Path);p.add_argument("work",type=Path);p.add_argument("name")
+        a=p.parse_args(sys.argv[2:]);issue(a.node.resolve(),a.work.resolve(),a.name)
+        raise SystemExit(0)
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("node",type=Path)
     p.add_argument("xray_zip",type=Path)
