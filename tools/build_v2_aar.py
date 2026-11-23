@@ -13,6 +13,7 @@ from prepare_v2 import ROOT, V2, QUIC, XRAY, prepare
 LIB = "5a0f7d8d1c28b34afb5727b04b26a10f6dbac7e3"
 MOBILE = "v0.0.0-20261011034528-197770444867"
 p = argparse.ArgumentParser(description=__doc__)
+p.add_argument("--test-routing", action="store_true", help="run the host-side V2/Xray routing comparison before binding")
 p.add_argument("source", type=Path, help="local libXray git checkout")
 p.add_argument("patched", type=Path, nargs="?", help="output of prepare_v2.py --android (default: prepare fresh verified sources)")
 p.add_argument("output", type=Path)
@@ -69,6 +70,9 @@ with build_workspace() as tmp:
                  "-replace=" + XRAY[0] + "=" + (a.patched.resolve()/"xray").as_posix()]:
         subprocess.run(["go", "mod", "edit", flag], cwd=lib, check=True)
     built = Path(tmp) / "combined.aar"
+    if a.test_routing:
+        shutil.copyfile(ROOT / "apps/android/engine/v2vpn/vpn_test.go", lib / "v2vpn/vpn_test.go")
+        subprocess.run(["go", "test", "-count=1", "./v2vpn"], cwd=lib, check=True)
     subprocess.run(["gomobile", "bind", "-target", "android/arm64,android/amd64", "-androidapi", "21",
                     "-trimpath", "-ldflags=-checklinkname=0 -s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384",
                     "-o", built, ".", "./nexusmobile", "./enrollment", "./v2vpn"], cwd=lib, check=True)

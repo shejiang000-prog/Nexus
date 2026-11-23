@@ -25,6 +25,10 @@ func TestInvitation(t *testing.T) {
 	if err != nil || i.Authority() != "example.test:443" || i.Host() != "example.test" || i.Name() != "Home" {
 		t.Fatal("valid invite rejected")
 	}
+	pinned := link(strings.Replace(payload, `"v":2`, `"v":2,"pin":"fixture"`, 1))
+	if _, err := Parse(pinned); err == nil || err.Error() != "此版本尚不支持带证书固定值的邀请" {
+		t.Fatal("pin must be refused explicitly before enrollment")
+	}
 	for _, bad := range []string{
 		link(strings.Replace(payload, `"v":2`, `"v":2,"v":2`, 1)), link(strings.Replace(payload, `"v":2`, `"v":3`, 1)),
 		link(strings.Replace(payload, "443", "0", 1)), link(strings.Replace(payload, "443", "65536", 1)), link(strings.Replace(payload, "example.test", "example.test/path", 1)),
