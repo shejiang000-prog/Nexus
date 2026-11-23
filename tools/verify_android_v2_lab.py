@@ -7,19 +7,26 @@ import tempfile
 import time
 
 
-def run(adb, package, fixture):
+def run(adb, package, fixture, runner):
     a = [str(adb), "-s", "emulator-5554"]
     def shell(*args, **kw):
         return subprocess.run([*a, "shell", *args], stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, timeout=15, **kw)
-    component = package+".test/dev.nexus.localclient.CatalogCheck"
+    reports = shell("pm","list","instrumentation",package,check=True).stdout.decode().splitlines()
+    runners = [line.split()[0].removeprefix("instrumentation:") for line in reports
+               if line.endswith("(target="+package+")") and "/dev.nexus.localclient.CatalogCheck " in line]
+    if runner is None and len(runners)==1:
+        runner = runners[0]
+    if runner not in runners:
+        raise RuntimeError("missing or ambiguous CatalogCheck for selected target; pass --runner")
+    shell("run-as",package,"mkdir","-p","no_backup",check=True)
     cfg = json.loads(fixture.read_bytes())
     # Neither the invitation nor the control capability appears in argv, instrumentation output, or shared storage.
     subprocess.run([*a,"exec-in","run-as",package,"sh","-c","'umask 077; cat > no_backup/m3.json'"],
                           input=fixture.read_bytes(), stdout=subprocess.DEVNULL, check=True, timeout=12)
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
     with tempfile.TemporaryFile() as log:
-        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3",component], stdout=log,stderr=subprocess.STDOUT)
+        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3",runner], stdout=log,stderr=subprocess.STDOUT)
         stage=""
         deadline=time.monotonic()+720
         try:
@@ -49,5 +56,6 @@ if __name__=="__main__":
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("adb",type=Path);p.add_argument("package",choices=["dev.nexus.lab.m0","dev.nexus.localclient"])
     p.add_argument("fixture",type=Path)
+    p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
     opt=p.parse_args()
-    run(opt.adb,opt.package,opt.fixture)
+    run(opt.adb,opt.package,opt.fixture,opt.runner)
