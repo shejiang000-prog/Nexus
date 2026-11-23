@@ -77,14 +77,14 @@ with ExitStack() as stack:
         w.writerow(("loss","pair","mode","status","mbps"))
         for i in range(a.pairs):
             for mode in ("go-bbr",a.competitor):
-                bench.shape(peer,150,a.loss,20,a.seed+i*2)
-                if mode=="go-bbr":
-                    server,client=[*peer,a.binary,"server"],[a.binary,"client"]
-                    route="v1-quic"  # benchmark helper's raw local TCP forward, no SOCKS preface
-                else:
-                    server,client=bench.configure(mode,a,peer,keys,20)
-                    route=mode
                 try:
+                    bench.shape(peer,150,a.loss,20,a.seed+i*2)
+                    if mode=="go-bbr":
+                        server,client=[*peer,a.binary,"server"],[a.binary,"client"]
+                        route="v1-quic"  # benchmark helper's raw local TCP forward, no SOCKS preface
+                    else:
+                        server,client=bench.configure(mode,a,peer,keys,20)
+                        route=mode
                     if a.quota and mode=="go-bbr":
                         before=used()
                     with ExitStack() as t:
@@ -102,6 +102,6 @@ with ExitStack() as stack:
                     if a.quota and mode=="go-bbr" and used()-before < bench.SIZE:
                         raise ValueError("missing quota settlement")
                     w.writerow((a.loss,i,mode,"ok",round(8*bench.SIZE/sec/1e6,4)))
-                except (OSError,ValueError,RuntimeError,EOFError) as e:
+                except (OSError,ValueError,RuntimeError,EOFError,subprocess.SubprocessError) as e:
                     w.writerow((a.loss,i,mode,type(e).__name__,""))
                 f.flush()
