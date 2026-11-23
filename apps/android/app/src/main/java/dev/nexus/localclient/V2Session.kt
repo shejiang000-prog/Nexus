@@ -46,10 +46,18 @@ internal class V2Session(
         authenticate()
         thread(name = "Nexus V2 enrollment status") {
             try {
+                var interval = 10_000L
                 while (true) {
-                    Thread.sleep(10_000)
+                    Thread.sleep(interval)
                     if (expired()) throw V2Failure(3)
-                    authenticate()
+                    try {
+                        authenticate()
+                        interval = 10_000L
+                    } catch (e: V2Failure) {
+                        if (!V2Connection.retry(e.code)) throw e
+                        // A probe on a retired lane can fail while new VPN traffic is healthy.
+                        interval = (interval * 2).coerceAtMost(30_000L)
+                    }
                 }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()

@@ -24,6 +24,7 @@ type transportLane struct {
 	dead      <-chan struct{}
 	usable    func() bool
 	active    atomic.Int64
+	opening   atomic.Int64
 	last      atomic.Int64
 	ack       atomic.Bool
 	health    string
@@ -150,10 +151,9 @@ func (s *selector) watch() {
 	defer tick.Stop()
 	var prev uint64
 	lastProgress := time.Now()
-	var weak, success int
+	var weak int
 	var lastH2 time.Time
 	nextProbe := time.Now().Add(30 * time.Second)
-	backoff := 30 * time.Second
 	// Only watch owns the pending dial. Cancel also closes a completed, unused handshake.
 	var pending <-chan *transportLane
 	var abandon context.CancelFunc
@@ -176,32 +176,21 @@ func (s *selector) watch() {
 			discard()
 		}
 		if l.kind == "h2" {
-			if l.active.Load() == 0 || time.Since(time.Unix(0, l.last.Load())) > 3*time.Second || time.Now().Before(nextProbe) {
+			if time.Now().Before(nextProbe) {
 				continue
 			}
 			q, e := s.probeH3()
-			if e == nil && s.capacity(q) > 0 {
-				success++
-				if success >= 2 {
-					if !s.set(l, q) {
-						continue
-					}
+			if e == nil && s.capacity(q) > 0 && s.capacity(q) > 0 {
+				if s.set(l, q) {
 					prev = q.stats()
 					lastProgress = time.Now()
 					weak = 0
-					success = 0
 					go s.retire(l)
-					continue
 				}
+			} else if q != nil {
 				q.close()
-			} else {
-				if q != nil {
-					q.close()
-				}
-				success = 0
-				backoff = min(5*time.Minute, 2*backoff)
 			}
-			nextProbe = time.Now().Add(backoff)
+			nextProbe = time.Now().Add(30 * time.Second)
 			continue
 		}
 		now := l.stats()
@@ -216,7 +205,7 @@ func (s *selector) watch() {
 			gone = true
 		default:
 		}
-		if l.active.Load() == 0 || (!gone && (time.Since(time.Unix(0, l.last.Load())) > 3*time.Second || delta > 32768)) {
+		if l.active.Load() == 0 || (!gone && (delta != 0 || (l.opening.Load() == 0 && time.Since(time.Unix(0, l.last.Load())) > 3*time.Second))) {
 			discard()
 			weak = 0
 			continue
@@ -237,7 +226,9 @@ func (s *selector) watch() {
 		if pending != nil {
 			alt = <-pending
 			discard()
-		} else if time.Since(lastH2) >= 10*time.Second || gone {
+		} else {
+			// Cooldown applies to speculative dials. Two silent windows while
+			// an application needs the path must be able to recover immediately.
 			lastH2 = time.Now()
 			ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 			alt, _ = s.dial(ctx, "h2")
@@ -248,13 +239,11 @@ func (s *selector) watch() {
 		}
 		h2time := s.capacity(alt)
 		h3time := <-sample
-		if h2time > 0 && (h3time == 0 || h3time > 4*h2time) {
+		if h2time > 0 && h3time == 0 && l.stats() == now {
 			if !s.set(l, alt) {
 				continue
 			}
 			nextProbe = time.Now().Add(30 * time.Second)
-			backoff = 30 * time.Second
-			success = 0
 			if silentForTwoWindows(l, now, lastProgress) {
 				l.close()
 			} else {

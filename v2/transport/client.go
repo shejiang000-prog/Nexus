@@ -150,6 +150,7 @@ func (c *Client) acquire() (*transportLane, error) {
 		changed = true
 	}
 	l.active.Add(1)
+	l.opening.Add(1)
 	l.last.Store(time.Now().UnixNano())
 	s.mu.Unlock()
 	if changed {
@@ -157,6 +158,7 @@ func (c *Client) acquire() (*transportLane, error) {
 		case s.events <- l.kind:
 		case <-s.ctx.Done():
 			l.active.Add(-1)
+			l.opening.Add(-1)
 			return nil, &Error{Interrupted, s.ctx.Err()}
 		}
 	}
@@ -274,7 +276,7 @@ func (s *stream) Write(p []byte) (int, error) {
 	return n, e
 }
 func (s *stream) CloseWrite() error { return s.out.Close() }
-func (s *stream) Close() error { s.close(); return nil }
+func (s *stream) Close() error      { s.close(); return nil }
 
 // initial is optional optimistic data. No automatic replay is performed.
 func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io.ReadWriteCloser, error) {
@@ -286,6 +288,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 	if e != nil {
 		return nil, e
 	}
+	defer l.opening.Add(-1)
 	ctx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
 	req := (&http.Request{Method: "CONNECT", Host: a, URL: &url.URL{Scheme: "https", Host: a}, Body: pr, ContentLength: -1}).WithContext(ctx)
@@ -357,6 +360,7 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 	if e != nil {
 		return nil, e
 	}
+	defer l.opening.Add(-1)
 	ctx, cancel := context.WithCancel(ctx)
 	h, p, _ := net.SplitHostPort(a)
 	authority := l.authority
