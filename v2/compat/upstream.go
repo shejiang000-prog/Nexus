@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -76,104 +75,6 @@ func (w *worker) ready(check func() bool) error {
 // Include the non-global IPv6 ranges as well as reserved IPv4/IPv6 space.
 // Upstreams must check the resolved destination, including names resolving to private IPs.
 var denied = strings.Fields("0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 168.63.129.16/32 ::/3 4000::/2 8000::/1 2002::/16 2001::/23 2001:db8::/32 3fff::/20")
-
-func (s *service) startXray(c Credential) (*worker, error) {
-	w, err := s.start("xray", func(dir string) object {
-		return object{"log": object{"loglevel": "none"},
-			"inbounds": []object{{"listen": filepath.Join(dir, "x.sock"), "protocol": "vless", "settings": object{"clients": []object{{"id": c.UUID, "flow": "xtls-rprx-vision"}}, "decryption": "none"},
-				"streamSettings": object{"network": "raw", "security": "reality", "realitySettings": object{"target": s.site.Target, "serverNames": []string{c.UserID + "." + s.site.Domain}, "privateKey": c.PrivateKey, "shortIds": []string{c.ShortID}}}}},
-			"outbounds": []object{{"protocol": "freedom", "settings": object{"targetStrategy": "ForceIP", "finalRules": []object{{"action": "block", "ip": denied}}}}}}
-	}, "run", "-config")
-	if err != nil {
-		return nil, err
-	}
-	w.address = filepath.Join(w.dir, "x.sock")
-	err = w.ready(func() bool {
-		c, err := net.DialTimeout("unix", w.address, 150*time.Millisecond)
-		if err != nil {
-			return false
-		}
-		c.Close()
-		return true
-	})
-	return w, err
-}
-
-type previewConn struct {
-	net.Conn
-	r io.Reader
-}
-
-func (p previewConn) Read(b []byte) (int, error)  { return p.r.Read(b) }
-func (p previewConn) Write(b []byte) (int, error) { return len(b), nil }
-
-func (s *service) relay(raw net.Conn, pending chan struct{}) {
-	defer raw.Close()
-	var hello bytes.Buffer
-	raw.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var name string
-	conn := previewConn{raw, io.TeeReader(io.LimitReader(raw, 128<<10), &hello)}
-	_ = tls.Server(conn, &tls.Config{GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
-		name = strings.ToLower(ch.ServerName)
-		return nil, errors.New("client hello inspected")
-	}}).Handshake()
-	<-pending
-	id, ok := strings.CutSuffix(name, "."+s.site.Domain)
-	if !ok {
-		return
-	}
-	s.mu.RLock()
-	w := s.workers[id]
-	cred := s.users[id]
-	s.mu.RUnlock()
-	if w == nil || !cred.active() {
-		return
-	}
-	peer, err := net.DialTimeout("unix", w.address, time.Second)
-	if err != nil {
-		return
-	}
-	defer peer.Close()
-	raw.SetReadDeadline(time.Time{})
-	if _, err = hello.WriteTo(peer); err != nil {
-		return
-	}
-	done := make(chan struct{})
-	go func() { _, _ = io.Copy(peer, raw); peer.(*net.UnixConn).CloseWrite(); close(done) }()
-	_, _ = io.Copy(raw, peer)
-	raw.(*net.TCPConn).CloseWrite()
-	// The worker can terminate while the client keeps its input open.
-	raw.Close()
-	<-done
-}
-func (s *service) listenReality(port int) (net.Listener, error) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		return nil, err
-	}
-	if _, _, err = net.SplitHostPort(s.site.Target); err != nil {
-		ln.Close()
-		return nil, errors.New("invalid Reality TLS target")
-	}
-	// Bound memory retained for incomplete ClientHellos. Active tunnels no longer hold a slot.
-	pending := make(chan struct{}, 256)
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				s.report(err)
-				return
-			}
-			select {
-			case pending <- struct{}{}:
-				go s.relay(c, pending)
-			default:
-				c.Close()
-			}
-		}
-	}()
-	return ln, nil
-}
 
 func (s *service) auth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" || r.URL.Path != "/"+s.statsKey {

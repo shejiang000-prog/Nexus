@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -27,7 +28,9 @@ type service struct {
 	mu                  sync.RWMutex
 	live                Snapshot
 	users               map[string]Credential
-	workers             map[string]*worker
+	xray                *worker
+	xrayKey             RealityKey
+	nextExpiry          int64
 	hy                  *worker
 	stats, statsKey     string
 	fail                chan error
@@ -43,6 +46,22 @@ func validHex(s string, n int) bool {
 	return err == nil
 }
 func (s Snapshot) usersByID() (map[string]Credential, error) {
+	if s.Protocol == "reality" {
+		k := s.RealityKey
+		if k == nil || k.Generation < 1 || !validHex(k.ShortID, 16) {
+			return nil, errors.New("invalid Reality node identity")
+		}
+		key, err := base64.RawURLEncoding.DecodeString(k.PrivateKey)
+		if err != nil {
+			return nil, errors.New("invalid Reality node key")
+		}
+		priv, err := ecdh.X25519().NewPrivateKey(key)
+		if err != nil || base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes()) != k.PublicKey {
+			return nil, errors.New("invalid Reality key pair")
+		}
+	} else if s.RealityKey != nil {
+		return nil, errors.New("unexpected Reality identity")
+	}
 	users := make(map[string]Credential, len(s.Credentials))
 	for _, c := range s.Credentials {
 		if !validHex(c.UserID, 32) || c.Generation < 1 || c.ExpiresAt < 0 {
@@ -52,15 +71,10 @@ func (s Snapshot) usersByID() (map[string]Credential, error) {
 			return nil, errors.New("duplicate user")
 		}
 		if s.Protocol == "reality" {
-			key, err := base64.RawURLEncoding.DecodeString(c.PrivateKey)
-			if err != nil {
-				return nil, errors.New("invalid key")
-			}
-			priv, err := ecdh.X25519().NewPrivateKey(key)
-			if err != nil || base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes()) != c.PublicKey || !validHex(c.ShortID, 16) || len(c.UUID) != 36 || !validHex(strings.ReplaceAll(c.UUID, "-", ""), 32) || c.Password != "" {
+			if len(c.UUID) != 36 || !validHex(strings.ReplaceAll(c.UUID, "-", ""), 32) || c.Password != "" {
 				return nil, errors.New("invalid Reality identity")
 			}
-		} else if len(c.Password) < 20 || len(c.Password) > 256 || c.PrivateKey != "" || c.UUID != "" {
+		} else if len(c.Password) < 20 || len(c.Password) > 256 || c.UUID != "" {
 			return nil, errors.New("invalid Hysteria identity")
 		}
 		users[c.UserID] = c
@@ -82,42 +96,15 @@ func (s *service) applyLocked(req Snapshot) error {
 		return err
 	}
 	slices.SortFunc(req.Credentials, func(a, b Credential) int { return strings.Compare(a.UserID, b.UserID) })
-	if req.Revision == s.live.Revision && s.live.Protocol != "" && !slices.Equal(req.Credentials, s.live.Credentials) {
+	if req.Revision == s.live.Revision && s.live.Protocol != "" && (!slices.Equal(req.Credentials, s.live.Credentials) || !reflect.DeepEqual(req.RealityKey, s.live.RealityKey)) {
 		return errors.New("revision content mismatch")
 	}
-	workers := map[string]*worker{}
-	var started []*worker
-	defer func() {
-		for _, w := range started {
-			w.stop()
-		}
-	}()
-	for id, c := range users {
-		if s.protocol != "reality" || !c.active() {
-			continue
-		}
-		if w := s.workers[id]; w != nil && s.users[id] == c && w.running() {
-			workers[id] = w
-			continue
-		}
-		w, err := s.startXray(c)
-		if err != nil {
-			return err
-		}
-		started = append(started, w)
-		workers[id] = w
-	}
 	s.mu.Lock()
-	old := s.workers
 	s.users = users
-	s.workers = workers
 	s.live = req
 	s.mu.Unlock()
-	started = nil
-	for id, w := range old {
-		if workers[id] != w {
-			w.stop()
-		}
+	if s.protocol == "reality" {
+		return s.reconcileXray()
 	}
 	if s.protocol == "hysteria2" {
 		return s.kickInvalid(users)
@@ -133,14 +120,10 @@ func (s *service) maintain() {
 		_ = s.kickInvalid(s.users)
 		return
 	}
-	for id, c := range s.users {
-		w := s.workers[id]
-		if c.active() && (w == nil || !w.running()) || !c.active() && w != nil {
-			// Retry just the missing worker. The apply path reuses every healthy generation.
-			_ = s.applyLocked(s.live)
-			return
-		}
+	if s.xray == nil || !s.xray.running() || (s.nextExpiry > 0 && time.Now().Unix() >= s.nextExpiry) {
+		_ = s.reconcileXray()
 	}
+
 }
 
 func (s *service) handle(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +164,7 @@ func Serve(ctx context.Context, root, protocol string, load func(context.Context
 		return err
 	}
 	port := s.site.Ports[protocol]
-	if port < 1 || port > 65535 || s.site.Domain == "" {
+	if port < 1 || port > 65535 || protocol == "hysteria2" && s.site.Domain == "" || protocol == "reality" && (len(s.site.ServerNames) == 0 || s.site.Target == "") {
 		return errors.New("protocol not configured")
 	}
 	if err = os.MkdirAll(s.dir, 0700); err != nil {
@@ -191,22 +174,19 @@ func Serve(ctx context.Context, root, protocol string, load func(context.Context
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return errors.New("compatibility state directory must be 0700")
 	}
-	var local net.Listener
 	if protocol == "hysteria2" {
-		local, err = s.startHy()
-	} else {
-		local, err = s.listenReality(port)
+		local, err := s.startHy()
+		if err != nil {
+			return err
+		}
+		defer local.Close()
 	}
-	if err != nil {
-		return err
-	}
-	defer local.Close()
 	defer func() {
 		cancel()
 		s.applyMu.Lock()
 		defer s.applyMu.Unlock()
-		for _, w := range s.workers {
-			w.stop()
+		if s.xray != nil {
+			s.xray.stop()
 		}
 		if s.hy != nil {
 			s.hy.stop()
