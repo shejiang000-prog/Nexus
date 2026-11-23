@@ -45,12 +45,22 @@ type Ledger struct {
 	devices   map[proof.ID]deviceState
 	mu        sync.Mutex
 	active    map[proof.ID]map[*activeFlow]struct{}
+	meters    map[proof.ID]*quotaAccount
+	retired   map[*quotaAccount]bool
+	quotaDone chan struct{}
+	flows     sync.WaitGroup
+	closing   bool
 }
 type deviceState struct {
+	user    proof.ID
+	quota   sql.NullInt64
 	key     *ecdsa.PublicKey
 	expires sql.NullInt64
 }
-type activeFlow struct{ stop func() }
+type activeFlow struct {
+	stop  func()
+	meter *quotaAccount
+}
 
 func OpenLedger(path string) (*Ledger, error) {
 	if !filepath.IsAbs(path) {
@@ -103,6 +113,10 @@ func OpenLedger(path string) (*Ledger, error) {
 		db.Close()
 		return nil, err
 	}
+	l.meters = make(map[proof.ID]*quotaAccount)
+	l.retired = make(map[*quotaAccount]bool)
+	l.quotaDone = make(chan struct{})
+	go l.checkpoints(ctx)
 	go l.watchRevocations(ctx)
 	return l, nil
 }
@@ -142,11 +156,19 @@ func initSchema(db *sql.DB) error {
 	return tx.Commit()
 }
 func (l *Ledger) Close() error {
+	l.mu.Lock()
+	l.closing = true
+	l.mu.Unlock()
 	l.cancel()
-	<-l.done
 	l.disconnectAll()
-	l.reader.Close()
-	return l.db.Close()
+	<-l.done
+	<-l.quotaDone
+	l.flows.Wait()
+	var err error
+	for _, a := range l.accounts() {
+		err = errors.Join(err, a.checkpoint(true))
+	}
+	return errors.Join(err, l.stopQuotaNode(), l.reader.Close(), l.db.Close())
 }
 
 // A dedicated reader sees commits from every writer, including this process.
@@ -167,22 +189,23 @@ func (l *Ledger) refresh(ctx context.Context) error {
 	if version == l.version && l.devices != nil {
 		return nil
 	}
-	rows, err := l.reader.QueryContext(ctx, `SELECT d.id,public_key,u.expires_at FROM devices d JOIN invites i ON i.digest=d.invite_digest JOIN users u ON u.id=i.user_id WHERE d.revoked_at IS NULL AND u.quota_bytes IS NULL`)
+	rows, err := l.reader.QueryContext(ctx, `SELECT d.id,public_key,u.expires_at,u.id,u.quota_bytes FROM devices d JOIN invites i ON i.digest=d.invite_digest JOIN users u ON u.id=i.user_id WHERE d.revoked_at IS NULL`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	devices := make(map[proof.ID]deviceState)
 	for rows.Next() {
-		var id, pub []byte
+		var id, pub, user []byte
 		var state deviceState
-		if err := rows.Scan(&id, &pub, &state.expires); err != nil {
+		if err := rows.Scan(&id, &pub, &state.expires, &user, &state.quota); err != nil {
 			return err
 		}
 		x, y := elliptic.UnmarshalCompressed(elliptic.P256(), pub)
-		if len(id) != 16 || x == nil {
+		if len(id) != 16 || len(user) != 16 || x == nil {
 			return errors.New("invalid ledger device")
 		}
+		state.user = proof.ID(user)
 		state.key = &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
 		devices[proof.ID(id)] = state
 	}
@@ -190,6 +213,13 @@ func (l *Ledger) refresh(ctx context.Context) error {
 		return err
 	}
 	l.mu.Lock()
+	for id, next := range devices {
+		if prev, ok := l.devices[id]; ok && prev.quota != next.quota {
+			if a := l.meters[next.user]; a != nil {
+				l.retireQuotaLocked(a)
+			}
+		}
+	}
 	l.devices = devices
 	l.pruneLocked()
 	l.mu.Unlock()
@@ -198,12 +228,16 @@ func (l *Ledger) refresh(ctx context.Context) error {
 }
 func (l *Ledger) pruneLocked() {
 	for id, flows := range l.active {
-		if l.keyLocked(id) != nil {
-			continue
-		}
-		delete(l.active, id)
+		valid := l.keyLocked(id) != nil
 		for flow := range flows {
+			if valid && !flow.meter.retired.Load() {
+				continue
+			}
+			delete(flows, flow)
 			go flow.stop()
+		}
+		if len(flows) == 0 {
+			delete(l.active, id)
 		}
 	}
 }
@@ -385,30 +419,43 @@ func (l *Ledger) Lookup(id proof.ID) *ecdsa.PublicKey {
 }
 func (l *Ledger) keyLocked(id proof.ID) *ecdsa.PublicKey {
 	state := l.devices[id]
-	if state.expires.Valid && state.expires.Int64 <= time.Now().Unix() {
+	if l.closing || state.quota.Valid && state.quota.Int64 == 0 || state.expires.Valid && state.expires.Int64 <= time.Now().Unix() {
 		return nil
 	}
 	return state.key
 }
 
 // register closes the gap between authentication and opening the first business stream.
-func (l *Ledger) register(id proof.ID, stop func()) (func(), bool) {
+func (l *Ledger) register(id proof.ID, stop func()) (*quotaAccount, func(), bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.keyLocked(id) == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	flow := &activeFlow{stop}
+	user := l.devices[id].user
+	a := l.meters[user]
+	if a == nil {
+		a = &quotaAccount{ledger: l, user: user}
+		l.meters[user] = a
+	}
+	a.refs.Add(1)
+	l.flows.Add(1)
+	flow := &activeFlow{stop: stop, meter: a}
 	if l.active[id] == nil {
 		l.active[id] = map[*activeFlow]struct{}{}
 	}
 	l.active[id][flow] = struct{}{}
-	return func() {
+	return a, func() {
+		defer l.flows.Done()
 		l.mu.Lock()
-		defer l.mu.Unlock()
 		delete(l.active[id], flow)
 		if len(l.active[id]) == 0 {
 			delete(l.active, id)
+		}
+		a.refs.Add(-1)
+		l.mu.Unlock()
+		if err := a.checkpoint(true); err != nil {
+			slog.Error("flow quota settlement failed", "error", err)
 		}
 	}, true
 }
