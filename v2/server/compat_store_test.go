@@ -106,6 +106,16 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	if retry != second {
 		t.Fatal("recovery changed credential")
 	}
+	_, err = l.db.Exec("UPDATE users SET expires_at=1")
+	check(err)
+	expired, _, err := l.compatSnapshot(ctx, "reality")
+	check(err)
+	if len(expired.Credentials) != 1 || expired.Credentials[0].ExpiresAt != 1 || expired.Revision != second.Generation {
+		t.Fatal("expiry changed snapshot membership or revision")
+	}
+	if _, err := l.CompatExport(ctx, user); err == nil {
+		t.Fatal("exported expired user")
+	}
 	check(l.RevokeUser(ctx, user))
 	if _, err := l.CompatExport(ctx, user); err == nil {
 		t.Fatal("revoked credentials exported")

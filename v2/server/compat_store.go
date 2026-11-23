@@ -135,8 +135,10 @@ func (l *Ledger) compatSnapshot(ctx context.Context, protocol string) (snap comp
 	if err := tx.QueryRowContext(ctx, "SELECT revision,applied_revision FROM compat_protocols WHERE protocol=?", protocol).Scan(&snap.Revision, &applied); err != nil {
 		return snap, 0, err
 	}
+	// Keep the snapshot for a revision stable as time passes. The service
+	// enforces ExpiresAt at admission; export filters against the clock.
 	rows, err := tx.QueryContext(ctx, `SELECT lower(hex(user_id)),generation,coalesce(u.expires_at,0),uuid,private_key,public_key,short_id,password FROM compat_credentials c JOIN users u ON u.id=c.user_id
-		WHERE protocol=? AND enabled AND (expires_at IS NULL OR expires_at>unixepoch()) ORDER BY user_id`, protocol)
+		WHERE protocol=? AND enabled ORDER BY user_id`, protocol)
 	if err != nil {
 		return snap, 0, err
 	}
