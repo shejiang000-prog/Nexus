@@ -17,7 +17,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import org.json.JSONObject
 
-internal fun Instrumentation.m3Check(result: Bundle, phase: String) {
+internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage: String) {
     require(phase in setOf("all", "switch", "recovery", "regression"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
@@ -130,6 +130,22 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String) {
                 stop();control("clear")
             }
             result.putString("cold-ms", cold.joinToString(","));result.putString("hot-ms", hot.joinToString(","))
+        }
+        if (phase == "all" || phase == "regression") {
+            val appKey = "apps/" + node.key
+            val allowed = prefs.getStringSet(appKey, null)?.toSet()
+            try {
+                check(prefs.edit().putStringSet(appKey,setOf(probePackage)).commit())
+                startV2()
+                waitFor(12000) { TunnelService.state.value.bearer.equals("h3",true) && TunnelService.state.value.vpn }
+                check(cm.activeNetwork == physical && vpn() == null)
+                external("probe-scoped")
+                check(cm.activeNetwork == physical && vpn() == null)
+                result.putString("app-scope","probe UID uses V2 TCP/UDP; app UID stays on its physical network")
+            } finally {
+                stop()
+                prefs.edit().let { if (allowed == null) it.remove(appKey) else it.putStringSet(appKey,allowed) }.commit()
+            }
         }
         if (phase == "all" || phase == "recovery") {
             stage.writeText("recovery");control("drop");startV2();usable("h2",12000)

@@ -32,7 +32,7 @@ def run(adb, package, fixture, runner, probe, phase):
         raise RuntimeError("incomplete private instrumentation configuration")
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
     with tempfile.TemporaryFile() as log:
-        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3","-e","phase",phase,runner], stdout=log,stderr=subprocess.STDOUT)
+        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3","-e","phase",phase,"-e","probePackage",probe.split("/")[0],runner], stdout=log,stderr=subprocess.STDOUT)
         stage=""
         deadline=time.monotonic()+720
         try:
@@ -42,7 +42,7 @@ def run(adb, package, fixture, runner, probe, phase):
                 if marker !=stage and marker != "" and len(marker)<64:
                     stage=marker
                     print("stage",stage,flush=True)
-                    if stage in ("probe-v2","probe-xray"):
+                    if stage in ("probe-v2","probe-scoped","probe-xray"):
                         output=subprocess.check_output([*a,"shell","am","instrument","-w","-e","m3","yes","-e","vpn","on",
                             "-e","echo",cfg["target"],"-e","port",str(cfg["echoPort"]),probe],timeout=40)
                         if b"INSTRUMENTATION_CODE: -1" not in output:raise RuntimeError("separate UID probe failed: "+output.decode(errors="replace"))
