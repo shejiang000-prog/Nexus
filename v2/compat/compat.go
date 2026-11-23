@@ -99,6 +99,9 @@ func saveFile(dir, name string, data []byte) error {
 func (s *service) apply(req Snapshot, persist bool) error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
+	return s.applyLocked(req, persist)
+}
+func (s *service) applyLocked(req Snapshot, persist bool) error {
 	if req.Protocol != s.protocol || req.Revision < 0 || req.Revision < s.live.Revision {
 		return errors.New("outdated protocol snapshot")
 	}
@@ -157,6 +160,24 @@ func (s *service) apply(req Snapshot, persist bool) error {
 		return s.kickInvalid(users)
 	}
 	return nil
+}
+
+func (s *service) maintain() {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	if s.protocol == "hysteria2" {
+		// An in-flight successful auth can be registered after the rotation's first kick.
+		_ = s.kickInvalid(s.users)
+		return
+	}
+	for id, c := range s.users {
+		w := s.workers[id]
+		if c.active() && (w == nil || !w.running()) || !c.active() && w != nil {
+			// Retry just the missing worker. The apply path reuses every healthy generation.
+			_ = s.applyLocked(s.live, false)
+			return
+		}
+	}
 }
 
 func (s *service) handle(w http.ResponseWriter, r *http.Request) {
@@ -260,11 +281,17 @@ func Serve(ctx context.Context, root, protocol string) error {
 	h := &http.Server{Handler: http.HandlerFunc(s.handle), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 15 * time.Second}
 	go func() { s.report(h.Serve(control)) }()
 	defer h.Close()
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-s.fail:
-		return err
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-s.fail:
+			return err
+		case <-ticker.C:
+			s.maintain()
+		}
 	}
 }
 func (s *service) report(err error) {

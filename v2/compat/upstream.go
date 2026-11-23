@@ -61,6 +61,7 @@ func (s *service) start(name string, config func(string) object, args ...string)
 	return w, nil
 }
 func (w *worker) ready(check func() bool) error {
+	defer os.Remove(filepath.Join(w.dir, "upstream.json"))
 	deadline := time.Now().Add(8 * time.Second)
 	for w.running() && time.Now().Before(deadline) {
 		if check() {
@@ -106,7 +107,7 @@ type previewConn struct {
 func (p previewConn) Read(b []byte) (int, error)  { return p.r.Read(b) }
 func (p previewConn) Write(b []byte) (int, error) { return len(b), nil }
 
-func (s *service) relay(raw net.Conn) {
+func (s *service) relay(raw net.Conn, pending chan struct{}) {
 	defer raw.Close()
 	var hello bytes.Buffer
 	raw.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -116,6 +117,7 @@ func (s *service) relay(raw net.Conn) {
 		name = strings.ToLower(ch.ServerName)
 		return nil, errors.New("client hello inspected")
 	}}).Handshake()
+	<-pending
 	id, ok := strings.CutSuffix(name, "."+s.site.Domain)
 	if !ok {
 		return
@@ -153,6 +155,8 @@ func (s *service) listenReality(port int) (net.Listener, error) {
 		ln.Close()
 		return nil, errors.New("invalid Reality TLS target")
 	}
+	// Bound memory retained for incomplete ClientHellos. Active tunnels no longer hold a slot.
+	pending := make(chan struct{}, 256)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -160,7 +164,12 @@ func (s *service) listenReality(port int) (net.Listener, error) {
 				s.report(err)
 				return
 			}
-			go s.relay(c)
+			select {
+			case pending <- struct{}{}:
+				go s.relay(c, pending)
+			default:
+				c.Close()
+			}
 		}
 	}()
 	return ln, nil
