@@ -246,11 +246,12 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         }
     }){
         val wide=maxWidth>=480.dp && maxWidth>maxHeight
+        val short=maxHeight<230.dp
         val diameter=(maxHeight - (if(wide) 80.dp else 260.dp)).coerceIn(88.dp,Sizes.dial)
         if(wide) Row(Modifier.fillMaxSize().padding(horizontal=Space.page),verticalAlignment=Alignment.CenterVertically,
             horizontalArrangement=Arrangement.spacedBy(Space.md)) {
             Column(Modifier.weight(.8f).verticalScroll(rememberScrollState())){dial(diameter)}
-            Column(Modifier.weight(1.35f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.xs)){details(maxHeight<230.dp)}
+            Column(Modifier.weight(1.35f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.xs)){details(short)}
         } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page,vertical=Space.xs),
             verticalArrangement=Arrangement.spacedBy(Space.sm)){dial(diameter);details(false)}
     }
