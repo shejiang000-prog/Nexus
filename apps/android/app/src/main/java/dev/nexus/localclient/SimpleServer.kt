@@ -34,6 +34,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
+internal fun DeploymentDomain(domain:String, change:(String)->Unit, protocols:Set<String>, select:(Set<String>)->Unit, enabled:Boolean) {
+    OutlinedTextField(domain,{change(it.trim().take(253))},Modifier.fillMaxWidth(),enabled=enabled,singleLine=true,
+        label={Text("域名（可选）")},supportingText={Text("留空部署 V2 和 Reality。有域名时伪装效果更好。")},shape=Shapes.control)
+    if (domain.isNotBlank()) {
+        Text("随 V2 部署",style=MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
+            for ((id,name) in listOf("reality" to "Reality","hysteria2" to "Hysteria2")) {
+                FilterChip(selected=id in protocols,enabled=enabled,
+                    onClick={select(if(id in protocols) protocols-id else protocols+id)},label={Text(name)})
+            }
+        }
+        if (protocols.isNotEmpty()) Text("兼容协议的凭据可以复制。管理员可轮换或禁用凭据；单设备即时撤销仅适用于 V2。",style=MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
 internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) {
     val ctx = LocalContext.current
     val access = remember { OwnerAccess(ctx) }
@@ -45,6 +61,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
     var deploy by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
     var domain by remember { mutableStateOf("") }
+    var extraProtocols by remember { mutableStateOf(emptySet<String>()) }
     var days by remember { mutableStateOf("7") }
     var count by remember { mutableStateOf("1") }
     var mb by remember { mutableStateOf("") }
@@ -90,8 +107,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
                         unfocusedContainerColor=c.background,focusedContainerColor=c.background)
                     OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
                         shape=Shapes.control,colors=field)
-                    OutlinedTextField(domain,{ domain=it.trim().take(253) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
-                        label={Text("域名（可选）")},supportingText={Text("留空使用 IP 模式。有域名时伪装效果更好。")},shape=Shapes.control,colors=field)
+                    DeploymentDomain(domain,{domain=it},extraProtocols,{extraProtocols=it},!busy)
                     OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
                         visualTransformation=PasswordVisualTransformation(),label={ Text("root 密码（仅用一次）") },
                         shape=Shapes.control,colors=field)
@@ -194,7 +210,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             val trusted=pin; pin=""
             work {
                 val secret=password; password=""
-                val result=withContext(Dispatchers.IO) { access.bindPrivate(host,trusted,secret,deploy,domain) }
+                val result=withContext(Dispatchers.IO) { access.bindPrivate(host,trusted,secret,deploy,domain,extraProtocols) }
                 result?.let(saved)
                 expanded=false; adding=false; status=if (deploy) "部署成功" else "绑定成功"
             }

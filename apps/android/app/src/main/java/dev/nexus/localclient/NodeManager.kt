@@ -109,8 +109,11 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         return hex(digest.digest())
     }
 
-    internal fun installV2(domain: String) = session { ssh ->
+    internal fun installV2(domain: String, extraProtocols: Set<String> = emptySet()) = session { ssh ->
         require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
+        require(extraProtocols.all { it == "reality" || it == "hysteria2" })
+        val protocols = if (domain.isBlank() || extraProtocols.isEmpty()) ""
+            else " --protocols " + (listOf("v2") + extraProtocols.sorted()).joinToString(",")
         val address = if (domain.isBlank()) "--public-host $host" else {
             require(domain.length <= 253 && '.' in domain && nodeIP(domain) == null &&
                 domain.split('.').all { it.matches(Regex("[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")) }) { "请填写有效的域名" }
@@ -130,7 +133,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             check(run(ssh, "sha256sum $staged").substringBefore(' ') == digest)
             ssh.setServerAliveInterval(15000)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address")
+            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address$protocols")
         } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
         Unit
     }

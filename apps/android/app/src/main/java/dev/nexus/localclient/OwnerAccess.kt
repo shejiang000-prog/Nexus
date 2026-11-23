@@ -89,12 +89,12 @@ internal class OwnerAccess(private val context: Context) {
 
     fun isV2(host: String) = prefs.getBoolean("v2/$host", false)
 
-    fun bindPrivate(host: String, pin: String, password: String, deploy: Boolean, domain: String): V2Node? {
+    fun bindPrivate(host: String, pin: String, password: String, deploy: Boolean, domain: String, extraProtocols: Set<String>): V2Node? {
         val json = prepare(host, pin)
         val bootstrap = NodeManager(context, host, 22, "root", password, pin)
         bootstrap.authorize(json.getString("public"), deploy, v2 = true)
         val manager = manager(host)
-        if (deploy) manager.installV2(domain)
+        if (deploy) manager.installV2(domain, extraProtocols)
         val v2 = manager.isV2()
         if (v2) manager.v2Devices() else manager.owner("devices")
         check(prefs.edit().putBoolean("ready/$host", true).putBoolean("v2/$host", v2).putString("current", host).commit())

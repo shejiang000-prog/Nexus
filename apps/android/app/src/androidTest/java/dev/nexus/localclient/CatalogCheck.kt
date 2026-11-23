@@ -423,6 +423,27 @@ class CatalogCheck : Instrumentation() {
                     .getMethod("run", Instrumentation::class.java, Bundle::class.java, Bundle::class.java)
                     .invoke(null, this, args, result)
                 "m3" -> m3Check(result, args.getString("phase") ?: "all", args.getString("probePackage") ?: "dev.nexus.vpnprobe")
+                "m32-ssh" -> {
+                    check(targetContext.packageName == "dev.nexus.lab.m0")
+                    val dir = targetContext.noBackupFilesDir
+                    val fixture = File(dir, "m32-ssh.json")
+                    val keyFile = File(dir, "m32-ssh-key")
+                    val key = keyFile.readBytes()
+                    try {
+                        val ssh = JSONObject(fixture.readText())
+                        val admin = NodeManager(targetContext, ssh.getString("host"), ssh.getInt("port"),
+                            "root", "", ssh.getString("pin"), key)
+                        admin.installV2("")
+                        check(admin.isV2())
+                        admin.v2Devices()
+                        check(V2Invite.parse(admin.v2Invite(1)).pin.size == 32)
+                        result.putString("deployment", "Signed APK node uploaded, checksum verified, default IP deployment and invite succeeded")
+                    } finally {
+                        key.fill(0)
+                        keyFile.delete()
+                        fixture.delete()
+                    }
+                }
                 "m3-ui" -> m3UiCheck(result)
                 "m32-expiry" -> m32ExpiryCheck(result)
                 "split-lab", "split-public" -> splitCheck(args,result)

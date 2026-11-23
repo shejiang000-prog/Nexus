@@ -28,6 +28,7 @@ internal fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, bound
     DisposableEffect(sshKey) { val key = sshKey; onDispose { key?.fill(0) } }
     var pin by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }
     var domain by remember { mutableStateOf("") }
+    var extraProtocols by remember { mutableStateOf(emptySet<String>()) }
     var dns by remember { mutableStateOf("") }; var port by remember { mutableStateOf("8443") }
     var claimPort by remember { mutableStateOf("8444") }
     var days by remember { mutableStateOf("30") }; var quota by remember { mutableStateOf("") }
@@ -98,7 +99,7 @@ internal fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, bound
             OutlinedTextField(pin,{ pin = it.take(64) },singleLine = true,label = { Text("SSH 主机指纹 SHA256") })
             } else Text("已绑定服务器 · "+boundHost)
             if (boundHost == null) {
-                OutlinedTextField(domain,{domain=it.trim().take(253)},singleLine=true,label={Text("域名（可选）")},supportingText={Text("留空使用 IP 模式。有域名时伪装效果更好。")})
+                DeploymentDomain(domain,{domain=it},extraProtocols,{extraProtocols=it},!busy)
                 PrimaryAction(enabled=!busy && host.isNotBlank() && pin.isNotBlank(),onClick={confirm="部署私人节点"}) {Text("预览部署")}
             }
             HorizontalDivider()
@@ -184,7 +185,7 @@ internal fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, bound
                     "部署私人节点" -> {
                         val node = withContext(Dispatchers.IO) {
                             val m=manager()
-                            m.installV2(domain)
+                            m.installV2(domain,extraProtocols)
                             V2Devices.enroll(context,V2Invite.parse(m.v2Invite()))
                         }
                         onV2(node)
