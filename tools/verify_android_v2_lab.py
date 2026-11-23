@@ -1,10 +1,34 @@
 """Run M3 instrumentation against the live, disposable android_v2_lab.py fixture."""
 import argparse
+import contextlib
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import time
+
+
+@contextlib.contextmanager
+def advanced_clock(shell):
+    """Shift only the disposable guest clock, preserving elapsed test time on restore."""
+    base = int(shell("date","+%s",check=True).stdout)
+    started = time.monotonic()
+    automatic = shell("cmd","time_detector","is_auto_detection_enabled",check=True).stdout.strip().decode()
+    if automatic not in ("true","false"):
+        raise RuntimeError("unknown guest clock settings")
+    def set_time(seconds):
+        uptime = float(shell("cat","/proc/uptime",check=True).stdout.split()[0])
+        shell("cmd","time_detector","suggest_manual_time","--elapsed_realtime",str(int(uptime*1000)),
+              "--unix_epoch_time",str(int(seconds*1000)),check=True)
+        if abs(int(shell("date","+%s",check=True).stdout) - seconds) > 4:
+            raise RuntimeError("guest clock did not reach requested time")
+    try:
+        shell("cmd","time_detector","set_auto_detection_enabled","false",check=True)
+        set_time(base + 12*3600)
+        yield
+    finally:
+        try: set_time(base + time.monotonic() - started)
+        finally: shell("cmd","time_detector","set_auto_detection_enabled",automatic,check=True)
 
 
 def run(adb, package, fixture, runner, probe, phase):
@@ -31,8 +55,9 @@ def run(adb, package, fixture, runner, probe, phase):
     if int(shell("run-as",package,"stat","-c","%s",private_file,check=True).stdout) != len(data):
         raise RuntimeError("incomplete private instrumentation configuration")
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
-    with tempfile.TemporaryFile() as log:
-        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3","-e","phase",phase,"-e","probePackage",probe.split("/")[0],runner], stdout=log,stderr=subprocess.STDOUT)
+    mode = "m32-expiry" if phase == "expiry" else "m3"
+    with (advanced_clock(shell) if phase == "expiry" else contextlib.nullcontext()), tempfile.TemporaryFile() as log:
+        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode",mode,"-e","phase",phase,"-e","probePackage",probe.split("/")[0],runner], stdout=log,stderr=subprocess.STDOUT)
         stage=""
         deadline=time.monotonic()+720
         try:
@@ -68,6 +93,6 @@ if __name__=="__main__":
     p.add_argument("fixture",type=Path)
     p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
     p.add_argument("--probe",default="dev.nexus.vpnprobe/.Probe",choices=["dev.nexus.vpnprobe/.Probe","dev.nexus.lab.m31.probe/dev.nexus.vpnprobe.Probe"])
-    p.add_argument("--phase",choices=["all","switch","recovery","regression"],default="all")
+    p.add_argument("--phase",choices=["all","switch","recovery","regression","expiry","blackhole","rate","loss","healthy-download","idle-h2","idle-h3"],default="all")
     opt=p.parse_args()
     run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe,opt.phase)
