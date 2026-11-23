@@ -20,7 +20,7 @@ import org.json.JSONObject
 internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage: String) {
     val scenario = phase.removeSuffix("-sample")
     val sampleOnly = phase in setOf("loss-sample","healthy-download-sample")
-    require((phase == scenario || sampleOnly) && scenario in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download"))
+    require((phase == scenario || sampleOnly) && scenario in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download", "handover", "airplane", "offline", "soak", "ip-upgrade-before", "ip-upgrade-after"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
     val dir = ctx.noBackupFilesDir
@@ -29,7 +29,11 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
     val cm = ctx.getSystemService(ConnectivityManager::class.java)
     val physical = requireNotNull(cm.activeNetwork)
     val url = V2Invite.parse(cfg.getString("invitation"))
-    val node = V2Devices.enroll(ctx, url, cfg.getString("endpoint"), cfg.getString("ca").toByteArray())
+    val savedKey = File(dir,"m3-upgrade-key")
+    val node = if(phase=="ip-upgrade-after") {
+        requireNotNull(V2Devices.get(ctx,savedKey.readText())).also { check(it.authority==url.authority) }
+    } else V2Devices.enroll(ctx, url, cfg.getString("endpoint"), cfg.getString("ca").toByteArray())
+    var retainForUpgrade=false
     check(node.expiryKnown && node.expiresAt != null)
     val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     check(keyStore.getKey(node.key,null)?.let { it.encoded == null } == true)
@@ -100,6 +104,25 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
     try {
         prefs.edit().putBoolean(SplitRouting.KEY,false).commit()
         control("clear")
+        if(phase.startsWith("ip-upgrade-")) {
+            startV2();usable("h3",12000);udp();stop()
+            control("drop");startV2();usable("h2",12000);udp();stop();control("clear")
+            result.putString("IP-upgrade","pinned H3/H2 TCP echo and UDP echo succeeded")
+            if(phase=="ip-upgrade-before") {
+                check(!savedKey.exists());savedKey.writeText(node.key);retainForUpgrade=true
+            }
+        }
+        if (phase in setOf("handover","airplane","offline","soak")) {
+            startV2();usable("h3",12000)
+            if(phase=="soak") {
+                control("soak-start")
+                try {
+                    soak(result, { connect().use(::echo); udp(); download() }, ::stop)
+                } finally { control("soak-stop") }
+            } else {
+                networkChanges(phase,result,::connect,::echo)
+            }
+        }
         if (phase == "all") {
             stage.writeText("startup")
             startV2();usable("h3",12000);udp()
@@ -283,7 +306,8 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
     } finally {
         result.putString("cold-ms",cold.joinToString(","));result.putString("hot-ms",hot.joinToString(","))
         runCatching {control("clear")};runCatching {stop()};source?.let(store::remove)
-        V2Devices.remove(ctx,node.key)
+        if(!retainForUpgrade) V2Devices.remove(ctx,node.key)
+        if(phase=="ip-upgrade-after") savedKey.delete()
         prefs.edit().let { if(original==null) it.remove(SplitRouting.KEY) else it.putBoolean(SplitRouting.KEY,original) }.commit()
         runOnMainSync { home.finish() }
     }

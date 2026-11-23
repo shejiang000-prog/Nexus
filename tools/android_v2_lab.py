@@ -22,6 +22,7 @@ import zipfile
 
 from lab_identity import generate
 from android_v2_netcheck import IdleCapture, UdpShape
+from android_v2_observe import NodeSamples, installed_echo
 
 TARGET = "192.0.2.85"
 TABLE = "nexus_android_m3_" + secrets.token_hex(6)
@@ -32,14 +33,16 @@ class TCP(socketserver.ThreadingTCPServer):
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
-def serve(node, xray_zip, host, work):
+def serve(node, xray_zip, host, work, installed_port=None):
     if os.environ.get("WSL_DISTRO_NAME") != "NexusLab" or not ipaddress.ip_address(host).is_private or host == TARGET:
         raise SystemExit("requires NexusLab and its private interface address")
     os.umask(0o077)
     work.mkdir(mode=0o700)
     keys = work / "keys"
-    generate(keys)
-    db = work / "ledger.db"
+    if installed_port is None: generate(keys)
+    db = work / "ledger.db" if installed_port is None else Path("/var/lib/nexus-v2/ledger.db")
+    if installed_port is not None and not db.is_file():
+        raise ValueError("expected an installed test ledger")
     def ledger(*args):
         return subprocess.check_output([node, "ledger", db, *args], text=True).strip()
     expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -60,6 +63,8 @@ def serve(node, xray_zip, host, work):
             stack.callback(server.shutdown)
             return server.server_address[1]
 
+        marks={}
+        marks_lock=threading.Lock()
         class Echo(socketserver.StreamRequestHandler):
             def handle(self):
                 self.request.settimeout(150)
@@ -67,6 +72,12 @@ def serve(node, xray_zip, host, work):
                     while True:
                         tag = self.rfile.read(1)
                         if tag == b"A": self.wfile.write(tag)
+                        elif tag in (b"N",b"Q"):
+                            marker=self.rfile.read(8)
+                            if len(marker)!=8:return
+                            with marks_lock:
+                                if tag==b"N":marks[marker]=marks.get(marker,0)+1
+                                else:self.wfile.write(marks.get(marker,0).to_bytes(4,"big"))
                         elif tag == b"D":
                             chunk = bytes([42])*65536
                             for _ in range(64): self.wfile.write(chunk)
@@ -83,10 +94,12 @@ def serve(node, xray_zip, host, work):
             with socket.socket() as s:
                 s.bind((host,0))
                 return s.getsockname()[1]
-        port = freeport()
-        authority = "nexus.test:" + str(port)
+        port = installed_port if installed_port is not None else freeport()
+        authority = (host if installed_port is not None else "nexus.test") + ":" + str(port)
         handler = {"handler":"nexus","authority":authority,"ledger_path":str(db),"allow_exact":[target]}
         config = {"admin":{"disabled":True},"apps":{"tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}},"http":{"servers":{"node":{"listen":[f"{host}:{port}"],"automatic_https":{"disable":True},"enable_datagrams":True,"tls_connection_policies":[{"protocol_min":"tls1.3"}],"routes":[{"handle":[handler,{"handler":"static_response","status_code":404}]}]}}}}}
+        local_admin = work / "admin.sock"
+        config["admin"]={"listen":"unix/"+str(local_admin)}
         # Store only method/status lines. Never log the connection proof or raw URL.
         access = work / "requests.jsonl"
         config["apps"]["http"]["servers"]["node"]["logs"] = {"default_logger_name":"lab"}
@@ -122,7 +135,16 @@ def serve(node, xray_zip, host, work):
                     except subprocess.TimeoutExpired:p.kill();p.wait()
             stack.callback(stop)
             return p
-        node_process = process(node,["run","--config"],config,"node")
+        if installed_port is None:
+            node_process = process(node,["run","--config"],config,"node")
+            pid=node_process.pid
+        else:
+            node_process=None
+            local_admin=Path("/var/lib/nexus-v2/admin.sock")
+            stack.enter_context(installed_echo(local_admin,authority,target))
+            pid=int(subprocess.check_output(["systemctl","show","-p","MainPID","--value","nexus-v2"]))
+            if pid<=1:raise ValueError("installed fixture unit is not running")
+        samples=NodeSamples(pid,local_admin,echo,work/"node-samples.jsonl")
         with xray_zip.open("rb") as stream:
             if hashlib.file_digest(stream,"sha256").hexdigest()!="b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82":
                 raise ValueError("unapproved Xray test asset")
@@ -159,6 +181,8 @@ def serve(node, xray_zip, host, work):
                         if len(words)==2 and words[1] in ("clear","drop","rate","loss"):switch(words[1])
                         elif len(words)==2 and words[1] in ("capture-h2","capture-h3"):capture.start(words[1][-2:])
                         elif words[1:] == ["capture-stop"]:capture.finish()
+                        elif words[1:] == ["soak-start"]:samples.start()
+                        elif words[1:] == ["soak-stop"]:samples.stop()
                         elif len(words)==3 and words[1]=="revoke" and re.fullmatch("[0-9a-f]{32}",words[2]):ledger("revoke",words[2])
                         elif len(words)==3 and words[1]=="extend" and re.fullmatch("[0-9a-f]{32}",words[2]):
                             with contextlib.closing(sqlite3.connect(db)) as conn, conn:
@@ -170,20 +194,25 @@ def serve(node, xray_zip, host, work):
                     self.wfile.write(b"\x01")
                 except (ValueError,OSError,subprocess.SubprocessError):return
         cport=listener(TCP,(host,0),Control)
-        invite=ledger("invite",user,expires)
-        link="nexus://invite/v2#"+b64url(json.dumps(dict(v=2,host="nexus.test",port=port,invite=invite,name="NexusLab V2")).encode())
+        if installed_port is None:
+            invite=ledger("invite",user,expires)
+            link="nexus://invite/v2#"+b64url(json.dumps(dict(v=2,host="nexus.test",port=port,invite=invite,name="NexusLab V2")).encode())
+            ca=(keys/"ca.pem").read_text()
+        else:
+            link=ledger("invite","--link",user,expires)
+            ca=""
         sub=f"vless://{client}@{host}:{xport}?encryption=none&security=none&type=tcp#M3-Lab"
         for peer in (port,xport):
             for _ in range(100):
-                if node_process.poll() is not None or xr.poll() is not None:raise RuntimeError("lab process exited")
+                if (node_process and node_process.poll() is not None) or xr.poll() is not None:raise RuntimeError("lab process exited")
                 try:
                     with socket.create_connection((host,peer),.15):break
                 except OSError:time.sleep(.1)
             else:raise RuntimeError("lab listeners not ready")
-        (work/"device.json").write_text(json.dumps(dict(invitation=link,endpoint=f"{host}:{port}",host=host,ca=(keys/"ca.pem").read_text(),echoPort=echo,target=TARGET,controlPort=cport,control=ctl,subscription=sub)))
+        (work/"device.json").write_text(json.dumps(dict(invitation=link,endpoint=f"{host}:{port}",host=host,ca=ca,echoPort=echo,target=TARGET,controlPort=cport,control=ctl,subscription=sub)))
         print("M3 fixture ready",flush=True)
         while not (work/"stop").is_file():
-            if node_process.poll()!=None or xr.poll()!=None:raise RuntimeError("lab process exited")
+            if (node_process and node_process.poll()!=None) or xr.poll()!=None:raise RuntimeError("lab process exited")
             time.sleep(.5)
 
 if __name__ == "__main__":
@@ -192,5 +221,6 @@ if __name__ == "__main__":
     p.add_argument("xray_zip",type=Path)
     p.add_argument("host")
     p.add_argument("work",type=Path)
+    p.add_argument("--installed-ip-port",type=int,help="use the separately installed IP-mode test node on this port")
     a=p.parse_args()
-    serve(a.node.resolve(),a.xray_zip.resolve(),a.host,a.work.resolve())
+    serve(a.node.resolve(),a.xray_zip.resolve(),a.host,a.work.resolve(),a.installed_ip_port)
