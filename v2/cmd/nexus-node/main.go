@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/fileserver"
@@ -18,6 +19,13 @@ import (
 )
 
 func main() {
+	if handled, err := platformCommand(os.Args[1:], os.Stdin, os.Stdout); handled {
+		if err != nil && !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "ledger" {
 		if err := admin(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -29,6 +37,9 @@ func main() {
 }
 
 func admin(args []string, out io.Writer) error {
+	if handled, err := compatAdmin(args, out); handled {
+		return err
+	}
 	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit}")
 	if len(args) < 2 {
 		return usage
