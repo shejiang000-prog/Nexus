@@ -121,6 +121,7 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                 startV2();usable(bearer,12000)
                 if(phase.startsWith("idle-")) {
                     // Exclude setup exchanges and the recent-business window. No polling or open business flows.
+                    runOnMainSync { home.moveTaskToBack(true) }
                     Thread.sleep(35000)
                     control("capture-$bearer")
                     try { idleBearer(bearer,result) } finally { control("capture-stop") }
