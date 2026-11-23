@@ -2,7 +2,7 @@
 
 ## 安装和升级
 
-V2、Hysteria2 需要节点域名。默认由 Caddy 通过 ACME 管理证书；有现成证书时可一起提供绝对路径 `--cert`、`--key`。域名 A/AAAA 记录须指向本机接口，放行验证所需的 80/TCP 和 443/TCP。仅选 Reality 时可用节点 IPv4 或 IPv6 地址，使用 `--public-host`，省略 `--domain`。Reality 目标及 SNI 单独选择，目标证书须对每个名称有效，安装器会验证服务器支持 TLS 1.3 和 X25519。
+V2、Hysteria2 需要节点域名。默认由 Caddy 通过 ACME 管理证书；有现成证书时可一起提供绝对路径 `--cert`、`--key`。域名可指向网关的公网地址，由 DNAT 转发至节点。在云安全组和 NAT 上放行 80/TCP、443/TCP。安装器临时监听 80/TCP，经节点域名取回随机令牌。不支持回环 NAT 时，核对公网 DNS、转发与安全组后可在交互提示中确认继续；无人值守安装须显式提供 `--skip-dns-check`。安装器最多等待首张证书 180 秒，Caddy 须实际出示域名匹配的受信证书。若 CA 明确拒签或限流，按提示检查名称、CAA 或 CA 的重试时间。验证连接失败时检查 DNS、80/443 入站和转发。未得到具体 CA 原因时，可在本机查看 `journalctl -u nexus-v2.service`。安装失败会回滚。仅选 Reality 时可用节点 IPv4 或 IPv6 地址，使用 `--public-host`，省略 `--domain`。Reality 目标优先选与 VPS 同网络或同地区的站点，目标及 SNI 单独选择，目标证书须对每个名称有效，安装器会验证服务器支持 TLS 1.3 和 X25519。
 
 从独立可信渠道取得本架构 Nexus SHA-256。设定 `NEXUS_RELEASE_BASE` 为受信 HTTPS 发布目录，按架构设 `NEXUS_SHA256_AMD64` 或 `NEXUS_SHA256_ARM64`。引导脚本取 `nexus-node-linux-amd64` 或 `nexus-node-linux-arm64`。实验室可以用 `NEXUS_NODE_FILE` 指向已构建文件，也必须提供匹配摘要。本轮没有对外发布地址或签名清单。
 
@@ -35,6 +35,7 @@ ledger compat enable "$user_id" hysteria2
 ledger compat status "$user_id"
 ledger compat export "$user_id" links > "$PRIVATE_DIR/links.txt"
 ledger compat export "$user_id" mihomo > "$PRIVATE_DIR/proxies.yaml"
+# 默认轮换会断开所有 Reality 会话。保留现有会话时，在命令末尾加 --keep-connections。
 ledger compat rotate "$user_id" reality
 # 影响本节点全部 Reality 用户的独立操作
 ledger compat rotate-node-key reality
@@ -42,7 +43,7 @@ ledger compat disable "$user_id" hysteria2
 ledger compat apply reality
 ```
 
-`PRIVATE_DIR` 应是本机管理员拥有的 0700 目录。导出文件和备份均含凭据；分享链接通过受控渠道交付。节点不提供订阅 HTTP 路径。单用户 Reality 轮换更换 UUID；禁用或替换 UUID 阻止新认证，已通过认证的连接可能持续到客户端自然关闭。整节点换钥会关闭该 Reality 入站的已有连接，所有 Reality 用户应重新导出。Hysteria2 用户继续使用原凭据。服务应用失败时 CLI 返回非零，`status` 显示待处理代次或失败；修复服务后用 `apply PROTOCOL` 重放。旧服务可能仍接受之前的凭据，直至更新成功。用户其他设备如果复制了旧链接也需更新。
+`PRIVATE_DIR` 应是本机管理员拥有的 0700 目录。导出文件和备份均含凭据；分享链接通过受控渠道交付。节点不提供订阅 HTTP 路径。默认禁用 Reality、轮换 UUID 或撤销已开通 Reality 的用户，都会断开本节点所有 Reality 连接。其他用户可沿用原链接重连；被禁用的用户无法用旧链接重新接入。显式加 `--keep-connections` 时，旧链接无法建立新连接，已认证的连接仍可能持续到客户端关闭。整节点换钥会关闭该 Reality 入站的已有连接，所有 Reality 用户应重新导出。Hysteria2 用户继续使用原凭据。服务应用失败时 CLI 返回非零，`status` 显示待处理代次或失败；修复服务后用 `apply PROTOCOL` 重放。旧服务可能仍接受之前的凭据，直至更新成功。用户其他设备如果复制了旧链接也需更新。
 
 `revoke-user` 原子撤销现有 V2 设备并登记两种兼容凭据的禁用，再向服务送达。V2 的设备撤销仍可独立使用。兼容账号到期停止接收新认证。审计记录用户、协议、代次及结果，省略 UUID、私钥和密码。
 

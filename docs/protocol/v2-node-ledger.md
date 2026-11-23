@@ -9,7 +9,7 @@
 |devices|16 字节随机设备 ID，压缩 P-256 公钥和兑换 ID 各自唯一；邀请外键确定归属用户。保存可选显示名和撤销时间。已领取设备的使用期限独立于原邀请。|
 |audit|单调序号、时间、操作、相关用户或设备 ID。用户创建、发邀请、兑换和撤销与审计在同一事务提交。|
 |compat_protocols|每个协议记录期望修订号和已应用修订号。|
-|compat_reality_key|全节点唯一的 X25519 密钥对和 short ID，记录节点密钥代次与应用结果。|
+|compat_reality_key|全节点唯一的 X25519 密钥对和 short ID，记录密钥代次、应用结果以及最近一次要求重建入站的修订号。已使用此布局的 v5 账本会在事务中补列，现有凭据可继续使用。|
 |compat_credentials|用户与协议共同确定一行。保存代次、开关、应用结果和对应凭据。服务账号 0600 账本及备份均按秘密管理。|
 
 管理命令、代次重试及离线恢复操作见 [M2 安装与运维](../handoff/2026-11-23-m2-linux-operations.md)。
@@ -42,14 +42,14 @@ nexus-node ledger DB invite USER_ID EXPIRES_AT
 nexus-node ledger DB users
 nexus-node ledger DB devices
 nexus-node ledger DB revoke DEVICE_ID
-nexus-node ledger DB revoke-user USER_ID
+nexus-node ledger DB revoke-user USER_ID [--keep-connections]
 nexus-node ledger DB backup ABSOLUTE_PATH
 nexus-node ledger DB audit
 ```
 
 创建用户输出新 ID。生成邀请的标准输出只含一次性令牌，按凭据交付，避免重定向至公共日志。数据库仅保存其摘要。用户、设备与审计列表均逐行输出 JSON。创建用户、发邀请、兑换、撤销的状态变更与对应审计行在同一事务内提交。对已撤销设备重复撤销不重复记账。管理命令不返回原邀请、私钥、签名或 exporter。
 
-创建用户与邀请都要求指定的到期秒数晚于当前时间。撤销未知设备时 CLI 报错并返回非零，已撤销设备提示后返回 0。`revoke-user` 撤销命令提交时该用户已有的全部设备；同一事务禁用该用户已开通的兼容协议。CLI 等待各协议实际应用，服务不可用时返回失败，以原代次重试。现有邀请和用户记录继续保留。
+创建用户与邀请都要求指定的到期秒数晚于当前时间。撤销未知设备时 CLI 报错并返回非零，已撤销设备提示后返回 0。`revoke-user` 撤销命令提交时该用户已有的全部设备；同一事务禁用该用户已开通的兼容协议。对 Reality 的撤销默认要求所有 Reality 连接断开，其他用户可凭原链接重连。显式指定 `--keep-connections` 时保留已经认证的 Reality 流。CLI 等待各协议实际应用，服务不可用时返回失败，以原代次重试。现有邀请和用户记录继续保留。
 
 ## 在线备份与离线恢复
 
