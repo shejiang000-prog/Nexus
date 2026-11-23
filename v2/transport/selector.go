@@ -25,19 +25,47 @@ type transportLane struct {
 	usable    func() bool
 	active    atomic.Int64
 	opening   atomic.Int64
+	wake      chan<- struct{}
 	last      atomic.Int64
 	ack       atomic.Bool
 	health    string
 }
 
 type selector struct {
-	ctx        context.Context
-	events     chan string
-	mu         sync.Mutex
-	lane       *transportLane
-	mode       string
-	androidVPN bool // The protected app VPN confirms a blackhole and probes recovery even when idle.
-	dial       func(context.Context, string) (*transportLane, error)
+	ctx             context.Context
+	events          chan string
+	mu              sync.Mutex
+	lane            *transportLane
+	mode            string
+	androidVPN      bool
+	wake            chan struct{}
+	recoveryMu      sync.Mutex
+	recoveryBlocked atomic.Bool
+	cancelRecovery  context.CancelFunc
+	dial            func(context.Context, string) (*transportLane, error)
+}
+
+func signal(wake chan<- struct{}) {
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (l *transportLane) business() {
+	l.last.Store(time.Now().UnixNano())
+	signal(l.wake)
+}
+
+func (s *selector) setRecoveryAllowed(allowed bool) {
+	s.recoveryMu.Lock()
+	if s.recoveryBlocked.Swap(!allowed) != !allowed {
+		if !allowed && s.cancelRecovery != nil {
+			s.cancelRecovery()
+		}
+		signal(s.wake)
+	}
+	s.recoveryMu.Unlock()
 }
 
 func (s *selector) current() *transportLane { s.mu.Lock(); defer s.mu.Unlock(); return s.lane }
@@ -48,7 +76,6 @@ func (s *selector) set(old, l *transportLane) bool {
 		l.close()
 		return false
 	}
-	l.last.Store(time.Now().UnixNano())
 	s.lane = l
 	s.mu.Unlock()
 	select {
@@ -107,7 +134,11 @@ func (s *selector) initial() (*transportLane, error) {
 
 // The controlled site serves a bounded zero-filled object independent of the target app.
 func (s *selector) capacity(l *transportLane) time.Duration {
-	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
+	return s.capacityContext(s.ctx, l)
+}
+
+func (s *selector) capacityContext(parent context.Context, l *transportLane) time.Duration {
+	ctx, cancel := context.WithTimeout(parent, 850*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
 	req.Header.Set("User-Agent", "")
@@ -125,10 +156,32 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	// An authenticated TLS response with the exact body length is still success.
 	return max(time.Since(start), time.Nanosecond)
 }
-func (s *selector) probeH3() (*transportLane, error) {
-	ctx, cancel := context.WithTimeout(s.ctx, time.Second)
+func (s *selector) probeH3(parent context.Context) (*transportLane, error) {
+	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
 	return s.dial(ctx, "h3")
+}
+
+func (s *selector) recoverH3() (*transportLane, bool) {
+	s.recoveryMu.Lock()
+	if s.recoveryBlocked.Load() {
+		s.recoveryMu.Unlock()
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.cancelRecovery = cancel
+	s.recoveryMu.Unlock()
+	defer func() {
+		s.recoveryMu.Lock()
+		cancel()
+		s.cancelRecovery = nil
+		s.recoveryMu.Unlock()
+	}()
+	q, err := s.probeH3(ctx)
+	if err != nil {
+		return nil, false
+	}
+	return q, s.capacityContext(ctx, q) > 0 && (!s.androidVPN || s.capacityContext(ctx, q) > 0) && ctx.Err() == nil
 }
 
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
@@ -155,6 +208,7 @@ func (s *selector) watch() {
 	var prev uint64
 	lastProgress := time.Now()
 	var weak, success int
+	var observed *transportLane
 	probeInterval := 30 * time.Second
 	var lastH2 time.Time
 	nextProbe := time.Now().Add(30 * time.Second)
@@ -170,25 +224,48 @@ func (s *selector) watch() {
 	}
 	defer discard()
 	for {
+		l := s.current()
+		if s.androidVPN && s.wake != nil {
+			last := time.Unix(0, l.last.Load())
+			sleep := l.active.Load() == 0 || l.opening.Load() == 0 && time.Since(last) > 3*time.Second
+			if l.kind == "h2" {
+				sleep = s.recoveryBlocked.Load() || time.Since(last) > 30*time.Second || nextProbe.After(last.Add(30*time.Second))
+			}
+			if sleep {
+				discard()
+				weak = 0
+				tick.Stop()
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-s.wake:
+				}
+				tick.Reset(500 * time.Millisecond)
+				continue
+			}
+		}
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-tick.C:
 		}
-		l := s.current()
+		l = s.current()
+		if observed != l {
+			weak = 0
+			prev = 0
+			lastProgress = time.Now()
+			observed = l
+		}
 		if owner != l {
 			discard()
 		}
 		if l.kind == "h2" {
-			if time.Now().Before(nextProbe) || (!s.androidVPN && (l.active.Load() == 0 || time.Since(time.Unix(0, l.last.Load())) > 3*time.Second)) {
+			age := time.Since(time.Unix(0, l.last.Load()))
+			if time.Now().Before(nextProbe) || s.recoveryBlocked.Load() || (s.androidVPN && age > 30*time.Second) || (!s.androidVPN && (l.active.Load() == 0 || age > 3*time.Second)) {
 				continue
 			}
-			q, e := s.probeH3()
-			ok := e == nil && s.capacity(q) > 0
-			if s.androidVPN && ok {
-				ok = s.capacity(q) > 0
-			}
-			if ok {
+			q, ok := s.recoverH3()
+			if ok && !s.recoveryBlocked.Load() {
 				success++
 				if s.androidVPN || success == 2 {
 					if s.set(l, q) {
@@ -201,7 +278,7 @@ func (s *selector) watch() {
 				}
 			} else {
 				success = 0
-				if !s.androidVPN {
+				if !s.recoveryBlocked.Load() {
 					probeInterval = min(5*time.Minute, 2*probeInterval)
 				}
 			}
@@ -226,7 +303,9 @@ func (s *selector) watch() {
 		progress := delta > 32768
 		idle := time.Since(time.Unix(0, l.last.Load())) > 3*time.Second
 		if s.androidVPN {
-			progress = delta != 0
+			// Two weak half-second windows trigger measurement below 16 Mbit/s.
+			// QUIC totals include acknowledgements and retransmissions.
+			progress = delta >= 1<<20
 			idle = idle && l.opening.Load() == 0
 		}
 		if l.active.Load() == 0 || (!gone && (progress || idle)) {
@@ -265,7 +344,15 @@ func (s *selector) watch() {
 		h3time := <-sample
 		degraded := h3time == 0 || h3time > 4*h2time
 		if s.androidVPN {
-			degraded = h3time == 0 && l.stats() == now
+			degraded = h2time > 0 && (h3time == 0 || h3time > 4*max(h2time, 2*time.Millisecond))
+			if degraded && !(h3time == 0 && l.stats() == now) {
+				// Positive QUIC progress can still mean heavy throttling. Confirm
+				// twice on the same carriers before moving new flows to H2.
+				go func() { sample <- s.capacity(l) }()
+				h2time = s.capacity(alt)
+				h3time = <-sample
+				degraded = h2time > 0 && (h3time == 0 || h3time > 4*max(h2time, 2*time.Millisecond))
+			}
 		}
 		if h2time > 0 && degraded {
 			if !s.set(l, alt) {
@@ -312,7 +399,7 @@ func (s *selector) drainH3(old, backup *transportLane) {
 			prev, since = n, time.Now()
 			continue
 		}
-		if time.Since(since) >= time.Second && backup.usable() {
+		if time.Since(since) >= time.Second && backup.usable() && (!s.androidVPN || time.Since(time.Unix(0, old.last.Load())) <= 3*time.Second || old.opening.Load() > 0) {
 			// Idle applications can still have an open stream. Elicit traffic before closing it.
 			s.capacity(old)
 			if silentForTwoWindows(old, prev, since) && backup.usable() {

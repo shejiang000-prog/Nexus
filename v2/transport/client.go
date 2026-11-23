@@ -86,14 +86,22 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	s := &selector{ctx: ctx, mode: c.Mode, androidVPN: runtime.GOOS == "android" && c.Protect != nil, events: make(chan string, 2)}
-	s.dial = func(ctx context.Context, kind string) (*transportLane, error) { return dialLane(ctx, c, kind) }
+	if s.androidVPN {
+		s.wake = make(chan struct{}, 1)
+	}
+	s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
+		l, err := dialLane(ctx, c, kind)
+		if err == nil {
+			l.wake = s.wake
+		}
+		return l, err
+	}
 	l, e := s.initial()
 	if e != nil {
 		cancel()
 		return nil, networkError(e)
 	}
 	s.lane = l
-	l.last.Store(time.Now().UnixNano())
 	s.events <- l.kind
 	go func() {
 		for {
@@ -114,6 +122,9 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	return &Client{s: s, cancel: cancel}, nil
 }
 func (c *Client) Stop() { c.cancel(); c.s.current().close() }
+
+// SetRecoveryAllowed controls background H3 recovery for this client.
+func (c *Client) SetRecoveryAllowed(allowed bool) { c.s.setRecoveryAllowed(allowed) }
 func (c *Client) State() string {
 	if c.s.ctx.Err() != nil {
 		return "stopped"
@@ -152,7 +163,7 @@ func (c *Client) acquire() (*transportLane, error) {
 	}
 	l.active.Add(1)
 	l.opening.Add(1)
-	l.last.Store(time.Now().UnixNano())
+	l.business()
 	s.mu.Unlock()
 	if changed {
 		select {
@@ -265,14 +276,14 @@ type stream struct {
 func (s *stream) Read(p []byte) (int, error) {
 	n, e := s.in.Read(p)
 	if n > 0 {
-		s.l.last.Store(time.Now().UnixNano())
+		s.l.business()
 	}
 	return n, e
 }
 func (s *stream) Write(p []byte) (int, error) {
 	n, e := s.out.Write(p)
 	if n > 0 {
-		s.l.last.Store(time.Now().UnixNano())
+		s.l.business()
 	}
 	return n, e
 }
@@ -340,14 +351,14 @@ type Association struct {
 func (a *Association) ReadPacket() ([]byte, error) {
 	p, e := a.a.ReadPacket()
 	if e == nil {
-		a.l.last.Store(time.Now().UnixNano())
+		a.l.business()
 	}
 	return p, e
 }
 func (a *Association) WritePacket(p []byte) error {
 	e := a.a.WritePacket(p)
 	if e == nil {
-		a.l.last.Store(time.Now().UnixNano())
+		a.l.business()
 	}
 	return e
 }

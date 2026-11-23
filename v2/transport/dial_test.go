@@ -34,7 +34,7 @@ func TestProtectBeforeAttempts(t *testing.T) {
 	if <-ready != nil {
 		t.Fatal("unprotected H2")
 	}
-	_, err := s.probeH3()
+	_, err := s.probeH3(s.ctx)
 	var e *Error
 	if !errors.As(err, &e) || e.Code != Configuration || calls.Load() != 4 {
 		t.Fatalf("probe %v, calls %d", err, calls.Load())

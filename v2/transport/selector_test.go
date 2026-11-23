@@ -90,12 +90,13 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		}
 		liveH2 := s.current()
 		held.Store(liveH2)
-		// An idle H2 carrier also probes after its dwell, even with UDP blocked.
+		// No completed business on the new H2 lane, so its dwell must expire quietly.
 		time.Sleep(31 * time.Second)
-		if h3Dials.Load() != 1 {
+		if h3Dials.Load() != 0 {
 			t.Fatalf("idle H2 probes = %d", h3Dials.Load())
 		}
 		blocked.Store(false)
+		liveH2.business()
 		liveH2.active.Store(1) // keep an old stream across recovery
 		select {
 		case kind := <-s.events:
@@ -219,4 +220,123 @@ func TestSelection(t *testing.T) {
 			t.Fatal(status)
 		}
 	}
+}
+
+func TestAndroidRecoveryActivityPowerAndBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		s := &selector{ctx: ctx, androidVPN: true, wake: make(chan struct{}, 1), events: make(chan string, 1)}
+		l := &transportLane{kind: "h2", wake: s.wake}
+		s.lane = l
+		c := &Client{s: s}
+		tries := make(chan time.Time, 32)
+		var hold atomic.Bool
+		canceled := make(chan struct{})
+		s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
+			tries <- time.Now()
+			if hold.Load() {
+				<-ctx.Done()
+				close(canceled)
+			}
+			return nil, errors.New("blocked")
+		}
+		go s.watch()
+		time.Sleep(10 * time.Minute)
+		if len(tries) != 0 {
+			t.Fatal("idle connection dialed")
+		}
+		c.SetRecoveryAllowed(false)
+		for range 8 {
+			l.business()
+			time.Sleep(5 * time.Second)
+		}
+		if len(tries) != 0 {
+			t.Fatal("screen-off connection dialed")
+		}
+		c.SetRecoveryAllowed(true)
+		// Continuous demand makes each pending retry eligible.
+		for range 206 {
+			l.business()
+			time.Sleep(5 * time.Second)
+		}
+		if len(tries) != 6 {
+			t.Fatalf("dial count %d", len(tries))
+		}
+		previous := <-tries
+		for i, gap := range []time.Duration{60, 120, 240, 300, 300} {
+			current := <-tries
+			delta := current.Sub(previous)
+			previous = current
+			if delta < gap*time.Second || delta > gap*time.Second+time.Second {
+				t.Fatalf("retry %d after %v", i+1, delta)
+			}
+		}
+		time.Sleep(10 * time.Minute)
+		if len(tries) != 0 {
+			t.Fatal("stale demand kept probing")
+		}
+		hold.Store(true)
+		l.business()
+		time.Sleep(600 * time.Millisecond)
+		if len(tries) != 1 {
+			t.Fatal("new activity did not wake the selector")
+		}
+		c.SetRecoveryAllowed(false)
+		synctest.Wait()
+		select {
+		case <-canceled:
+		default:
+			t.Fatal("in-flight background handshake not canceled")
+		}
+	})
+}
+
+func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var received atomic.Uint64
+		var checks atomic.Int32
+		answer := func() *http.Response {
+			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}
+		}
+		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load, close: func() {}}
+		h3.round = func(*http.Request) (*http.Response, error) {
+			if checks.Add(1) == 2 {
+				time.Sleep(2 * time.Millisecond)
+			} else {
+				time.Sleep(140 * time.Millisecond)
+			}
+			return answer(), nil
+		}
+		h2 := &transportLane{kind: "h2", health: h3.health, close: func() {}, usable: func() bool { return true }, round: func(*http.Request) (*http.Response, error) {
+			time.Sleep(8 * time.Millisecond)
+			return answer(), nil
+		}}
+		s := &selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1), dial: func(context.Context, string) (*transportLane, error) { return h2, nil }}
+		h3.active.Store(1)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+					received.Add(25000)
+					h3.business()
+				}
+			}
+		}()
+		go s.watch()
+		select {
+		case kind := <-s.events:
+			if kind != "h2" || checks.Load() != 4 {
+				t.Fatalf("switched to %s after %d measurements", kind, checks.Load())
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("sustained 2 Mbit/s did not switch")
+		}
+		h3.active.Store(0)
+		time.Sleep(time.Second)
+	})
 }

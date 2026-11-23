@@ -108,8 +108,9 @@ func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer
 	}
 	return &Client{c, ctx, cancel}, nil
 }
-func (c *Client) Stop()         { c.cancel(); c.client.Stop() }
-func (c *Client) State() string { return c.client.State() }
+func (c *Client) Stop()                           { c.cancel(); c.client.Stop() }
+func (c *Client) SetRecoveryAllowed(allowed bool) { c.client.SetRecoveryAllowed(allowed) }
+func (c *Client) State() string                   { return c.client.State() }
 func (c *Client) OpenUDP(target string) (*Association, error) {
 	a, e := c.client.OpenUDP(c.ctx, target)
 	if e != nil {
@@ -139,6 +140,7 @@ func (s *Stream) Read(max int) ([]byte, error) {
 	return nil, e
 }
 func (s *Stream) Write(p []byte) (int, error) { return s.s.Write(p) }
+
 // CloseWrite ends the CONNECT request while keeping the response readable until Close.
 func (s *Stream) CloseWrite() error { return s.s.(interface{ CloseWrite() error }).CloseWrite() }
-func (s *Stream) Close() error                { return s.s.Close() }
+func (s *Stream) Close() error      { return s.s.Close() }
