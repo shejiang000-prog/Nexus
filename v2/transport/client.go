@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,7 +85,7 @@ func Start(parent context.Context, c Config) (*Client, error) {
 		return nil, &Error{Configuration, errors.New("invalid health path")}
 	}
 	ctx, cancel := context.WithCancel(parent)
-	s := &selector{ctx: ctx, mode: c.Mode, events: make(chan string, 2)}
+	s := &selector{ctx: ctx, mode: c.Mode, androidVPN: runtime.GOOS == "android" && c.Protect != nil, events: make(chan string, 2)}
 	s.dial = func(ctx context.Context, kind string) (*transportLane, error) { return dialLane(ctx, c, kind) }
 	l, e := s.initial()
 	if e != nil {

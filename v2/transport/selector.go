@@ -31,12 +31,13 @@ type transportLane struct {
 }
 
 type selector struct {
-	ctx    context.Context
-	events chan string
-	mu     sync.Mutex
-	lane   *transportLane
-	mode   string
-	dial   func(context.Context, string) (*transportLane, error)
+	ctx        context.Context
+	events     chan string
+	mu         sync.Mutex
+	lane       *transportLane
+	mode       string
+	androidVPN bool // The protected app VPN confirms a blackhole and probes recovery even when idle.
+	dial       func(context.Context, string) (*transportLane, error)
 }
 
 func (s *selector) current() *transportLane { s.mu.Lock(); defer s.mu.Unlock(); return s.lane }
@@ -151,7 +152,8 @@ func (s *selector) watch() {
 	defer tick.Stop()
 	var prev uint64
 	lastProgress := time.Now()
-	var weak int
+	var weak, success int
+	probeInterval := 30 * time.Second
 	var lastH2 time.Time
 	nextProbe := time.Now().Add(30 * time.Second)
 	// Only watch owns the pending dial. Cancel also closes a completed, unused handshake.
@@ -176,21 +178,35 @@ func (s *selector) watch() {
 			discard()
 		}
 		if l.kind == "h2" {
-			if time.Now().Before(nextProbe) {
+			if time.Now().Before(nextProbe) || (!s.androidVPN && (l.active.Load() == 0 || time.Since(time.Unix(0, l.last.Load())) > 3*time.Second)) {
 				continue
 			}
 			q, e := s.probeH3()
-			if e == nil && s.capacity(q) > 0 && s.capacity(q) > 0 {
-				if s.set(l, q) {
-					prev = q.stats()
-					lastProgress = time.Now()
-					weak = 0
-					go s.retire(l)
+			ok := e == nil && s.capacity(q) > 0
+			if s.androidVPN && ok {
+				ok = s.capacity(q) > 0
+			}
+			if ok {
+				success++
+				if s.androidVPN || success == 2 {
+					if s.set(l, q) {
+						prev = q.stats()
+						lastProgress = time.Now()
+						weak, success = 0, 0
+						go s.retire(l)
+					}
+					continue
 				}
-			} else if q != nil {
+			} else {
+				success = 0
+				if !s.androidVPN {
+					probeInterval = min(5*time.Minute, 2*probeInterval)
+				}
+			}
+			if q != nil {
 				q.close()
 			}
-			nextProbe = time.Now().Add(30 * time.Second)
+			nextProbe = time.Now().Add(probeInterval)
 			continue
 		}
 		now := l.stats()
@@ -205,7 +221,13 @@ func (s *selector) watch() {
 			gone = true
 		default:
 		}
-		if l.active.Load() == 0 || (!gone && (delta != 0 || (l.opening.Load() == 0 && time.Since(time.Unix(0, l.last.Load())) > 3*time.Second))) {
+		progress := delta > 32768
+		idle := time.Since(time.Unix(0, l.last.Load())) > 3*time.Second
+		if s.androidVPN {
+			progress = delta != 0
+			idle = idle && l.opening.Load() == 0
+		}
+		if l.active.Load() == 0 || (!gone && (progress || idle)) {
 			discard()
 			weak = 0
 			continue
@@ -226,8 +248,8 @@ func (s *selector) watch() {
 		if pending != nil {
 			alt = <-pending
 			discard()
-		} else {
-			// Cooldown applies to speculative dials. Two silent windows while
+		} else if s.androidVPN || time.Since(lastH2) >= 10*time.Second || gone {
+			// On Android, cooldown applies to speculative dials. Two silent windows while
 			// an application needs the path must be able to recover immediately.
 			lastH2 = time.Now()
 			ctx, cancel := context.WithTimeout(s.ctx, time.Second)
@@ -239,11 +261,17 @@ func (s *selector) watch() {
 		}
 		h2time := s.capacity(alt)
 		h3time := <-sample
-		if h2time > 0 && h3time == 0 && l.stats() == now {
+		degraded := h3time == 0 || h3time > 4*h2time
+		if s.androidVPN {
+			degraded = h3time == 0 && l.stats() == now
+		}
+		if h2time > 0 && degraded {
 			if !s.set(l, alt) {
 				continue
 			}
-			nextProbe = time.Now().Add(30 * time.Second)
+			probeInterval = 30 * time.Second
+			nextProbe = time.Now().Add(probeInterval)
+			success = 0
 			if silentForTwoWindows(l, now, lastProgress) {
 				l.close()
 			} else {

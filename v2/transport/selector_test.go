@@ -53,7 +53,7 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		}
 		h3.active.Store(1)
 		h3.opening.Store(1)
-		s := selector{ctx: ctx, lane: h3, events: make(chan string, 4), dial: func(ctx context.Context, kind string) (*transportLane, error) {
+		s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 4), dial: func(ctx context.Context, kind string) (*transportLane, error) {
 			if kind == "h2" {
 				h2Dials.Add(1)
 				// A speculative candidate may close independently of the selected one.
@@ -113,6 +113,65 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		time.Sleep(time.Second)
 		if !h2Closed.Load() {
 			t.Fatal("drained H2 lane left open")
+		}
+	})
+}
+
+func TestSlowDownloadAndIdleRecoveryOutsideAndroidVPN(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var received atomic.Uint64
+		var ended atomic.Bool
+		response := func(delay time.Duration) func(*http.Request) (*http.Response, error) {
+			return func(*http.Request) (*http.Response, error) {
+				time.Sleep(delay)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+			}
+		}
+		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load,
+			close: func() { ended.Store(true) }, round: response(250 * time.Millisecond)}
+		h3.active.Store(1)
+		h3.last.Store(time.Now().UnixNano())
+		h2 := &transportLane{kind: "h2", health: h3.health, close: func() {}, usable: func() bool { return true }, round: response(time.Millisecond)}
+		var h3Dials atomic.Int32
+		s := selector{ctx: ctx, lane: h3, events: make(chan string, 1), dial: func(ctx context.Context, kind string) (*transportLane, error) {
+			if kind == "h3" {
+				h3Dials.Add(1)
+				return nil, errors.New("unexpected idle probe")
+			}
+			return h2, nil
+		}}
+		go func() {
+			tick := time.NewTicker(100 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					received.Add(1250) // 100 kbit/s of continuous download
+					h3.last.Store(time.Now().UnixNano())
+				}
+			}
+		}()
+		go s.watch()
+		select {
+		case kind := <-s.events:
+			if kind != "h2" {
+				t.Fatalf("slow download selected %s", kind)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatal("slow UDP with positive receive progress never switched")
+		}
+		time.Sleep(90 * time.Second)
+		if ended.Load() || h3Dials.Load() != 0 {
+			t.Fatal("live slow H3 download closed or idle H2 probed")
+		}
+		h3.active.Store(0)
+		time.Sleep(time.Second)
+		if !ended.Load() {
+			t.Fatal("drained H3 did not close")
 		}
 	})
 }
