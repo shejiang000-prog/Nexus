@@ -28,6 +28,10 @@ internal fun Instrumentation.m3Check(result: Bundle) {
     val url = V2Invite.parse(cfg.getString("invitation"))
     val node = V2Devices.enroll(ctx, url, cfg.getString("endpoint"), cfg.getString("ca").toByteArray())
     check(node.expiryKnown && node.expiresAt != null)
+    val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    check(keyStore.getKey(node.key,null)?.let { it.encoded == null } == true)
+    check(V2Devices.get(ctx,node.key)?.deviceId == node.deviceId)
+    result.putString("device", "Keystore private key non-exportable; enrolled ID persisted")
     val stage = File(dir, "m3-stage")
     val prefs = ctx.getSharedPreferences("local", 0)
     val original = prefs.all[SplitRouting.KEY] as? Boolean
@@ -94,6 +98,14 @@ internal fun Instrumentation.m3Check(result: Bundle) {
         prefs.edit().putBoolean(SplitRouting.KEY,false).commit()
         stage.writeText("startup")
         control("clear");startV2();usable("h3",12000);udp()
+        connect().use { healthy ->
+            val since = clock()
+            while (clock()-since < 5000) {
+                echo(healthy); check(TunnelService.state.value.bearer.equals("h3",true))
+                Thread.sleep(150)
+            }
+        }
+        result.putString("healthy-H3","5 s continuous TCP activity on open UDP; H3 retained")
         result.putString("4MiB-H3-Mbps",download());external("probe-v2")
         stop()
         repeat(10){ n ->
