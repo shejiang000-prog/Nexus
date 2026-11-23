@@ -156,9 +156,6 @@ func initSchema(db *sql.DB) error {
 	return tx.Commit()
 }
 func (l *Ledger) Close() error {
-	l.mu.Lock()
-	l.closing = true
-	l.mu.Unlock()
 	l.cancel()
 	l.disconnectAll()
 	<-l.done
@@ -294,6 +291,7 @@ func (l *Ledger) watchRevocations(ctx context.Context) {
 }
 func (l *Ledger) disconnectAll() {
 	l.mu.Lock()
+	l.closing = true
 	active := l.active
 	l.active = make(map[proof.ID]map[*activeFlow]struct{})
 	l.mu.Unlock()

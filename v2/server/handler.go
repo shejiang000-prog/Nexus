@@ -108,6 +108,10 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			return e
 		}
 		h.devices = h.ledger
+		// Caddy waits for long-lived CONNECT requests before calling Cleanup.
+		for _, s := range app.(*caddyhttp.App).Servers {
+			s.RegisterOnShutdown(h.ledger.disconnectAll)
+		}
 	}
 	return nil
 }
