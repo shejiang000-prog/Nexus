@@ -13,6 +13,7 @@ import re
 import secrets
 import socket
 import socketserver
+import sqlite3
 import subprocess
 import threading
 import time
@@ -85,10 +86,6 @@ def serve(node, xray_zip, host, work):
         authority = "nexus.test:" + str(port)
         handler = {"handler":"nexus","authority":authority,"ledger_path":str(db),"allow_exact":[target]}
         config = {"admin":{"disabled":True},"apps":{"tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}},"http":{"servers":{"node":{"listen":[f"{host}:{port}"],"automatic_https":{"disable":True},"enable_datagrams":True,"tls_connection_policies":[{"protocol_min":"tls1.3"}],"routes":[{"handle":[handler,{"handler":"static_response","status_code":404}]}]}}}}}
-        routes = config["apps"]["http"]["servers"]["node"]["routes"]
-        routes.insert(0, {"match":[{"path":["/health.bin"],"method":["GET","HEAD"]}],
-                          "handle":[{"handler":"static_response","body":"0"*32768,
-                                     "headers":{"Content-Type":["application/octet-stream"]}}]})
         def process(binary, args, config, name):
             cfg = work/(name+".json");cfg.write_text(json.dumps(config))
             log = stack.enter_context((work/(name+".log")).open("wb"))
@@ -129,6 +126,12 @@ def serve(node, xray_zip, host, work):
                     with lock:
                         if len(words)==2 and words[1] in ("clear","drop"):switch(words[1])
                         elif len(words)==3 and words[1]=="revoke" and re.fullmatch("[0-9a-f]{32}",words[2]):ledger("revoke",words[2])
+                        elif len(words)==3 and words[1]=="extend" and re.fullmatch("[0-9a-f]{32}",words[2]):
+                            with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+                                changed = conn.execute("""UPDATE users SET expires_at=expires_at+86400
+                                    WHERE id=(SELECT i.user_id FROM devices d JOIN invites i ON i.digest=d.invite_digest
+                                    WHERE d.id=?)""", (bytes.fromhex(words[2]),)).rowcount
+                                if changed != 1: return
                         else:return
                     self.wfile.write(b"\x01")
                 except (ValueError,OSError,subprocess.SubprocessError):return

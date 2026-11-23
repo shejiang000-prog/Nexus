@@ -79,6 +79,11 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         readInvitation(intent)
     }
+    override fun onStart() {
+        super.onStart()
+        V2Session.foregroundEvents.incrementAndGet()
+    }
+
     override fun onResume() {
         super.onResume()
         SubscriptionRefresh.schedule(this)
@@ -159,8 +164,11 @@ class MainActivity : ComponentActivity() {
         val selected=manual ?: best
         LaunchedEffect(incoming) { if(incoming!=null) page="领取" }
         var rotate by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) {
+        val deviceRevision by V2Devices.revision.collectAsState()
+        LaunchedEffect(deviceRevision) {
             v2Nodes=withContext(Dispatchers.IO) { V2Devices.list(this@MainActivity) }
+        }
+        LaunchedEffect(Unit) {
             runCatching { withContext(Dispatchers.IO) { Profile.load(this@MainActivity) } }
                 .onSuccess { profile = it }.onFailure { message = "原有设备配置已失效，请重新导入" }
         }

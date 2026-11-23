@@ -424,6 +424,7 @@ class CatalogCheck : Instrumentation() {
                     .invoke(null, this, args, result)
                 "m3" -> m3Check(result, args.getString("phase") ?: "all", args.getString("probePackage") ?: "dev.nexus.vpnprobe")
                 "m3-ui" -> m3UiCheck(result)
+                "m32-expiry" -> m32ExpiryCheck(result)
                 "split-lab", "split-public" -> splitCheck(args,result)
                 // QA transfer of a saved source between the owner's devices. The link stays in app-private
                 // storage on each side and is never printed.

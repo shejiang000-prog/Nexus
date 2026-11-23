@@ -80,6 +80,20 @@ internal object V2Devices {
     private val enc = Base64.getEncoder()
     private val dec = Base64.getDecoder()
 
+    val revision = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    @Synchronized
+    fun updateExpiry(ctx: Context, key: String, seconds: Long) {
+        require(seconds >= 0)
+        val preferences = prefs(ctx)
+        val record = preferences.getString(key,null)?.let(::JSONObject) ?: return
+        if (record.optBoolean("expiryKnown") && record.optLong("expires",0) == seconds) return
+        record.put("expiryKnown",true)
+        if (seconds == 0L) record.remove("expires") else record.put("expires",seconds)
+        check(preferences.edit().putString(key,record.toString()).commit())
+        revision.value++
+    }
+
     fun list(ctx: Context): List<V2Node> = prefs(ctx).all.keys.filter { it.startsWith("v2:") }.sorted().mapNotNull { get(ctx, it) }
 
     fun get(ctx: Context, key: String): V2Node? {

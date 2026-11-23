@@ -341,7 +341,7 @@ class TunnelService : VpnService() {
                         }
                     }
                     val session = plan.v2?.let { node ->
-                        V2Session(node, this, net, requireNotNull(plan.dns)) { bearer ->
+                        V2Session(node, this, net) { bearer ->
                             main.post { if (serial == token) state.value = state.value.copy(bearer = bearer) }
                         }
                     }

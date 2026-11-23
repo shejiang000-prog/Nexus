@@ -65,7 +65,7 @@ func Start(config string, client *mobile.Client) (*Session, error) {
 }
 
 func (s *Session) Stop()            { s.instance.Close() }
-func (s *Session) ErrorCode() int32 { return s.handler.code.Load() }
+func (s *Session) ErrorCode() int32 { return s.handler.code.Swap(0) }
 
 func (*handler) Tag() string                          { return "selected" }
 func (*handler) Start() error                         { return nil }

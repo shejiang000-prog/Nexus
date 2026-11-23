@@ -152,9 +152,7 @@ def v2_fixture(root, node, host, allowed):
              "allow_exact":[f"{ip}:{p}" for ip,p in allowed]}
     policy = {"listen":[endpoint],"automatic_https":{"disable":True},"enable_datagrams":True,
               "tls_connection_policies":[{"protocol_min":"tls1.3"}],
-              "routes":[{"match":[{"path":["/health.bin"],"method":["GET","HEAD"]}],
-                         "handle":[{"handler":"static_response","body":"0"*32768}]},
-                        {"handle":[route,{"handler":"static_response","status_code":404}]}]}
+              "routes":[{"handle":[route,{"handler":"static_response","status_code":404}]}]}
     config = {"admin":{"disabled":True},"apps":{"http":{"servers":{"node":policy}},
               "tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}}}}
     file = root / "node.json"
