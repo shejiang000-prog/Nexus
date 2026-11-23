@@ -82,6 +82,15 @@ class Client:
                        'lazy':True})
             args=[root/'opt/nexus-v2/bin/hysteria','client','-c',cfg]
         self.proc=stack.enter_context(process(args,d/'client.log'))
+        def ready():
+            if self.proc.poll() is not None:
+                raise RuntimeError("upstream client exited")
+            try:
+                with socket.create_connection(('127.0.0.1',self.a),timeout=.15):
+                    return True
+            except OSError:
+                return False
+        wait(ready)
     def tcp(self,timeout=12):
         s=socket.create_connection(('127.0.0.1',self.a),timeout=timeout);s.settimeout(timeout)
         try: echo(s);return s
@@ -138,6 +147,8 @@ def check_mihomo(document,uris):
         assert node==expected,"mihomo field mismatch"
 
 def main():
+    if not __debug__:
+        raise RuntimeError('run without -O to enable all interop assertions')
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('node',type=Path)
     parser.add_argument('asset_dir',type=Path)
@@ -156,7 +167,8 @@ def main():
         for name,digest in [('Xray-linux-64.zip','b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82'),
                             ('hysteria-linux-amd64','fc25edff9948708cb00a4ff01f3bccde677660aca050133bb1ad46c6860362d2')]:
             with (opt.asset_dir/name).open('rb') as f:
-                assert hashlib.file_digest(f,'sha256').hexdigest()==digest
+                if hashlib.file_digest(f,'sha256').hexdigest()!=digest:
+                    raise ValueError('unexpected upstream SHA-256: '+name)
         with zipfile.ZipFile(opt.asset_dir/'Xray-linux-64.zip') as z:
             (bindir/'xray').write_bytes(z.read('xray'))
         (bindir/'hysteria').write_bytes((opt.asset_dir/'hysteria-linux-amd64').read_bytes())
@@ -209,9 +221,10 @@ def main():
                 time.sleep(.05)
             assert observed is not None,'old stream remained open'
             ledger('compat','apply',proto)
-            bad,valid=factory(oldlink),factory(exported(a,proto))
+            newlink=exported(a,proto)
+            bad,valid=factory(oldlink),factory(newlink)
             time.sleep(.4)
-            refused(lambda:bad.tcp(12))
+            refused(lambda:bad.tcp(12));refused(bad.udp)
             valid.tcp().close();valid.udp();echo(bst);bc.udp()
             private=factory(exported(b,proto),'127.0.0.1')
             mixed=factory(exported(b,proto),'private.example.test')
@@ -219,6 +232,8 @@ def main():
             for denied in [private,mixed]:
                 refused(lambda:denied.tcp(4));refused(denied.udp)
             ledger('compat','disable',a,proto)
+            disabled=factory(newlink)
+            refused(lambda:disabled.tcp(12));refused(disabled.udp)
             echo(bst);bc.udp()
             print(proto,'2 users TCP/UDP, rotation/disable, private literal/name denied; old stream observed closed at %.3fs'%observed,flush=True)
 
