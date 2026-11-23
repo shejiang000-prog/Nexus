@@ -98,13 +98,20 @@ def serve(node, xray_zip, host, work):
             p = subprocess.Popen([binary,*args,cfg],stdout=subprocess.PIPE if name=="node" else log,
                                  stderr=log,env=dict(os.environ,HOME=str(work)))
             if name == "node":
-                # Only persist the HTTP method. Restricted Caddy builds have no filter or file log module.
+                # Only persist method, protocol, timings and numerical test counters.
                 def redact():
                     with p.stdout, access.open("w",buffering=1) as out:
                         for line in p.stdout:
-                            try: method=json.loads(line)["request"]["method"]
+                            try:
+                                payload=json.loads(line)
+                                req=payload["request"]
+                                row={"request":{"method":req["method"],"proto":req["proto"]},
+                                     "ts":payload["ts"],"duration":payload["duration"]}
+                                for name,values in payload.get("resp_headers",{}).items():
+                                    if name.lower() in ("nexus-quic-sent","nexus-quic-lost"):
+                                        row[name.lower()]=int(values[0])
                             except (ValueError,KeyError):continue
-                            out.write(json.dumps({"request":{"method":method}})+"\n")
+                            out.write(json.dumps(row)+"\n")
                 reader=threading.Thread(target=redact,daemon=True)
                 reader.start()
                 stack.callback(reader.join,2)
