@@ -346,19 +346,19 @@ func (l *Ledger) Invite(ctx context.Context, user proof.ID, until time.Time) ([]
 	return token, nil
 }
 
-func (l *Ledger) redeem(ctx context.Context, secret, token, public, sig []byte, request proof.ID, name string) (id proof.ID, err error) {
+func (l *Ledger) redeem(ctx context.Context, secret, token, public, sig []byte, request proof.ID, name string) (id proof.ID, expires sql.NullInt64, err error) {
 	if len(token) != 32 || len(sig) != 64 || len(name) > 128 || !utf8.ValidString(name) || strings.IndexFunc(name, unicode.IsControl) >= 0 {
-		return id, errDenied
+		return id, expires, errDenied
 	}
 	digest := sha256.Sum256(token)
 	msg, err := proof.RedeemMessage(secret, request, digest, public)
 	if err != nil {
-		return id, errDenied
+		return id, expires, errDenied
 	}
 	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), public)
 	hash := sha256.Sum256(msg)
 	if !ecdsa.Verify(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, hash[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
-		return id, errDenied
+		return id, expires, errDenied
 	}
 	var valid int
 	now := time.Now().Unix()
@@ -366,51 +366,51 @@ func (l *Ledger) redeem(ctx context.Context, secret, token, public, sig []byte, 
 	WHERE digest=? AND i.expires_at>? AND (u.expires_at IS NULL OR u.expires_at>?)
 	AND (remaining>0 OR EXISTS(SELECT 1 FROM devices WHERE request_id=? AND public_key=? AND invite_digest=i.digest AND revoked_at IS NULL))`, digest[:], now, now, request[:], public).Scan(&valid)
 	if err != nil {
-		return id, err
+		return id, expires, err
 	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return id, err
+		return id, expires, err
 	}
 	defer tx.Rollback()
 	now = time.Now().Unix()
 	var remaining int
-	err = tx.QueryRowContext(ctx, `SELECT remaining FROM invites i JOIN users u ON u.id=i.user_id
-        WHERE digest=? AND i.expires_at>? AND (u.expires_at IS NULL OR u.expires_at>?)`, digest[:], now, now).Scan(&remaining)
+	err = tx.QueryRowContext(ctx, `SELECT remaining,u.expires_at FROM invites i JOIN users u ON u.id=i.user_id
+        WHERE digest=? AND i.expires_at>? AND (u.expires_at IS NULL OR u.expires_at>?)`, digest[:], now, now).Scan(&remaining, &expires)
 	if err != nil {
-		return id, err
+		return id, expires, err
 	}
 	var prior, point, inv []byte
 	err = tx.QueryRowContext(ctx, "SELECT id,public_key,invite_digest FROM devices WHERE request_id=? AND revoked_at IS NULL", request[:]).Scan(&prior, &point, &inv)
 	if err == nil {
 		if len(prior) != 16 || !bytes.Equal(inv, digest[:]) || !bytes.Equal(point, public) {
-			return id, errDenied
+			return id, expires, errDenied
 		}
 		if err = tx.Rollback(); err != nil {
-			return id, err
+			return id, expires, err
 		}
-		return proof.ID(prior), l.refresh(ctx)
+		return proof.ID(prior), expires, l.refresh(ctx)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return id, err
+		return id, expires, err
 	}
 	if remaining == 0 {
-		return id, errDenied
+		return id, expires, errDenied
 	}
 	rand.Read(id[:])
 	if _, err = tx.ExecContext(ctx, "UPDATE invites SET remaining=remaining-1 WHERE digest=?", digest[:]); err != nil {
-		return id, err
+		return id, expires, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO devices(id,invite_digest,request_id,public_key,name) VALUES(?,?,?,?,?)", id[:], digest[:], request[:], public, name); err != nil {
-		return id, err
+		return id, expires, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,device_id) VALUES(?,'redeem',?)", now, id[:]); err != nil {
-		return id, err
+		return id, expires, err
 	}
 	if err = tx.Commit(); err != nil {
-		return id, err
+		return id, expires, err
 	}
-	return id, l.refresh(ctx)
+	return id, expires, l.refresh(ctx)
 }
 
 func (l *Ledger) Lookup(id proof.ID) *ecdsa.PublicKey {

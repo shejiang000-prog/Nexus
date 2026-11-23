@@ -93,16 +93,21 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	id, err := h.ledger.redeem(r.Context(), exporter, token, public, sig, proof.ID(request), values["name"])
+	id, expires, err := h.ledger.redeem(r.Context(), exporter, token, public, sig, proof.ID(request), values["name"])
 	if err != nil {
 		return false
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	var until *int64
+	if expires.Valid {
+		until = &expires.Int64
+	}
 	json.NewEncoder(w).Encode(struct {
 		Version int    `json:"v"`
 		ID      string `json:"device_id"`
-	}{2, base64.RawURLEncoding.EncodeToString(id[:])})
+		Expires *int64 `json:"expires_at"`
+	}{2, base64.RawURLEncoding.EncodeToString(id[:]), until})
 	return true
 }
 

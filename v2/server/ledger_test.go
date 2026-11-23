@@ -65,7 +65,7 @@ func TestInvitationTransaction(t *testing.T) {
 	secret := make([]byte, 32)
 	request := proof.ID{3}
 	sig := sign(secret, request)
-	if _, err := db.redeem(ctx, bytes.Repeat([]byte{1}, 32), invite, pub, sig, request, ""); err == nil {
+	if _, _, err := db.redeem(ctx, bytes.Repeat([]byte{1}, 32), invite, pub, sig, request, ""); err == nil {
 		t.Fatal("cross-connection replay")
 	}
 	var wg sync.WaitGroup
@@ -78,7 +78,10 @@ func TestInvitationTransaction(t *testing.T) {
 			if i%2 == 1 {
 				conn = other
 			}
-			id, e := conn.redeem(ctx, secret, invite, pub, sig, request, "device")
+			id, expiry, e := conn.redeem(ctx, secret, invite, pub, sig, request, "device")
+			if expiry.Valid {
+				t.Error("unexpected account expiry")
+			}
 			if e != nil {
 				t.Error(e)
 			}
@@ -102,18 +105,25 @@ func TestInvitationTransaction(t *testing.T) {
 	count("SELECT count(*) FROM devices", 1)
 	count("SELECT count(*) FROM audit WHERE action='redeem'", 1)
 	another := proof.ID{4}
-	if _, err := db.redeem(ctx, secret, invite, pub, sign(secret, another), another, ""); err == nil {
+	if _, _, err := db.redeem(ctx, secret, invite, pub, sign(secret, another), another, ""); err == nil {
 		t.Fatal("spent invite accepted")
 	}
 	fresh := bytes.Repeat([]byte{2}, 32)
-	got, err := other.redeem(ctx, fresh, invite, pub, sign(fresh, request), request, "")
+	accountExpiry := time.Now().Add(time.Hour).Unix()
+	if _, err := db.db.Exec("UPDATE users SET expires_at=? WHERE id=?", accountExpiry, user[:]); err != nil {
+		t.Fatal(err)
+	}
+	got, expiry, err := other.redeem(ctx, fresh, invite, pub, sign(fresh, request), request, "")
+	if !expiry.Valid || expiry.Int64 != accountExpiry {
+		t.Fatal("idempotent redemption did not report account expiry")
+	}
 	if err != nil || got != ids[0] {
 		t.Fatal("idempotent retry", err)
 	}
 	if _, err = db.db.Exec("UPDATE invites SET expires_at=0"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.redeem(ctx, secret, invite, pub, sig, request, ""); err == nil {
+	if _, _, err = db.redeem(ctx, secret, invite, pub, sig, request, ""); err == nil {
 		t.Fatal("expired retry accepted")
 	}
 	if db.Lookup(got) == nil {
@@ -141,7 +151,7 @@ func TestInvitationTransaction(t *testing.T) {
 			if i%2 == 1 {
 				conn = other
 			}
-			if id, err := conn.redeem(ctx, secret, invite, point, sig, req, ""); err == nil {
+			if id, _, err := conn.redeem(ctx, secret, invite, point, sig, req, ""); err == nil {
 				successes <- id
 			}
 		}()
@@ -212,7 +222,7 @@ func enroll(t *testing.T, l *Ledger, user proof.ID) proof.ID {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := l.redeem(t.Context(), secret, invite, pub, append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...), req, "")
+	id, _, err := l.redeem(t.Context(), secret, invite, pub, append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...), req, "")
 	if err != nil {
 		t.Fatal(err)
 	}
