@@ -66,19 +66,17 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
 
     fun authorize(publicKey: String, deploy: Boolean, v2: Boolean = false) = session { ssh ->
         require(publicKey.matches(Regex("(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+ Nexus")))
-        val kind = installedKind(ssh)
-        val installed = if (v2) kind != 0 else kind == 1
+        val v1Installed = run(ssh,"if test -f /opt/nexus-node/node_admin.py; then echo yes; fi") == "yes"
+        val installed = v1Installed || (v2 && installedV2(ssh))
         check(installed != deploy) { if (installed) "这台服务器已经部署，请选择绑定" else "尚未找到部署，请选择部署" }
         val key = "restrict $publicKey"
         run(ssh, "umask 077 && mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && " +
             "(grep -qxF '$key' ~/.ssh/authorized_keys || printf '\\n%s\\n' '$key' >> ~/.ssh/authorized_keys)")
         Unit
     }
-    private fun installedKind(ssh: Session): Int = run(ssh,
-        "if test -x /opt/nexus-v2/bin/nexus-node; then echo 2; elif test -f /opt/nexus-node/node_admin.py; then echo 1; else echo 0; fi"
-    ).toInt()
+    private fun installedV2(ssh: Session) = run(ssh, "if test -x /opt/nexus-v2/bin/nexus-node; then echo yes; fi") == "yes"
 
-    fun isV2(): Boolean = session { installedKind(it) == 2 }
+    fun isV2(): Boolean = session(::installedV2)
 
     private fun run(ssh: Session, cmd: String, data: JSONObject? = null, limit: Int = 131072): String {
         val channel = ssh.openChannel("exec") as ChannelExec
