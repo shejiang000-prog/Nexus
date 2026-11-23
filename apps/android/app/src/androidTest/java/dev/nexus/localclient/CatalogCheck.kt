@@ -28,6 +28,12 @@ class CatalogCheck : Instrumentation() {
         val link = "trojan://test-only@node.invalid:443?security=tls#First"
         var code = Activity.RESULT_CANCELED
         try {
+            for ((index, label) in listOf("配置","证书","撤销","资源","目标","中断","已经送达").withIndex()) {
+                val code = index + 1
+                check(V2Connection.error(code).contains(label))
+                check(V2Connection.retry(code) == (code == 4 || code == 6))
+            }
+            result.putString("v2-errors", "7 error messages and retry policies passed")
             fun exit(status: Int, body: String? = null) = diagnosticResponse("ipinfo.io", status, body, 12)
             check(exit(200, """{"ip":"192.0.2.1"}""").ip == "192.0.2.1")
             check(exit(200, """{"ip":"2001:db8::1"}""").ip == "2001:db8::1")

@@ -157,7 +157,7 @@ object CompatEngine {
     }
 
     fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
-                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, split: ByteArray = byteArrayOf(), ready: () -> Unit): Int = engineLock.withLock {
+                          tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, split: ByteArray = byteArrayOf(), v2: V2Session? = null, ready: () -> Unit): Int = engineLock.withLock {
         socketProtection = { fd ->
             runCatching {
                 check(service.protect(fd))
@@ -179,8 +179,19 @@ object CompatEngine {
             val config = JSONObject().put("env", JSONObject().put("xray.tun.fd", tun.fd.toString()))
                 .put("log",JSONObject().put("loglevel","none"))
                 .put("inbounds",JSONArray().put(JSONObject().put("protocol","tun").put("settings",JSONObject().put("name","nexus").put("mtu",1500))))
-                .put("outbounds",JSONArray().put(resolved(outbound, network)))
+                .put("outbounds",JSONArray().put(if (v2 == null) resolved(outbound, network) else outbound))
             fun session(running: (() -> Boolean)? = null) {
+                if (v2 != null) {
+                    val core = v2vpn.V2vpn.start(config.toString(), v2.client)
+                    try {
+                        ready()
+                        waitForStop(cancel, null) {
+                            v2.check(core.errorCode())
+                            running?.invoke() != false
+                        }
+                    } finally { core.stop() }
+                    return
+                }
                 try {
                     invoke("runXray",JSONObject().put("xrayJson",config.toString()))
                     ready()

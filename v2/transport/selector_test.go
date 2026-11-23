@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+func TestAutoColdStart(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		s := selector{ctx: t.Context(), mode: "auto", dial: func(ctx context.Context, kind string) (*transportLane, error) {
+			if blocked && kind == "h3" {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return &transportLane{kind: kind, close: func() {}}, nil
+		}}
+		start := time.Now()
+		lane, err := s.initial()
+		if err != nil || (lane.kind == "h2") != blocked || time.Since(start) > 3*time.Second {
+			t.Fatalf("blocked=%t selected=%v err=%v", blocked, lane, err)
+		}
+	}
+}
+
 func TestSelection(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

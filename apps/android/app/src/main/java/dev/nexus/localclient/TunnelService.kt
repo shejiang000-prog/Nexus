@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.*
 import org.json.JSONObject
 
-private data class Plan(val profile: Profile?, val outbound: JSONObject?, val name: String, val dns: String?, val checkKey: String? = null, val node: String? = checkKey)
+private data class Plan(val profile: Profile?, val outbound: JSONObject?, val name: String, val dns: String?, val checkKey: String? = null, val node: String? = checkKey, val v2: V2Node? = null)
 
 class Tunnel(private val signingAlias: String, private val protectSocket: (Int) -> Boolean, private val ready: (Int) -> Unit) {
     var path: (Long,Long,Long) -> Unit = { _,_,_ -> }
@@ -32,7 +32,7 @@ class Tunnel(private val signingAlias: String, private val protectSocket: (Int) 
 
 data class TunnelState(val starting: Boolean = false, val port: Int = 0, val error: String = "", val subscription: String = "",
                        val vpn: Boolean = false, val waiting: Boolean = false, val activeProfile: Profile? = null,
-                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "", val shoes: Boolean = false) {
+                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "", val shoes: Boolean = false, val bearer: String = "") {
     val active get() = starting || port != 0 || vpn
 }
 
@@ -78,11 +78,11 @@ class TunnelService : VpnService() {
         val resumed = if (boot || intent == null || intent.action == SERVICE_INTERFACE) prefs.getString(RESUME, null)?.let {
             runCatching { Intent.parseUri(it, 0).setClass(this, TunnelService::class.java) }.getOrNull()
         } else null
-        if(boot && resumed?.action !in setOf("vpn","subscription")) {stopSelf(startId);return START_NOT_STICKY}
+        if(boot && resumed?.action !in setOf("vpn","subscription","v2")) {stopSelf(startId);return START_NOT_STICKY}
         val request = resumed ?: intent
         handle(request)
         val running = tun != null
-        if (running && request?.action in setOf("vpn", "subscription")) request!!.toUri(0).let {
+        if (running && request?.action in setOf("vpn", "subscription", "v2")) request!!.toUri(0).let {
             prefs.edit().putString(RESUME, it).putString(LAST, it).apply()
             ConnectTile.refresh(this)
         }
@@ -90,7 +90,7 @@ class TunnelService : VpnService() {
     }
 
     private fun handle(intent: Intent?): Int {
-        if (intent?.action in setOf("vpn", "subscription", "connect") && tun == null && cancel == null) SubscriptionRefresh.stopTests(this)
+        if (intent?.action in setOf("vpn", "subscription", "v2", "connect") && tun == null && cancel == null) SubscriptionRefresh.stopTests(this)
         if (intent?.action == "split-mode") {
             val plan = selected
             if (plan != null && tun != null && network != null && !exitHeld) {
@@ -102,14 +102,22 @@ class TunnelService : VpnService() {
         }
         val systemStart = intent?.action == SERVICE_INTERFACE || intent?.action == null
         val compat = intent?.action == "subscription"
-        val vpn = intent?.action == "vpn" || compat || systemStart
+        val v2 = intent?.action == "v2"
+        val vpn = intent?.action == "vpn" || compat || v2 || systemStart
         if (!vpn && intent?.action != "connect") { disconnect(); return START_NOT_STICKY }
         if (cancel != null || tun != null) return START_NOT_STICKY
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(channelId, "本地转发", NotificationManager.IMPORTANCE_LOW))
         startForeground(1, notification("正在验证服务器和设备"))
         val plan = runCatching {
-            if (compat) {
+            if (v2) {
+                val key = requireNotNull(intent!!.getStringExtra("v2-key"))
+                val node = requireNotNull(V2Devices.get(this, key))
+                val prefs = getSharedPreferences("local", 0)
+                require(!prefs.contains("pinned") || prefs.getString("pinned", null) == key)
+                Plan(null, JSONObject().put("protocol", "blackhole").put("tag", "selected"), node.authority,
+                    intent.getStringExtra("dns") ?: "1.1.1.1", node = key, v2 = node)
+            } else if (compat) {
                 check(!getSharedPreferences("local",0).contains("pinned"))
                 val index = intent!!.getIntExtra("index",-1)
                 val refs = intent.getStringExtra("alternates")?.let { org.json.JSONArray(it) }
@@ -245,8 +253,9 @@ class TunnelService : VpnService() {
         val builder = Builder().setSession(plan.name).setMtu(1500).addAddress("192.0.2.2", 32).setBlocking(false)
         if (plan.dns != null) {
             builder.addRoute("0.0.0.0", 0).addAddress("fd42:6e78::2", 128).addRoute("::", 0).addDnsServer(plan.dns)
-            plan.profile?.let { profile ->
-                val apps = getSharedPreferences("local",0).getStringSet("apps/"+profile.server+"/"+profile.fingerprint,emptySet()).orEmpty()
+            val appKey = plan.v2?.key ?: plan.profile?.let { it.server + "/" + it.fingerprint }
+            appKey?.let { key ->
+                val apps = getSharedPreferences("local",0).getStringSet("apps/$key",emptySet()).orEmpty()
                 for (name in apps) builder.addAllowedApplication(name)
             }
         } else builder.addRoute(requireNotNull(plan.profile).vpnHost, 32).allowFamily(android.system.OsConstants.AF_INET6)
@@ -297,14 +306,14 @@ class TunnelService : VpnService() {
         val pipe = ParcelFileDescriptor.createSocketPair()
         val workerTun = tun?.let { ParcelFileDescriptor.dup(it.fileDescriptor) }
         cancel = pipe[1]
-        state.value = TunnelState(starting = true, vpn = vpn, shoes = plan.outbound?.has("shoesClient") == true)
+        state.value = TunnelState(starting = true, vpn = vpn, node = plan.node, shoes = plan.outbound?.has("shoesClient") == true)
         Thread {
             val result = runCatching {
                 val ready: (Int) -> Unit = { port -> main.post {
                     if (token == serial) {
                         failures = 0
                         state.value = TunnelState(port = port, vpn = vpn, subscription = if (plan.outbound != null) plan.name else "",
-                            activeProfile = plan.profile, shoes = plan.outbound?.has("shoesClient") == true, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
+                            activeProfile = plan.profile, bearer = state.value.bearer, shoes = plan.outbound?.has("shoesClient") == true, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
                         val label = if (vpn) "VPN" else "本机端口 $port"
                         getSystemService(NotificationManager::class.java).notify(1, notification(label + " · " + plan.name))
                         if (vpn) monitorExit(plan,token)
@@ -331,10 +340,15 @@ class TunnelService : VpnService() {
                             passed
                         }
                     }
-                    CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health,rules) {
+                    val session = plan.v2?.let { node ->
+                        V2Session(node, this, net, requireNotNull(plan.dns)) { bearer ->
+                            main.post { if (serial == token) state.value = state.value.copy(bearer = bearer) }
+                        }
+                    }
+                    try { CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health,rules,session) {
                         check(health?.invoke() != false)
                         ready(0)
-                    }
+                    } } finally { session?.close() }
                 } else {
                     val profile = requireNotNull(plan.profile)
                     val native = Tunnel(profile.signingAlias, { fd ->
@@ -352,7 +366,7 @@ class TunnelService : VpnService() {
                         if (profile.dns == null) profile.vpnHost else "", profile.dns.orEmpty(),
                         profile.server, profile.tlsName, profile.target, profile.ca, profile.device, rules)
                 }
-            }.getOrDefault(1)
+            }.getOrElse { (it as? V2Failure)?.code ?: if (plan.v2 != null) 6 else 1 }
             workerTun?.close()
             pipe[0].close()
             main.post {
@@ -360,8 +374,12 @@ class TunnelService : VpnService() {
                     cancel?.close()
                     cancel = null
                     failures = (failures + 1).coerceAtMost(32)
-                    if (vpn && result != 0 && network != null && (failures <= 8 || plan.checkKey != null)) {
-                        state.value = TunnelState(vpn = true, error = "节点不可用，正在等待重试")
+                    if (plan.v2 != null && result != 0 && !V2Connection.retry(result)) {
+                        getSharedPreferences("local", 0).edit().remove(RESUME).apply()
+                        disconnect()
+                        state.value = TunnelState(node = plan.node, error = V2Connection.error(result))
+                    } else if (vpn && result != 0 && network != null && (failures <= 8 || plan.checkKey != null || plan.v2 != null)) {
+                        state.value = TunnelState(vpn = true, node = plan.node, error = if (plan.v2 != null) V2Connection.error(result) else "节点不可用，正在等待重试")
                         main.postDelayed({
                             if (token == serial) {
                                 val next = if (attempt >= 1 || plan.checkKey!=null) runCatching { nextPlan(plan) }.getOrDefault(plan) else plan
