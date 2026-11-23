@@ -4,5 +4,5 @@
     <application android:label="Nexus VPN QA" android:allowBackup="false">
         <activity android:name="android.app.Activity" android:exported="false"/>
     </application>
-    <instrumentation android:name=".Probe" android:targetPackage="${applicationId}"/>
+    <instrumentation android:name="dev.nexus.vpnprobe.Probe" android:targetPackage="${applicationId}"/>
 </manifest>

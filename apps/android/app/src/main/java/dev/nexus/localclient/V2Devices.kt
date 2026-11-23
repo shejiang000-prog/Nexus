@@ -132,7 +132,7 @@ internal object V2Devices {
     fun remove(context: Context, key: String) {
         require(key.matches(Regex("v2:[a-f0-9]{64}"))) { "设备记录无效" }
         val local = context.getSharedPreferences("local", Context.MODE_PRIVATE)
-        val edit = local.edit().remove("apps/$key")
+        val edit = local.edit().remove("apps/$key").remove("exit/$key")
         for (field in listOf(TunnelService.LAST, TunnelService.RESUME)) {
             val saved = local.getString(field, null)?.let { runCatching { android.content.Intent.parseUri(it, 0) }.getOrNull() }
             if (saved?.action == "v2" && saved.getStringExtra("v2-key") == key) edit.remove(field)
