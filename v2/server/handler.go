@@ -31,15 +31,16 @@ func (m MemoryDevices) Lookup(id proof.ID) *ecdsa.PublicKey { return m[id] }
 type bindingKey struct{}
 type socketKey struct{}
 type Handler struct {
-	Authority  string            `json:"authority"`
-	DeviceKeys map[string]string `json:"device_keys"`
-	AllowExact []string          `json:"allow_exact,omitempty"`
-	LedgerPath string            `json:"ledger_path,omitempty"`
-	ledger     *Ledger
-	devices    proof.Devices
-	exact      map[netip.AddrPort]bool
-	sessions   *sync.Map
-	slots      chan struct{}
+	Authority     string            `json:"authority"`
+	DeviceKeys    map[string]string `json:"device_keys"`
+	AllowExact    []string          `json:"allow_exact,omitempty"`
+	LedgerPath    string            `json:"ledger_path,omitempty"`
+	ledger        *Ledger
+	releaseLedger func() error
+	devices       proof.Devices
+	exact         map[netip.AddrPort]bool
+	sessions      *sync.Map
+	slots         chan struct{}
 }
 
 func init() { caddy.RegisterModule(Handler{}) }
@@ -99,21 +100,26 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		if len(devices) > 0 {
 			return errors.New("choose a ledger or static device keys")
 		}
-		h.ledger, e = OpenLedger(h.LedgerPath)
+		h.ledger, h.releaseLedger, e = acquireNodeLedger(h.LedgerPath)
 		if e != nil {
 			return e
 		}
 		h.devices = h.ledger
-		// Caddy waits for long-lived CONNECT requests before calling Cleanup.
+		// During a reload Caddy still serves active requests on the old
+		// configuration. On exit it waits for them before calling Cleanup.
 		for _, s := range app.(*caddyhttp.App).Servers {
-			s.RegisterOnShutdown(h.ledger.disconnectAll)
+			s.RegisterOnShutdown(func() {
+				if caddy.Exiting() {
+					h.ledger.disconnectAll()
+				}
+			})
 		}
 	}
 	return nil
 }
 func (h *Handler) Cleanup() error {
-	if h.ledger != nil {
-		return h.ledger.Close()
+	if h.releaseLedger != nil {
+		return h.releaseLedger()
 	}
 	return nil
 }
