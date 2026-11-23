@@ -132,7 +132,10 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 				return nil, copyPath(l.path(rest[3]), db, 0600)
 			}
 			if _, e := os.Stat(db); os.IsNotExist(e) {
-				return nil, os.WriteFile(db, []byte("initial"), 0600)
+				if e := os.WriteFile(db, []byte("initial"), 0600); e != nil {
+					return nil, e
+				}
+				return nil, os.Chown(db, 12345, 12345)
 			}
 		case "/usr/bin/mkdir":
 			return nil, os.Mkdir(l.path(rest[len(rest)-1]), 0700)
@@ -144,7 +147,10 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 			if strings.HasSuffix(dest, "/") {
 				dest = filepath.Join(dest, filepath.Base(src))
 			}
-			return nil, copyPath(l.path(dest), l.path(src), 0600)
+			if e := copyPath(l.path(dest), l.path(src), 0600); e != nil {
+				return nil, e
+			}
+			return nil, os.Chown(l.path(dest), 12345, 12345)
 		default:
 			return nil, fmt.Errorf("unexpected service command %s", cmd)
 		}
@@ -214,6 +220,20 @@ func TestInstallRepeatUpgradeRollbackAndPurge(t *testing.T) {
 	run("install", o)
 	if started != l.starts {
 		t.Fatal("idempotent install restarted services")
+	}
+	if e := os.Chmod(l.path(state+"/ledger.db"), 0640); e != nil {
+		t.Fatal(e)
+	}
+	if e := l.run(t.Context(), "install", o, sampleRender); e == nil {
+		t.Fatal("idempotent install accepted permission drift")
+	}
+	if e := os.Chmod(l.path(state+"/ledger.db"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	l.nft = ""
+	run("install", o)
+	if l.nft == "" || l.starts != started {
+		t.Fatal("firewall repair restarted service or failed")
 	}
 	run("status", o)
 	newNode := Options{NodePath: "/bin/false"}

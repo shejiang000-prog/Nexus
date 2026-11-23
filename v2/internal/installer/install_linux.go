@@ -144,7 +144,10 @@ func (h host) run(ctx context.Context, action string, o Options, render RenderFu
 			if e := h.validateOwned(ctx, d); e != nil {
 				return e
 			}
-			return h.healthy(ctx, d)
+			if err := h.healthy(ctx, d); err != nil {
+				return err
+			}
+			return h.firewall(ctx, d, true)
 		}
 		return h.install(ctx, o, d, !missing, render)
 	}
@@ -388,6 +391,14 @@ func (h host) validateIdentity(ctx context.Context, d deployment) error {
 		if e := safeDir(h.path(p), u, 0700); e != nil {
 			return e
 		}
+	}
+	db := h.path(state + "/ledger.db")
+	fi, e := os.Lstat(db)
+	if e != nil {
+		return e
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0600 || int(fi.Sys().(*syscall.Stat_t).Uid) != u {
+		return errors.New("unsafe ledger file ownership or permissions")
 	}
 	return nil
 }
