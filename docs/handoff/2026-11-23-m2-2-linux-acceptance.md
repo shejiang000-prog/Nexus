@@ -36,3 +36,40 @@
 - 离线构建 Linux amd64 节点（启用 race），并交叉构建 Linux arm64 ELF。运行 `go vet ./...`、设置独立节点路径和 `NEXUS_TEST_INSTALLED=1 NEXUS_TEST_ACME_RENEWAL=1` 的 `go test -race -count=1 -v ./...`。vet 通过，10 个有 Go 测试的包全部通过，零跳过。compat 包由上述官方客户端脚本覆盖。实装 V2 用例覆盖一次性邀请、H2/H3 上的 TCP/UDP、活动流重载、撤销及备份。
 - NexusLab 使用真实 nftables，另外以隔离网络命名空间核对停用 ufw 可能留下的 ACCEPT 空链。活动 ufw、legacy 表读取和 firewalld 使用命令模拟覆盖。测试包括 IPv4/IPv6、本安装随机命名的应用规则、管理员同端口规则、删除前并发插入、失败回滚、停用 ufw 放行以及 firewalld 输出可复制命令。实验室未安装 ufw/firewalld。
 - M4 验证公网签发、支持矩阵内的真实发行版、防火墙实机以及 Shadowrocket、v2rayN/v2rayNG、mihomo 的实际导入。当前交付为分享链接与本地 mihomo 文件。在线订阅地址列入后续。
+
+## Claude 评审
+
+评审对象：开发分支 `edb27bb`…`dbbf608`（共 13 个提交），规范分支 `8a39b3e`、`628db3b`。
+
+结论：上轮两个设计问题都已按要求改正，工程质量继续保持。本轮发现**一个重要缺陷**（云服务器上无法安装）和一个中等问题（Reality 禁用后旧连接不断），在 M2 第 3 部分修复。
+
+**独立复现（NexusLab，从 `dbbf608` 的 git archive 构建，GOPROXY=off）**
+
+- prepare、节点构建、`go vet ./...` 通过。带独立节点的 `go test -race -count=1 -v ./...`：10 个包全部通过。两个实装用例（`TestInstalledPrivateNode`、`TestInstalledACMERenewal`）需要预先安装，这次跳过，ACME 续期以 Codex 的记录为准。
+- `tools/verify_v2_compat.py` 独立重跑（62 s，退出码 0），两个上游资产的 SHA-256 与批准清单一致。
+  - Hysteria2：轮换后旧连接 0.041 s 关闭，禁用后 0.049 s 关闭。
+  - Reality：轮换和禁用 3.1 s 后旧连接仍在回显；节点整体换钥后两名用户旧连接 2.04 s 关闭。
+  - 两用户 TCP/UDP、回环目的地拒绝、离线轮换后重启、mihomo 字段核对，均通过。
+- **评审实装**：`install.sh install --non-interactive --protocols reality --public-host 192.0.2.10`（无域名，默认目标 www.microsoft.com:443）。
+  - 安装成功，xray 独占 443/TCP；目录 0700、账本 0600，属主为服务账户。
+  - 建用户、开通 Reality 后状态为 applied；导出链接 `sni=www.microsoft.com`、`fp=chrome`、`flow=xtls-rprx-vision`，地址为 public-host。
+  - 相同参数重装，服务 PID 不变。
+  - `uninstall --purge` 后账户、目录、单元全部移除，nft 规则集与安装前逐字一致。
+  - 实验室里另有的 `nexus-node`、`nexus-claim` 服务是 11-21 的 V1 实验节点，与本安装器无关。
+- 本地 ACME 用 Caddy 自带的 acme_server 搭私有 CA，没有引入新工具，做法好。
+
+**缺陷 1（重要）：ACME 预检要求域名解析到本机网卡地址，NAT 云主机必然失败**
+
+`host_linux.go` 中的 `localDNS` 把 A/AAAA 记录与 `net.InterfaceAddrs()` 比对，不在本机网卡上就拒绝安装。AWS、GCP、Oracle Cloud、阿里云、腾讯云等的公网 IP 是 1:1 NAT，并不出现在网卡上，这类主机会被直接挡掉。
+
+修复方向：不要求解析地址必须在网卡上。可以改为在 80 端口开临时监听，带随机令牌，然后经域名回访自己；回环 NAT 不可用时退化为警告。交互模式让用户确认继续，无交互模式提供显式参数跳过。证书最终能否签发以 ACME 实际结果为准，失败时回滚并给出明确原因（解析错误、80/443 被安全组挡住等）。不得为探测公网 IP 而访问第三方服务。
+
+**问题 2（中）：Reality 禁用或轮换不会断开该用户已有的连接**
+
+上游 Xray 的 RemoveUser 只阻止新认证，已认证的流会一直保持。对“撤销朋友访问”这种场景，这不够。整节点换钥约 2 s 能断开所有人，说明重建入站是可行的。
+
+建议：禁用、`revoke-user`、轮换（应对链接泄露）默认重建 Reality 入站，强制所有 Reality 用户重连，其他用户的客户端会自动重连。界面和文档写明这个代价，并提供不断流的选项。
+
+**观察（低）**
+
+- 默认目标 www.microsoft.com 被大量 Reality 节点使用，且其 IP 与 VPS 所在网络不一致（SNI 与 IP 归属不符是已知的可检测特征）。建议安装器提示用户优先选择与 VPS 同网络或同地区、支持 TLS 1.3 的站点，M4 实网评估默认值。
