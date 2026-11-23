@@ -284,8 +284,8 @@ class MainActivity : ComponentActivity() {
                                 },pick={addSubscription=false;page="节点"},mode=::changeMode,
                                 addSubscription={addSubscription=true;page="节点"},addServer={page="我的服务器"},
                                 receive={incoming=null;page="领取"},
-                                nodeInfo=if(shownV2!=null) "V2 · "+shownV2.statusText(tunnel)+" · "+shownV2.expiryText() else if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
-                                region=if(showingPrivate || shownV2!=null) "NX" else shownRow?.region.orEmpty(),
+                                nodeInfo=if(shownV2!=null) shownV2.statusText(tunnel)+" · "+shownV2.expiryText() else if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
+                                region=if(shownV2!=null) "V2" else if(showingPrivate) "NX" else shownRow?.region.orEmpty(),
                                 latency=shownRow?.let { catalog?.results?.get(it.favorite) }?.takeIf {it.ok}?.ms,
                                 overview=catalog?.takeIf { shownV2==null && it.sources.isNotEmpty() }?.let { data -> {
                                     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }

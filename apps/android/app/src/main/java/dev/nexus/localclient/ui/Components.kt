@@ -218,7 +218,7 @@ internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,se
             RegionBadge(region)
             Column(Modifier.weight(1f).padding(vertical=7.dp)) {
                 Text(name,style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp),maxLines=1,overflow=TextOverflow.Ellipsis)
-                Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=1)
+                Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=if(region=="V2") 2 else 1)
                 if(info.isNotBlank()) Text(info,color=signalAmber,style=MaterialTheme.typography.bodySmall)
             }
             LatencyMeter(latency,testing)
@@ -305,9 +305,9 @@ internal fun CurrentNode(region:String,name:String,detail:String,latency:Long?,p
             RegionBadge(region,private)
             Column(Modifier.weight(1f)) {
                 Text(name,style=MaterialTheme.typography.titleMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(detail.isNotEmpty()) Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=1)
+                if(detail.isNotEmpty()) Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=if(region=="V2") 2 else 1)
             }
-            LatencyMeter(latency)
+            if(region!="V2") LatencyMeter(latency)
             GlyphIcon(Glyph.Chevron,size=18.dp,tint=c.outline)
         }
     }

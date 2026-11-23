@@ -215,14 +215,14 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         }
     }
     val details:@Composable (Boolean)->Unit={ short ->
-        CurrentNode(region,displayName(node).ifBlank{"选择节点"},nodeInfo,latency,region=="NX",pick)
+        CurrentNode(region,displayName(node).ifBlank{"选择节点"},nodeInfo,latency,region=="NX" || region=="V2",pick)
         ModeSwitch(bypass,mode)
         if (!short || !on) AnimatedContent(if(bypass && state.shoes)SplitRouting.SHOES else if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",
             transitionSpec={ fadeThrough(motion) },label="分流说明") { text ->
             Text(text,Modifier.fillMaxWidth(),color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,textAlign=TextAlign.Center)
         }
         AnimatedVisibility(on,enter=fadeIn(motionTween(Motion.emphasized))+expandVertically(motionTween(Motion.emphasized)),
-            exit=fadeOut(motionTween(Motion.exit,Motion.leave))+shrinkVertically(motionTween(Motion.exit,Motion.leave))) { RateTiles { traffic.value } }
+            exit=fadeOut(motionTween(Motion.exit,Motion.leave))+shrinkVertically(motionTween(Motion.exit,Motion.leave))) { RateTiles(short) { traffic.value } }
         if(state.port>0 && !state.vpn)Text("本地端口 "+state.port,style=numberStyle)
         // Keep the last message while the notice collapses, so it does not blank out mid-animation.
         val failed=state.error.isNotEmpty()
