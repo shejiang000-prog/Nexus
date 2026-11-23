@@ -44,6 +44,10 @@ func TestNode(t *testing.T) {
 }
 func TestLedgerLoad(t *testing.T) { testNode(t, true, true) }
 func testNode(t *testing.T, useLedger, load bool, scenarios ...func(*testing.T, *nodeLab)) {
+	testNodeTCP(t, useLedger, load, func(c net.Conn) { io.Copy(c, c) }, scenarios...)
+}
+
+func testNodeTCP(t *testing.T, useLedger, load bool, serve func(net.Conn), scenarios ...func(*testing.T, *nodeLab)) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
 		t.Skip("set NEXUS_NODE_TEST_BINARY to a built nexus-node")
@@ -90,7 +94,7 @@ func testNode(t *testing.T, useLedger, load bool, scenarios ...func(*testing.T, 
 			if e != nil {
 				return
 			}
-			go func(c net.Conn) { defer c.Close(); io.Copy(c, c) }(conn)
+			go func(c net.Conn) { defer c.Close(); serve(c) }(conn)
 		}
 	}()
 	u, e := net.ListenPacket("udp4", "127.0.0.1:0")
