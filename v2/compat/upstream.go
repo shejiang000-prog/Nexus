@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -98,7 +99,41 @@ func (s *service) auth(w http.ResponseWriter, r *http.Request) {
 }
 func sessionID(c Credential) string { return c.UserID + "-" + strconv.FormatInt(c.Generation, 10) }
 
+// Caddy is the only certificate writer. The official server reads these same
+// paths on new handshakes, so renewal does not require restarting QUIC.
+func (s *service) certificatePaths() (string, string, error) {
+	cert, key := s.site.Certificate, s.site.KeyFile
+	if cert == "" && key == "" {
+		cert, key = "/etc/nexus-v2/cert.pem", "/etc/nexus-v2/key.pem"
+	}
+	if !filepath.IsAbs(cert) || !filepath.IsAbs(key) {
+		return "", "", errors.New("invalid TLS file paths")
+	}
+	cert, key = filepath.Join(s.root, cert), filepath.Join(s.root, key)
+	deadline := time.NewTimer(3 * time.Minute)
+	defer deadline.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if _, err := tls.LoadX509KeyPair(cert, key); err == nil {
+			return cert, key, nil
+		} else if !os.IsNotExist(err) {
+			return "", "", errors.New("invalid TLS certificate/key pair")
+		}
+		select {
+		case <-s.ctx.Done():
+			return "", "", s.ctx.Err()
+		case <-deadline.C:
+			return "", "", errors.New("timeout waiting for Caddy certificate")
+		case <-tick.C:
+		}
+	}
+}
 func (s *service) startHy() (net.Listener, error) {
+	cert, keyPath, err := s.certificatePaths()
+	if err != nil {
+		return nil, err
+	}
 	auth, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -118,12 +153,13 @@ func (s *service) startHy() (net.Listener, error) {
 	for _, cidr := range denied {
 		rules = append(rules, "reject("+cidr+")")
 	}
-	etc := filepath.Join(s.root, "etc/nexus-v2")
+	siteSock := filepath.Join(s.root, "var/lib/nexus-v2/site.sock")
 	w, err := s.start("hysteria", func(_ string) object {
 		return object{
 			"listen":       fmt.Sprintf(":%d", s.site.Ports["hysteria2"]),
-			"tls":          object{"cert": filepath.Join(etc, "cert.pem"), "key": filepath.Join(etc, "key.pem")},
+			"tls":          object{"cert": cert, "key": keyPath},
 			"auth":         object{"type": "http", "http": object{"url": "http://" + auth.Addr().String() + "/" + s.statsKey}},
+			"masquerade":   object{"type": "proxy", "proxy": object{"url": "unix://" + siteSock, "xForwarded": false}},
 			"trafficStats": object{"listen": statsAddr, "secret": s.statsKey},
 			"acl":          object{"inline": rules},
 		}

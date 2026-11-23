@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/caddyserver/caddy/v2/modules/filestorage"
+	"github.com/caddyserver/certmagic"
 	"github.com/shejiang000-prog/Nexus/v2/compat"
 	"github.com/shejiang000-prog/Nexus/v2/internal/installer"
 	"github.com/shejiang000-prog/Nexus/v2/proof"
@@ -72,16 +75,21 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	f := flag.NewFlagSet(action, flag.ContinueOnError)
 	f.SetOutput(out)
 	var interactive, unattended bool
-	var protocols string
+	var protocols, names string
+	var ask func(string, *string) error
 	var ports = map[string]*int{}
 	if action == "install" {
 		f.BoolVar(&interactive, "interactive", false, "prompt for installation settings")
 		f.BoolVar(&unattended, "non-interactive", false, "use flags only")
 		f.StringVar(&protocols, "protocols", "v2", "comma-separated v2,reality,hysteria2")
-		f.StringVar(&o.Domain, "domain", "", "DNS name for clients")
+		f.StringVar(&o.Domain, "domain", "", "node DNS name (required for V2 and Hysteria2)")
+		f.StringVar(&o.PublicHost, "public-host", "", "node IP for a domainless Reality installation")
+		f.StringVar(&names, "reality-server-names", "", "comma-separated target certificate DNS names (default: target hostname)")
+		f.StringVar(&o.ACMECA, "acme-ca", "", "HTTPS ACME directory (default: Let's Encrypt)")
+		f.StringVar(&o.ACMERoot, "acme-root", "", "absolute PEM trust bundle for a private ACME authority")
 		f.StringVar(&o.CertFile, "cert", "", "absolute PEM certificate-chain file")
 		f.StringVar(&o.KeyFile, "key", "", "absolute PEM private-key file")
-		f.StringVar(&o.RealityTarget, "reality-target", "", "operator-controlled TLS target host:port serving *.<domain>")
+		f.StringVar(&o.RealityTarget, "reality-target", "", "TLS target host:port (default: www.microsoft.com:443)")
 		for _, name := range []string{"v2", "reality", "hysteria2"} {
 			ports[name] = f.Int(name+"-port", 0, "public port (0 for automatic assignment)")
 		}
@@ -106,7 +114,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	}
 	if interactive || (!unattended && len(args) == 0) {
 		r := bufio.NewReader(input)
-		ask := func(label string, dest *string) error {
+		ask = func(label string, dest *string) error {
 			if _, err := fmt.Fprintf(out, "%s [%s]: ", label, *dest); err != nil {
 				return err
 			}
@@ -122,7 +130,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		if err := ask("Protocols (v2,reality,hysteria2)", &protocols); err != nil {
 			return o, err
 		}
-		if err := ask("Domain", &o.Domain); err != nil {
+		if err := ask("Domain (V2 and Hysteria2 require one; blank for Reality only)", &o.Domain); err != nil {
 			return o, err
 		}
 		o.Ports = make(map[string]int)
@@ -143,19 +151,35 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			*dest = n
 			o.Ports[name] = n
 		}
+		if o.Domain == "" {
+			if _, only := o.Ports["reality"]; !only || len(o.Ports) != 1 {
+				return o, errors.New("V2 and Hysteria2 require a domain; only Reality supports an IP-only node")
+			}
+			if err := ask("Node IP for Reality only", &o.PublicHost); err != nil {
+				return o, err
+			}
+		}
 		if _, ok := o.Ports["reality"]; ok {
-			if err := ask("Wildcard HTTPS target host:port", &o.RealityTarget); err != nil {
+			if o.RealityTarget == "" {
+				o.RealityTarget = defaultRealityTarget
+			}
+			if err := ask("Reality TLS target", &o.RealityTarget); err != nil {
+				return o, err
+			}
+			if err := ask("Reality server names (default: target hostname)", &names); err != nil {
 				return o, err
 			}
 		}
 		_, v := o.Ports["v2"]
 		_, h := o.Ports["hysteria2"]
 		if v || h {
-			if err := ask("Certificate PEM", &o.CertFile); err != nil {
+			if err := ask("Certificate PEM (blank for automatic ACME)", &o.CertFile); err != nil {
 				return o, err
 			}
-			if err := ask("Private key PEM", &o.KeyFile); err != nil {
-				return o, err
+			if o.CertFile != "" {
+				if err := ask("Private key PEM", &o.KeyFile); err != nil {
+					return o, err
+				}
 			}
 		}
 	}
@@ -180,23 +204,96 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		}
 	}
 	o.Domain = strings.ToLower(o.Domain)
-	if _, err := proof.Authority(net.JoinHostPort(o.Domain, "443")); err != nil || net.ParseIP(o.Domain) != nil || !strings.Contains(o.Domain, ".") {
-		return o, errors.New("a DNS domain is required")
-	}
-	if _, ok := o.Ports["reality"]; ok {
-		if len(o.Domain)+33 > 253 {
-			return o, errors.New("domain too long for per-user Reality SNI")
-		}
-		if _, err := proof.Authority(o.RealityTarget); err != nil {
-			return o, errors.New("provide --reality-target host:port")
-		}
-	}
 	_, v := o.Ports["v2"]
 	_, h := o.Ports["hysteria2"]
-	if (v || h) && (!filepath.IsAbs(o.CertFile) || !filepath.IsAbs(o.KeyFile)) {
-		return o, errors.New("provide absolute --cert and --key paths")
+	if o.Domain == "" {
+		if v || h {
+			return o, errors.New("V2 and Hysteria2 require a domain; only Reality supports an IP-only node")
+		}
+		ip := net.ParseIP(o.PublicHost)
+		if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
+			return o, errors.New("provide the node IP with --public-host")
+		}
+		o.PublicHost = ip.String()
+	} else if !dnsName(o.Domain) || o.PublicHost != "" {
+		return o, errors.New("use --domain with a DNS name, or --public-host for Reality only")
+	}
+	if (o.CertFile == "") != (o.KeyFile == "") || o.CertFile != "" && (!filepath.IsAbs(o.CertFile) || !filepath.IsAbs(o.KeyFile)) {
+		return o, errors.New("manual certificates require both absolute --cert and --key")
+	}
+	if o.CertFile != "" && (o.ACMECA != "" || o.ACMERoot != "") {
+		return o, errors.New("choose ACME or manual PEM files")
+	}
+	if !v && !h && (o.CertFile != "" || o.ACMECA != "" || o.ACMERoot != "") {
+		return o, errors.New("Reality alone does not use local certificate options")
+	}
+	if o.ACMECA != "" {
+		u, e := url.Parse(o.ACMECA)
+		if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+			return o, errors.New("invalid HTTPS ACME directory")
+		}
+	}
+	if o.ACMERoot != "" && (!filepath.IsAbs(o.ACMERoot) || o.ACMECA == "") {
+		return o, errors.New("--acme-root requires an absolute PEM path and a custom ACME directory")
+	}
+	if _, ok := o.Ports["reality"]; ok {
+		if o.RealityTarget == "" {
+			o.RealityTarget = defaultRealityTarget
+		}
+		for {
+			var err error
+			o.RealityServerNames, err = checkReality(o.RealityTarget, names, nil)
+			if err == nil {
+				break
+			}
+			if ask == nil {
+				return o, err
+			}
+			fmt.Fprintln(out, err)
+			if err := ask("Choose another TLS target", &o.RealityTarget); err != nil {
+				return o, err
+			}
+			if err := ask("Target certificate DNS names", &names); err != nil {
+				return o, err
+			}
+		}
+	} else if o.RealityTarget != "" || names != "" {
+		return o, errors.New("Reality options require selecting reality")
 	}
 	return o, nil
+}
+
+const defaultRealityTarget = "www.microsoft.com:443"
+
+func dnsName(name string) bool {
+	_, err := proof.Authority(net.JoinHostPort(name, "443"))
+	return err == nil && net.ParseIP(name) == nil && strings.Contains(name, ".")
+}
+
+func checkReality(target, names string, roots *x509.CertPool) ([]string, error) {
+	if _, err := proof.Authority(target); err != nil {
+		return nil, errors.New("Reality target must be host:port")
+	}
+	if names == "" {
+		names, _, _ = net.SplitHostPort(target)
+	}
+	var result []string
+	for _, part := range strings.Split(names, ",") {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if !dnsName(name) {
+			return nil, errors.New("Reality server name must be a certificate DNS name")
+		}
+		d := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, CurvePreferences: []tls.CurveID{tls.X25519}, ServerName: name, RootCAs: roots}}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		conn, err := d.DialContext(ctx, "tcp", target)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("Reality target %s with SNI %s failed TLS 1.3/X25519 certificate check: %w", target, name, err)
+		}
+		conn.Close()
+		result = append(result, name)
+	}
+	return result, nil
 }
 
 // Paths in the generated configurations refer to their installed locations.
@@ -215,7 +312,7 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 	}
 	_, v := o.Ports["v2"]
 	_, h := o.Ports["hysteria2"]
-	if v || h {
+	if (v || h) && o.CertFile != "" {
 		cert, err := os.ReadFile(o.CertFile)
 		if err != nil {
 			return err
@@ -257,15 +354,63 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 			return err
 		}
 	}
-	if err := writeJSON("deployment.json", object{"domain": o.Domain, "ports": o.Ports, "reality_target": o.RealityTarget}); err != nil {
+	managed := (v || h) && o.CertFile == ""
+	store := "/var/lib/nexus-v2/caddy"
+	chain, key := "/etc/nexus-v2/cert.pem", "/etc/nexus-v2/key.pem"
+	tlsApp := object{"certificates": object{"load_files": []object{{"certificate": chain, "key": key}}}}
+	if managed {
+		ca := o.ACMECA
+		if ca == "" {
+			ca = certmagic.LetsEncryptProductionCA
+		}
+		issuer := object{"module": "acme", "ca": ca}
+		if o.ACMERoot != "" {
+			b, err := os.ReadFile(o.ACMERoot)
+			if err != nil {
+				return err
+			}
+			if !x509.NewCertPool().AppendCertsFromPEM(b) {
+				return errors.New("invalid private ACME root bundle")
+			}
+			if err := write("acme-root.pem", b); err != nil {
+				return err
+			}
+			issuer["trusted_roots_pem_files"] = []string{"/etc/nexus-v2/acme-root.pem"}
+		}
+		id := (&certmagic.ACMEIssuer{CA: ca}).IssuerKey()
+		chain = filepath.Join(store, certmagic.StorageKeys.SiteCert(id, o.Domain))
+		key = filepath.Join(store, certmagic.StorageKeys.SitePrivateKey(id, o.Domain))
+		tlsApp = object{"certificates": object{"automate": []string{o.Domain}}, "automation": object{"policies": []object{{"subjects": []string{o.Domain}, "issuers": []object{issuer}}}}}
+	}
+	siteSock := "/var/lib/nexus-v2/site.sock"
+	if err := writeJSON("deployment.json", object{"domain": o.Domain, "public_host": o.PublicHost, "ports": o.Ports, "reality_target": o.RealityTarget, "reality_server_names": o.RealityServerNames, "certificate": chain, "key_file": key}); err != nil {
 		return err
 	}
-	if !v {
+	if !v && !h {
 		return nil
 	}
-	port := strconv.Itoa(o.Ports["v2"])
-	handler := object{"handler": "nexus", "authority": net.JoinHostPort(o.Domain, port), "ledger_path": "/var/lib/nexus-v2/ledger.db"}
 	site := object{"handler": "static_response", "headers": object{"Content-Type": []string{"text/plain; charset=utf-8"}}, "body": "Welcome.\n"}
-	srv := object{"listen": []string{":" + port}, "enable_datagrams": true, "automatic_https": object{"disable": true}, "tls_connection_policies": []object{{"protocol_min": "tls1.3"}}, "routes": []object{{"handle": []object{handler}}, {"match": []object{{"path": []string{"/"}, "method": []string{"HEAD", "GET"}}}, "handle": []object{site}}, {"handle": []object{{"handler": "static_response", "status_code": 404}}}}}
-	return writeJSON("v2.json", object{"admin": object{"listen": "unix//var/lib/nexus-v2/admin.sock"}, "apps": object{"tls": object{"certificates": object{"load_files": []object{{"certificate": "/etc/nexus-v2/cert.pem", "key": "/etc/nexus-v2/key.pem"}}}}, "http": object{"servers": object{"node": srv}}}})
+	routes := []object{{"match": []object{{"path": []string{"/"}, "method": []string{"HEAD", "GET"}}}, "handle": []object{site}}, {"handle": []object{{"handler": "static_response", "status_code": 404}}}}
+	servers := object{}
+	public := func(port int, siteRoutes []object) object {
+		return object{"listen": []string{":" + strconv.Itoa(port)}, "protocols": []string{"h1", "h2"}, "automatic_https": object{"disable_redirects": true}, "tls_connection_policies": []object{{"protocol_min": "tls1.3"}}, "routes": siteRoutes}
+	}
+	if v {
+		port := o.Ports["v2"]
+		handler := object{"handler": "nexus", "authority": net.JoinHostPort(o.Domain, strconv.Itoa(port)), "ledger_path": "/var/lib/nexus-v2/ledger.db"}
+		node := public(port, append([]object{{"handle": []object{handler}}}, routes...))
+		node["protocols"] = []string{"h1", "h2", "h3"}
+		node["enable_datagrams"] = true
+		servers["node"] = node
+	}
+	if h {
+		servers["site"] = object{"listen": []string{"unix/" + siteSock + "|0600"}, "protocols": []string{"h1"}, "automatic_https": object{"disable": true}, "routes": routes}
+	}
+	if managed {
+		servers["validation"] = object{"listen": []string{":80"}, "protocols": []string{"h1"}, "automatic_https": object{"disable_redirects": true}, "routes": routes}
+		if o.Ports["v2"] != 443 {
+			servers["https"] = public(443, routes)
+		}
+	}
+	return writeJSON("v2.json", object{"storage": object{"module": "file_system", "root": store}, "admin": object{"listen": "unix//var/lib/nexus-v2/admin.sock"}, "apps": object{"tls": tlsApp, "http": object{"servers": servers}}})
 }

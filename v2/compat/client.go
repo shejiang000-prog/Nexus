@@ -33,6 +33,8 @@ type Snapshot struct {
 	RealityKey  *RealityKey  `json:"reality_key,omitempty"`
 }
 type deployment struct {
+	Certificate string         `json:"certificate"`
+	KeyFile     string         `json:"key_file"`
 	Domain      string         `json:"domain"`
 	Ports       map[string]int `json:"ports"`
 	Target      string         `json:"reality_target"`

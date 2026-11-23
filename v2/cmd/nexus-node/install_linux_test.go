@@ -4,11 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,5 +81,36 @@ func TestDeploymentInputAndPEM(t *testing.T) {
 	o.KeyFile = o.CertFile
 	if err = renderDeployment(t.Context(), o, t.TempDir()); err == nil {
 		t.Fatal("accepted invalid private key")
+	}
+}
+
+func TestRealityTargetHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		version     uint16
+		curve       tls.CurveID
+		sni         string
+		trust, pass bool
+	}{
+		{"compatible", tls.VersionTLS13, tls.X25519, "example.com", true, true},
+		{"tls12", tls.VersionTLS12, tls.X25519, "example.com", true, false},
+		{"different group", tls.VersionTLS13, tls.CurveP256, "example.com", true, false},
+		{"untrusted", tls.VersionTLS13, tls.X25519, "example.com", false, false},
+		{"second name mismatch", tls.VersionTLS13, tls.X25519, "example.com,invalid.test", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewUnstartedServer(http.NotFoundHandler())
+			s.TLS = &tls.Config{MaxVersion: tc.version, CurvePreferences: []tls.CurveID{tc.curve}}
+			s.StartTLS()
+			defer s.Close()
+			roots := x509.NewCertPool()
+			if tc.trust {
+				roots.AddCert(s.Certificate())
+			}
+			_, err := checkReality(s.Listener.Addr().String(), tc.sni, roots)
+			if (err == nil) != tc.pass {
+				t.Fatalf("unexpected TLS preflight result: %v", err)
+			}
+		})
 	}
 }

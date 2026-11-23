@@ -96,7 +96,17 @@ func TestInstalledPrivateNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ledger.Close()
-	cert, err := os.ReadFile("/etc/nexus-v2/cert.pem")
+	var deployed struct {
+		Certificate string `json:"certificate"`
+	}
+	data, err := os.ReadFile("/etc/nexus-v2/deployment.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &deployed); err != nil {
+		t.Fatal(err)
+	}
+	cert, err := os.ReadFile(deployed.Certificate)
 	if err != nil {
 		t.Fatal(err)
 	}
