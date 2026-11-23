@@ -37,7 +37,11 @@ def wait(ok, deadline=10):
 
 class TCP(socketserver.BaseRequestHandler):
     def handle(self):
-        while data:=self.request.recv(4096): self.request.sendall(data)
+        try:
+            while data:=self.request.recv(4096):
+                self.request.sendall(data)
+        except (ConnectionError,ssl.SSLError):
+            pass  # A rejected/closed REALITY session can abort the fixture TLS handshake.
 class UDP(socketserver.BaseRequestHandler):
     def handle(self):
         data,sock=self.request
@@ -178,7 +182,8 @@ def main():
         decoy=st.enter_context(Stream(('127.0.0.1',0),TCP))
         tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.set_alpn_protocols(['h2','http/1.1'])
         tls.load_cert_chain(etc/'cert.pem',etc/'key.pem')
-        decoy.socket=tls.wrap_socket(decoy.socket,server_side=True)
+        # Each worker negotiates TLS in its own request thread.
+        decoy.socket=tls.wrap_socket(decoy.socket,server_side=True,do_handshake_on_connect=False)
         tcp=st.enter_context(Stream(('',0),TCP));udp=st.enter_context(Datagram(('',0),UDP))
         for srv in [decoy,tcp,udp]: threading.Thread(target=srv.serve_forever,daemon=True).start()
         ports={'reality':port(),'hysteria2':port()}
