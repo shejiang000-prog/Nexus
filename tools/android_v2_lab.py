@@ -33,9 +33,11 @@ class TCP(socketserver.ThreadingTCPServer):
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
-def serve(node, xray_zip, host, work, installed_port=None):
-    if os.environ.get("WSL_DISTRO_NAME") != "NexusLab" or not ipaddress.ip_address(host).is_private or host == TARGET:
+def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
+    if os.environ.get("WSL_DISTRO_NAME") != "NexusLab" or not ipaddress.ip_address(host).is_private or host == echo_ip:
         raise SystemExit("requires NexusLab and its private interface address")
+    if ipaddress.ip_address(echo_ip) not in ipaddress.ip_network("192.0.2.0/24"):
+        raise ValueError("choose a TEST-NET-1 echo address")
     os.umask(0o077)
     work.mkdir(mode=0o700)
     keys = work / "keys"
@@ -50,13 +52,8 @@ def serve(node, xray_zip, host, work, installed_port=None):
     with contextlib.ExitStack() as stack:
         def cmd(*args):
             subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
-        cmd("ip", "addr", "add", TARGET + "/32", "dev", "lo")
-        stack.callback(cmd, "ip", "addr", "del", TARGET + "/32", "dev", "lo")
-        cmd("nft", "add", "table", "inet", TABLE)
-        stack.callback(cmd, "nft", "delete", "table", "inet", TABLE)
-        for chain in ("input", "output"):
-            cmd("nft","add","chain","inet",TABLE,chain,"{ type filter hook " + chain + " priority -5; policy accept; }")
-
+        cmd("ip", "addr", "add", echo_ip + "/32", "dev", "lo")
+        stack.callback(cmd, "ip", "addr", "del", echo_ip + "/32", "dev", "lo")
         def listener(cls, bind, handler):
             server = stack.enter_context(cls(bind, handler))
             threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -87,9 +84,9 @@ def serve(node, xray_zip, host, work, installed_port=None):
             def handle(self):
                 data, sock = self.request
                 sock.sendto(data,self.client_address)
-        echo = listener(TCP,(TARGET,0),Echo)
-        listener(socketserver.ThreadingUDPServer,(TARGET,echo),Datagram)
-        target = f"{TARGET}:{echo}"
+        echo = listener(TCP,(echo_ip,0),Echo)
+        listener(socketserver.ThreadingUDPServer,(echo_ip,echo),Datagram)
+        target = f"{echo_ip}:{echo}"
         def freeport():
             with socket.socket() as s:
                 s.bind((host,0))
@@ -151,9 +148,9 @@ def serve(node, xray_zip, host, work, installed_port=None):
         with zipfile.ZipFile(xray_zip) as z: binary = Path(z.extract("xray",work))
         binary.chmod(0o700)
         xport = freeport(); client = str(uuid.uuid4())
-        xc = {"inbounds":[{"listen":host,"port":xport,"protocol":"vless","settings":{"clients":[{"id":client}],"decryption":"none"}}],"outbounds":[{"protocol":"blackhole","tag":"deny"},{"protocol":"freedom","tag":"echo"}],"routing":{"rules":[{"ip":[TARGET],"port":str(echo),"outboundTag":"echo"}]},"log":{"loglevel":"none"}}
+        xc = {"inbounds":[{"listen":host,"port":xport,"protocol":"vless","settings":{"clients":[{"id":client}],"decryption":"none"}}],"outbounds":[{"protocol":"blackhole","tag":"deny"},{"protocol":"freedom","tag":"echo"}],"routing":{"rules":[{"ip":[echo_ip],"port":str(echo),"outboundTag":"echo"}]},"log":{"loglevel":"none"}}
         xc["outbounds"][1]["settings"] = {"finalRules":[
-            {"action":"allow","ip":[TARGET + "/32"],"port":str(echo)},
+            {"action":"allow","ip":[echo_ip + "/32"],"port":str(echo)},
             {"action":"block"}]}
         xr=process(binary,["run","-config"],xc,"xray-server")
         lock = threading.Lock()
@@ -164,13 +161,25 @@ def serve(node, xray_zip, host, work, installed_port=None):
         stack.callback(shape.close)
         capture = IdleCapture(nic, host, port, access, work)
         stack.callback(capture.close)
+        has_drop=False
+        def remove_drop():
+            nonlocal has_drop
+            if has_drop:
+                cmd("nft","delete","table","inet",TABLE)
+                has_drop=False
+        stack.callback(remove_drop)
         def switch(op):
+            nonlocal has_drop
             shape.change(op)
-            batch = [f"flush chain inet {TABLE} {c}" for c in ("input","output")]
-            if op == "drop":
-                batch += [f"add rule inet {TABLE} input ip daddr {host} udp dport {port} counter drop",
-                          f"add rule inet {TABLE} output ip saddr {host} udp sport {port} counter drop"]
+            if op!="drop":remove_drop();return
+            if has_drop:return
+            batch=[f"add table inet {TABLE}"]
+            for chain in ("input","output"):
+                batch.append(f"add chain inet {TABLE} {chain} {{ type filter hook {chain} priority -5; policy accept; }}")
+            batch += [f"add rule inet {TABLE} input ip daddr {host} udp dport {port} counter drop",
+                      f"add rule inet {TABLE} output ip saddr {host} udp sport {port} counter drop"]
             subprocess.run(["nft","-f","-"],input="\n".join(batch)+"\n",text=True,check=True)
+            has_drop=True
         class Control(socketserver.StreamRequestHandler):
             def handle(self):
                 self.request.settimeout(3)
@@ -209,7 +218,7 @@ def serve(node, xray_zip, host, work, installed_port=None):
                     with socket.create_connection((host,peer),.15):break
                 except OSError:time.sleep(.1)
             else:raise RuntimeError("lab listeners not ready")
-        (work/"device.json").write_text(json.dumps(dict(invitation=link,endpoint=f"{host}:{port}",host=host,ca=ca,echoPort=echo,target=TARGET,controlPort=cport,control=ctl,subscription=sub)))
+        (work/"device.json").write_text(json.dumps(dict(invitation=link,endpoint=f"{host}:{port}",host=host,ca=ca,echoPort=echo,target=echo_ip,controlPort=cport,control=ctl,subscription=sub)))
         print("M3 fixture ready",flush=True)
         while not (work/"stop").is_file():
             if (node_process and node_process.poll()!=None) or xr.poll()!=None:raise RuntimeError("lab process exited")
@@ -222,5 +231,6 @@ if __name__ == "__main__":
     p.add_argument("host")
     p.add_argument("work",type=Path)
     p.add_argument("--installed-ip-port",type=int,help="use the separately installed IP-mode test node on this port")
+    p.add_argument("--echo-ip",default=TARGET,help="distinct TEST-NET-1 echo address for parallel fixtures")
     a=p.parse_args()
-    serve(a.node.resolve(),a.xray_zip.resolve(),a.host,a.work.resolve(),a.installed_ip_port)
+    serve(a.node.resolve(),a.xray_zip.resolve(),a.host,a.work.resolve(),a.installed_ip_port,a.echo_ip)
