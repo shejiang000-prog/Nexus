@@ -114,6 +114,7 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
         }
         if (phase in setOf("rate","loss","healthy-download","idle-h2","idle-h3")) {
             val times = mutableListOf<Long>()
+            val impairedRates=mutableListOf<String>()
             repeat(if(phase=="rate" || phase=="loss") 10 else 1) { n ->
                 stage.writeText("$phase-${n+1}")
                 val bearer = if(phase=="idle-h2") "h2" else "h3"
@@ -154,6 +155,8 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                     }
                     } finally {
                         result.putLong("normal-download-ms",clock()-began)
+                        if (TunnelService.state.value.bearer.equals("h2",true))
+                            result.putString("clean-subsequent-H2-4MiB-Mbps",runCatching{download()}.getOrDefault("failed"))
                         result.putLong("normal-download-bytes",received)
                         result.putString("normal-download-last-kbps",rates.joinToString(","))
                     }
@@ -161,22 +164,30 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                     connect().use { demand ->
                         demand.soTimeout=15000
                         val finished=java.util.concurrent.atomic.AtomicBoolean()
+                        val delivered=java.util.concurrent.atomic.AtomicLong()
                         val worker=kotlin.concurrent.thread(name="Lab download") {
                             try {
                                 val input=DataInputStream(demand.getInputStream());val buf=ByteArray(65536)
                                 while(!finished.get()) {
                                     demand.getOutputStream().write(68)
-                                    repeat(64){input.readFully(buf)}
+                                    repeat(64){ input.readFully(buf); delivered.addAndGet(buf.size.toLong()) }
                                 }
                             } catch(_:java.io.IOException){}
                         }
                         try {
                             val begin=clock()
+                            val startedBytes=delivered.get()
                             control(phase)
                             val measured=runCatching {
                                 waitFor(12000){TunnelService.state.value.bearer.equals("h2",true)}
                                 usable("h2",3000);clock()-begin
                             }.getOrDefault(-1L)
+                            val ended=clock()
+                            val bytes=delivered.get()-startedBytes
+                            finished.set(true); demand.close(); worker.join(2000)
+                            val h2Mbps=if(measured>=0) runCatching{download()}.getOrDefault("failed") else "unavailable"
+                            impairedRates.add("$bytes B/${ended-begin} ms; subsequent H2 4MiB=$h2Mbps Mbit/s")
+                            result.putString("$phase-delivery",impairedRates.joinToString(" | "))
                             times.add(measured)
                             result.putString("$phase-ms",times.joinToString(","))
                             sendStatus(1,Bundle().apply{putString("$phase-try","${n+1}: $measured")})
