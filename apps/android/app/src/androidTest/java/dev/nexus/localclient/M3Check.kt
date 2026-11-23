@@ -18,7 +18,9 @@ import java.net.Socket
 import org.json.JSONObject
 
 internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage: String) {
-    require(phase in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download"))
+    val scenario = phase.removeSuffix("-sample")
+    val sampleOnly = phase in setOf("loss-sample","healthy-download-sample")
+    require((phase == scenario || sampleOnly) && scenario in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
     val dir = ctx.noBackupFilesDir
@@ -112,10 +114,10 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
             result.putString("4MiB-H3-Mbps",download());external("probe-v2")
             stop()
         }
-        if (phase in setOf("rate","loss","healthy-download","idle-h2","idle-h3")) {
+        if (scenario in setOf("rate","loss","healthy-download","idle-h2","idle-h3")) {
             val times = mutableListOf<Long>()
             val impairedRates=mutableListOf<String>()
-            repeat(if(phase=="rate" || phase=="loss") 10 else 1) { n ->
+            repeat(if(!sampleOnly && (phase=="rate" || phase=="loss")) 10 else 1) { n ->
                 stage.writeText("$phase-${n+1}")
                 val bearer = if(phase=="idle-h2") "h2" else "h3"
                 control(if(bearer=="h2") "drop" else "clear")
@@ -127,7 +129,7 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                     control("capture-$bearer")
                     try { idleBearer(bearer,result) } finally { control("capture-stop") }
                     usable(bearer,5000)
-                } else if(phase=="healthy-download") {
+                } else if(scenario=="healthy-download") {
                     val began=clock()
                     var received=0L
                     var sampleAt=began
@@ -137,7 +139,7 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                         s.soTimeout=8000
                         val buf=ByteArray(65536)
                         val input=DataInputStream(s.getInputStream())
-                        while(clock()-began<600000) {
+                        while(clock()-began < (if(sampleOnly) 20000 else 600000)) {
                             s.getOutputStream().write(68)
                             repeat(64) {
                                 input.readFully(buf)
@@ -177,7 +179,7 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                         try {
                             val begin=clock()
                             val startedBytes=delivered.get()
-                            control(phase)
+                            control(scenario)
                             val measured=runCatching {
                                 waitFor(12000){TunnelService.state.value.bearer.equals("h2",true)}
                                 usable("h2",3000);clock()-begin
