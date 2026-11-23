@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type Handler struct {
 	Authority     string            `json:"authority"`
 	DeviceKeys    map[string]string `json:"device_keys"`
 	AllowExact    []string          `json:"allow_exact,omitempty"`
+	HealthPath    string            `json:"health_path,omitempty"`
 	LedgerPath    string            `json:"ledger_path,omitempty"`
 	ledger        *Ledger
 	releaseLedger func() error
@@ -52,6 +54,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.Authority, e = proof.Authority(h.Authority)
 	if e != nil {
 		return e
+	}
+	if h.HealthPath == "" {
+		h.HealthPath = "/health.bin"
 	}
 	devices := MemoryDevices{}
 	for id, point := range h.DeviceKeys {
@@ -180,7 +185,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		}
 		return next.ServeHTTP(w, r)
 	}
-	if r.Method != "CONNECT" || r.TLS == nil || !r.TLS.HandshakeComplete || r.TLS.Version != tls.VersionTLS13 {
+	health := (r.Method == "GET" || r.Method == "HEAD") && r.URL.RequestURI() == h.HealthPath &&
+		r.Host == h.Authority && r.Header.Get("Proxy-Authorization") != "" && (r.ProtoMajor == 2 || r.ProtoMajor == 3)
+	if (!health && r.Method != "CONNECT") || r.TLS == nil || !r.TLS.HandshakeComplete || r.TLS.Version != tls.VersionTLS13 {
 		return next.ServeHTTP(w, r)
 	}
 	proto := r.Header.Get(":protocol")
@@ -191,6 +198,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if bound == nil {
 		return next.ServeHTTP(w, r)
 	}
+	var expires int64 // Static devices have no account deadline.
 	if h.ledger != nil {
 		// Wake blocked upstream reads and downstream writes on either carrier.
 		q := http3.NexusConn(r.Context())
@@ -198,7 +206,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		if q == nil && tcp == nil {
 			return next.ServeHTTP(w, r)
 		}
-		unregister, ok := h.ledger.register(bound.Device(), func() {
+		unregister, until, ok := h.ledger.register(bound.Device(), func() {
 			if q != nil {
 				q.CloseWithError(0, "")
 			} else {
@@ -209,6 +217,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			return next.ServeHTTP(w, r)
 		}
 		defer unregister()
+		expires = until
+	}
+	accept := func() {
+		w.Header().Set("Proxy-Authentication-Info", "Nexus2")
+		w.Header().Set("Nexus-Account-Expires", strconv.FormatInt(expires, 10))
+	}
+	if health {
+		accept()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "32768")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.WriteHeader(http.StatusOK)
+		if r.Method == "GET" {
+			_, err := w.Write(healthBody[:])
+			return err
+		}
+		return nil
 	}
 	dest := r.Host
 	network := "tcp"
@@ -253,7 +278,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	defer conn.Close()
 	stop := context.AfterFunc(r.Context(), func() { conn.Close() })
 	defer stop()
-	w.Header().Set("Proxy-Authentication-Info", "Nexus2")
+	accept()
 	if network == "udp" {
 		w.Header().Set("Capsule-Protocol", "?1")
 	}
@@ -277,6 +302,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	<-upDone
 	return e
 }
+
+var healthBody [32768]byte
 
 type flushingWriter struct {
 	io.Writer

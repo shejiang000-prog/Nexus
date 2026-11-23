@@ -54,9 +54,6 @@ func main() {
 		type M = map[string]any
 		home := must(os.Getwd())
 		os.Mkdir("site", 0700)
-		if e := os.WriteFile("site/health.bin", make([]byte, 32768), 0600); e != nil {
-			panic(e)
-		}
 		handler := M{"handler": "nexus", "authority": authority, "device_keys": M{"00000000000000000000000000000000": hex.EncodeToString(elliptic.MarshalCompressed(key.Curve, key.X, key.Y))}, "allow_exact": []string{"127.0.0.1:32443", "127.0.0.1:32554"}}
 		if ledger := os.Getenv("LAB_LEDGER_DB"); ledger != "" {
 			delete(handler, "device_keys")

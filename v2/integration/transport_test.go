@@ -255,30 +255,7 @@ func redeemOverTLS(t *testing.T, mode, endpoint, authority string, roots *x509.C
 }
 func testRedemption(t *testing.T, mode, endpoint, authority string, roots *x509.CertPool, token []byte, key *ecdsa.PrivateKey, wantValid bool) proof.ID {
 	t.Helper()
-	config := &tls.Config{RootCAs: roots, ServerName: "nexus.test", NextProtos: []string{mode}, MinVersion: tls.VersionTLS13}
-	var conn http.RoundTripper
-	var exporter proof.Exporter
-	if mode == "h3" {
-		q, err := quic.DialAddr(t.Context(), endpoint, config, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer q.CloseWithError(0, "")
-		conn = (&http3.Transport{}).NewClientConn(q)
-		exporter = q.ExportKeyingMaterial
-	} else {
-		tcp, err := tls.Dial("tcp", endpoint, config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tcp.Close()
-		state := tcp.ConnectionState()
-		exporter = state.ExportKeyingMaterial
-		conn, err = new(http2.Transport).NewClientConn(tcp)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	conn, exporter := testCarrier(t, mode, endpoint, roots)
 	secret, err := proof.Secret(authority, exporter)
 	if err != nil {
 		t.Fatal(err)
@@ -452,4 +429,33 @@ func runLoad(t *testing.T, l *server.Ledger, user proof.ID, authority, endpoint,
 	if failures.Load() != 0 || maxRev >= time.Second {
 		t.Fail()
 	}
+}
+
+func testCarrier(t *testing.T, mode, endpoint string, roots *x509.CertPool) (http.RoundTripper, proof.Exporter) {
+	t.Helper()
+	config := &tls.Config{RootCAs: roots, ServerName: "nexus.test", NextProtos: []string{mode}, MinVersion: tls.VersionTLS13}
+	var conn http.RoundTripper
+	var exporter proof.Exporter
+	if mode == "h3" {
+		q, err := quic.DialAddr(t.Context(), endpoint, config, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { q.CloseWithError(0, "") })
+		conn = (&http3.Transport{}).NewClientConn(q)
+		exporter = q.ExportKeyingMaterial
+	} else {
+		tcp, err := tls.Dial("tcp", endpoint, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { tcp.Close() })
+		state := tcp.ConnectionState()
+		exporter = state.ExportKeyingMaterial
+		conn, err = new(http2.Transport).NewClientConn(tcp)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return conn, exporter
 }

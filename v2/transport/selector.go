@@ -28,6 +28,7 @@ type transportLane struct {
 	wake      chan<- struct{}
 	last      atomic.Int64
 	ack       atomic.Bool
+	expiry    *atomic.Int64
 	health    string
 }
 
@@ -141,7 +142,7 @@ func (s *selector) capacityContext(parent context.Context, l *transportLane) tim
 	ctx, cancel := context.WithTimeout(parent, 850*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
-	req.Header.Set("User-Agent", "")
+	l.healthHeaders(req)
 	start := time.Now()
 	resp, e := l.round(req)
 	if e != nil {
@@ -149,7 +150,7 @@ func (s *selector) capacityContext(parent context.Context, l *transportLane) tim
 	}
 	defer resp.Body.Close()
 	n, e := io.Copy(io.Discard, io.LimitReader(resp.Body, 32769))
-	if e != nil || resp.StatusCode != 200 || n != 32768 {
+	if e != nil || resp.StatusCode != 200 || n != 32768 || l.accepted(resp) != nil {
 		return 0
 	}
 	// Some Android monotonic clocks have a coarser tick than a LAN health GET.

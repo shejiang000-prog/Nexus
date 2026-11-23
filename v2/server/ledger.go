@@ -427,11 +427,11 @@ func (l *Ledger) keyLocked(id proof.ID) *ecdsa.PublicKey {
 }
 
 // register closes the gap between authentication and opening the first business stream.
-func (l *Ledger) register(id proof.ID, stop func()) (func(), bool) {
+func (l *Ledger) register(id proof.ID, stop func()) (func(), int64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.keyLocked(id) == nil {
-		return nil, false
+		return nil, 0, false
 	}
 	l.flows.Add(1)
 	flow := &activeFlow{stop: stop}
@@ -447,7 +447,7 @@ func (l *Ledger) register(id proof.ID, stop func()) (func(), bool) {
 			delete(l.active, id)
 		}
 		l.mu.Unlock()
-	}, true
+	}, l.devices[id].expires.Int64, true
 }
 
 var ErrAlreadyRevoked = errors.New("device already revoked")

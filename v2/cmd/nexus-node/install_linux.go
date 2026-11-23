@@ -404,8 +404,6 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 	site := object{"handler": "static_response", "headers": object{"Content-Type": []string{"text/plain; charset=utf-8"}}, "body": "Welcome.\n"}
 	routes := []object{
 		{"match": []object{{"path": []string{"/"}, "method": []string{"HEAD", "GET"}}}, "handle": []object{site}},
-		{"match": []object{{"path": []string{"/health.bin"}, "method": []string{"HEAD", "GET"}}},
-			"handle": []object{{"handler": "static_response", "body": strings.Repeat("0", 32768), "headers": object{"Content-Type": []string{"application/octet-stream"}}}}},
 		{"handle": []object{{"handler": "static_response", "status_code": 404}}},
 	}
 	servers := object{}

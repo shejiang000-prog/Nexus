@@ -109,8 +109,10 @@ func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer
 	return &Client{c, ctx, cancel}, nil
 }
 func (c *Client) Stop()                           { c.cancel(); c.client.Stop() }
-func (c *Client) SetRecoveryAllowed(allowed bool) { c.client.SetRecoveryAllowed(allowed) }
 func (c *Client) State() string                   { return c.client.State() }
+func (c *Client) Confirm() error                  { return c.client.Confirm() }
+func (c *Client) AccountExpiry() int64            { return c.client.AccountExpiry() }
+func (c *Client) SetRecoveryAllowed(allowed bool) { c.client.SetRecoveryAllowed(allowed) }
 func (c *Client) OpenUDP(target string) (*Association, error) {
 	a, e := c.client.OpenUDP(c.ctx, target)
 	if e != nil {

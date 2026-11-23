@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	quic "github.com/apernet/quic-go"
@@ -57,6 +58,7 @@ func (e *Error) Unwrap() error { return e.Cause }
 type Client struct {
 	s      *selector
 	cancel context.CancelFunc
+	expiry *atomic.Int64
 }
 
 func Start(parent context.Context, c Config) (*Client, error) {
@@ -89,10 +91,13 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	if s.androidVPN {
 		s.wake = make(chan struct{}, 1)
 	}
+	expiry := new(atomic.Int64)
+	expiry.Store(-1)
 	s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
 		l, err := dialLane(ctx, c, kind)
 		if err == nil {
 			l.wake = s.wake
+			l.expiry = expiry
 		}
 		return l, err
 	}
@@ -119,7 +124,7 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	if c.Mode == "auto" {
 		go s.watch()
 	}
-	return &Client{s: s, cancel: cancel}, nil
+	return &Client{s: s, cancel: cancel, expiry: expiry}, nil
 }
 func (c *Client) Stop() { c.cancel(); c.s.current().close() }
 
@@ -131,7 +136,7 @@ func (c *Client) State() string {
 	}
 	return c.s.current().kind
 }
-func (c *Client) acquire() (*transportLane, error) {
+func (c *Client) acquire(business bool) (*transportLane, error) {
 	s := c.s
 	s.mu.Lock()
 	if s.ctx.Err() != nil {
@@ -161,16 +166,20 @@ func (c *Client) acquire() (*transportLane, error) {
 		s.lane = l
 		changed = true
 	}
-	l.active.Add(1)
-	l.opening.Add(1)
-	l.business()
+	if business {
+		l.active.Add(1)
+		l.opening.Add(1)
+		l.business()
+	}
 	s.mu.Unlock()
 	if changed {
 		select {
 		case s.events <- l.kind:
 		case <-s.ctx.Done():
-			l.active.Add(-1)
-			l.opening.Add(-1)
+			if business {
+				l.active.Add(-1)
+				l.opening.Add(-1)
+			}
 			return nil, &Error{Interrupted, s.ctx.Err()}
 		}
 	}
@@ -251,8 +260,52 @@ func (l *transportLane) headers(r *http.Request) {
 		r.Header.Set("Proxy-Authorization", l.proof)
 	}
 }
+
+// AccountExpiry is -1 until an authenticated response supplies a deadline; zero means unlimited.
+func (c *Client) AccountExpiry() int64 { return c.expiry.Load() }
+
+// Confirm verifies the current device on demand without marking the carrier as busy.
+func (c *Client) Confirm() error {
+	l, err := c.acquire(false)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(c.s.ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, l.health, nil)
+	if err != nil {
+		return networkError(err)
+	}
+	l.healthHeaders(req)
+	resp, err := l.round(req)
+	if err != nil {
+		return networkError(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == 200 && resp.Header.Get("Proxy-Authentication-Info") == "" {
+		// Older nodes serve a public file. Only an acknowledged CONNECT proves identity.
+		a, err := l.openUDP(ctx, "1.1.1.1:53", func() {})
+		if err != nil {
+			return err
+		}
+		return a.Close()
+	}
+	return l.accepted(resp)
+}
+func (l *transportLane) healthHeaders(r *http.Request) {
+	l.headers(r)
+	// Ordinary GETs on this same connection still belong to the website.
+	r.Header.Set("Proxy-Authorization", l.proof)
+}
 func (l *transportLane) accepted(r *http.Response) error {
 	if r.StatusCode >= 200 && r.StatusCode < 300 && r.Header.Get("Proxy-Authentication-Info") == "Nexus2" {
+		if value := r.Header.Get("Nexus-Account-Expires"); value != "" {
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n < 0 {
+				return &Error{Authentication, errors.New("invalid authenticated account expiry")}
+			}
+			l.expiry.Store(n)
+		}
 		l.ack.Store(true)
 		return nil
 	}
@@ -263,7 +316,7 @@ func (l *transportLane) accepted(r *http.Response) error {
 	case 429, 503:
 		code = Limit
 	}
-	return &Error{code, errors.New("CONNECT rejected (" + strconv.Itoa(r.StatusCode) + ")")}
+	return &Error{code, errors.New("request rejected (" + strconv.Itoa(r.StatusCode) + ")")}
 }
 
 type stream struct {
@@ -296,7 +349,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 	if e != nil || len(initial) > 16384 {
 		return nil, &Error{Configuration, errors.New("invalid target or initial length")}
 	}
-	l, e := c.acquire()
+	l, e := c.acquire(true)
 	if e != nil {
 		return nil, e
 	}
@@ -368,18 +421,21 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 	if e != nil {
 		return nil, &Error{Configuration, e}
 	}
-	l, e := c.acquire()
+	l, e := c.acquire(true)
 	if e != nil {
 		return nil, e
 	}
 	defer l.opening.Add(-1)
+	return l.openUDP(ctx, a, func() { l.active.Add(-1) })
+}
+func (l *transportLane) openUDP(ctx context.Context, a string, release func()) (*Association, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	h, p, _ := net.SplitHostPort(a)
 	authority := l.authority
 	req, e := http.NewRequestWithContext(ctx, "CONNECT", "https://"+authority+udp.Path+url.PathEscape(h)+"/"+p+"/", nil)
 	if e != nil {
 		cancel()
-		l.active.Add(-1)
+		release()
 		return nil, e
 	}
 	l.headers(req)
@@ -444,9 +500,9 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 	if e != nil {
 		cancel()
 		closeStream()
-		l.active.Add(-1)
+		release()
 		return nil, networkError(e)
 	}
-	channel := udp.New(ctx, r, w, d, func(e error) bool { var x *quic.DatagramTooLargeError; return errors.As(e, &x) }, func() { cancel(); closeStream(); l.active.Add(-1) })
+	channel := udp.New(ctx, r, w, d, func(e error) bool { var x *quic.DatagramTooLargeError; return errors.As(e, &x) }, func() { cancel(); closeStream(); release() })
 	return &Association{channel, l}, nil
 }

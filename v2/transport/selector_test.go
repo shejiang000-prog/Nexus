@@ -40,7 +40,7 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		var received atomic.Uint64
 		health := func(r *http.Request) (*http.Response, error) {
 			time.Sleep(time.Millisecond)
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
 		}
 		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load, close: func() {}}
 		h3.round = func(r *http.Request) (*http.Response, error) {
@@ -127,7 +127,7 @@ func TestSlowDownloadAndIdleRecoveryOutsideAndroidVPN(t *testing.T) {
 		response := func(delay time.Duration) func(*http.Request) (*http.Response, error) {
 			return func(*http.Request) (*http.Response, error) {
 				time.Sleep(delay)
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+				return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
 			}
 		}
 		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load,
@@ -187,7 +187,7 @@ func TestHealthWithinOneClockTick(t *testing.T) {
 			{200, 32768, true}, {200, 32767, false}, {404, 32768, false},
 		} {
 			lane := &transportLane{health: "https://node.test/health.bin", round: func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(bytes.NewReader(make([]byte, tc.size)))}, nil
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, tc.size)))}, nil
 			}}
 			if elapsed := s.capacity(lane); (elapsed > 0) != tc.ok {
 				t.Fatalf("status=%d bytes=%d elapsed=%v", tc.status, tc.size, elapsed)

@@ -250,7 +250,7 @@ func TestExclusiveLockKeepsUnrevokedFlows(t *testing.T) {
 			keep, remove := enroll(t, l, u), enroll(t, l, u)
 			kept, removed := make(chan struct{}), make(chan struct{})
 			for id, ch := range map[proof.ID]chan struct{}{keep: kept, remove: removed} {
-				done, ok := l.register(id, func() { close(ch) })
+				done, _, ok := l.register(id, func() { close(ch) })
 				if !ok {
 					t.Fatal("register")
 				}
@@ -311,7 +311,7 @@ func TestExpiryAndMonitorOutage(t *testing.T) {
 		}
 		id := enroll(t, l, user)
 		done := make(chan struct{})
-		unregister, ok := l.register(id, func() { close(done) })
+		unregister, _, ok := l.register(id, func() { close(done) })
 		if !ok {
 			t.Fatal("register")
 		}
@@ -325,7 +325,7 @@ func TestExpiryAndMonitorOutage(t *testing.T) {
 			case <-time.After(time.Until(exp) + time.Second):
 				t.Fatal("late expiry")
 			}
-			if _, ok := l.register(id, func() {}); ok || l.Lookup(id) != nil {
+			if _, _, ok := l.register(id, func() {}); ok || l.Lookup(id) != nil {
 				t.Fatal("expired device accepted")
 			}
 		} else {
