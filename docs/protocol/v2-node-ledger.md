@@ -55,7 +55,7 @@ nexus-node ledger DB audit
 
 安装器在无域名时默认选中 V2 和 Reality。例如 `install --non-interactive --public-host 192.0.2.10` 按安装器自动分配端口。通过 `--protocols v2` 或 `--protocols reality` 可单选；Hysteria2 需要域名。有域名时 ACME 与手工证书选项继续适用。
 
-IP 模式的 V2 节点生成 ECDSA P-256 自签证书，SAN 为发布的 IP。节点在 `/var/lib/nexus-v2/ip-key.pem` 保留身份私钥，证书位于同目录的 `ip-cert.pem`。两个文件权限为 0600。证书有效期一年，启动或 TLS 握手时发现剩余不足 30 天，会用同一私钥续签。升级和普通卸载后重新安装会继承原身份；使用 `uninstall --purge` 会清除私钥，新装的节点需重新邀请。需要在新机器恢复同一身份时，将私钥作为机密与账本分别备份，恢复到专用账户的私有目录。
+IP 模式的 V2 节点生成 ECDSA P-256 自签证书，SAN 为发布的 IP。节点在 `/var/lib/nexus-v2/ip-key.pem` 保留身份私钥，证书位于同目录的 `ip-cert.pem`。两个文件权限为 0600。证书有效期一年，启动或 TLS 握手时发现剩余不足 30 天，会用同一私钥续签。升级和普通卸载后重新安装会继承原身份；使用 `uninstall --purge` 会清除私钥，新装的节点需重新邀请。账本备份与邀请导出均不包含私钥。
 
 签发完整邀请的命令为 `nexus-node ledger /var/lib/nexus-v2/ledger.db invite --link USER_HEX RFC3339`。链接从已安装配置获取地址与端口；IPv4 和 IPv6 邀请自动携带证书 SPKI 的 SHA-256。添加 `--qr` 可使用服务器已有的 `qrencode` 在终端显示同一份邀请。
 

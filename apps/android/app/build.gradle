@@ -56,7 +56,9 @@ android {
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('shoesJni'))
     sourceSets.main.assets.srcDir(layout.buildDirectory.dir('shoesNotices'))
     defaultConfig {
-        applicationId providers.gradleProperty('nexusDeviceAcceptance').isPresent() ? 'dev.nexus.qa.m32' : (labAar ? 'dev.nexus.lab.m0' : 'dev.nexus.localclient')
+        def deviceAcceptance = providers.gradleProperty('nexusDeviceAcceptance').isPresent()
+        manifestPlaceholders.nexusAppLabel = deviceAcceptance ? 'Nexus 验收' : '@string/app_name'
+        applicationId deviceAcceptance ? 'dev.nexus.qa.m32' : (labAar ? 'dev.nexus.lab.m0' : 'dev.nexus.localclient')
         testInstrumentationRunner 'dev.nexus.localclient.CatalogCheck'
         minSdk 26
         targetSdk 36
