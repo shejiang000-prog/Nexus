@@ -1,6 +1,5 @@
 CREATE TABLE users (
     id BLOB PRIMARY KEY NOT NULL CHECK(length(id)=16),
-    quota_bytes INTEGER CHECK(quota_bytes>=0),
     expires_at INTEGER
 );
 CREATE TABLE invites (
@@ -24,4 +23,4 @@ CREATE TABLE audit (
     device_id BLOB REFERENCES devices(id),
     user_id BLOB REFERENCES users(id)
 );
-PRAGMA user_version=2;
+PRAGMA user_version=4;

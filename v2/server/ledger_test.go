@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
+	"errors"
+	"fmt"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"io"
 	"net/http"
@@ -238,7 +240,7 @@ func TestExclusiveLockKeepsUnrevokedFlows(t *testing.T) {
 			keep, remove := enroll(t, l, u), enroll(t, l, u)
 			kept, removed := make(chan struct{}), make(chan struct{})
 			for id, ch := range map[proof.ID]chan struct{}{keep: kept, remove: removed} {
-				_, done, ok := l.register(id, func() { close(ch) })
+				done, ok := l.register(id, func() { close(ch) })
 				if !ok {
 					t.Fatal("register")
 				}
@@ -299,7 +301,7 @@ func TestExpiryAndMonitorOutage(t *testing.T) {
 		}
 		id := enroll(t, l, user)
 		done := make(chan struct{})
-		_, unregister, ok := l.register(id, func() { close(done) })
+		unregister, ok := l.register(id, func() { close(done) })
 		if !ok {
 			t.Fatal("register")
 		}
@@ -313,7 +315,7 @@ func TestExpiryAndMonitorOutage(t *testing.T) {
 			case <-time.After(time.Until(exp) + time.Second):
 				t.Fatal("late expiry")
 			}
-			if _, _, ok := l.register(id, func() {}); ok || l.Lookup(id) != nil {
+			if _, ok := l.register(id, func() {}); ok || l.Lookup(id) != nil {
 				t.Fatal("expired device accepted")
 			}
 		} else {
@@ -358,49 +360,129 @@ func TestSourceLimit(t *testing.T) {
 	}
 }
 
-func TestV1AuditMigration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ledger.db")
-	l, err := OpenLedger(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := proof.ID{3}
-	if err = l.CreateUser(t.Context(), user); err != nil {
-		t.Fatal(err)
-	}
-	id := enroll(t, l, user)
-	if err = l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	old, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = old.Exec(`DROP TABLE quota_leases; ALTER TABLE users DROP COLUMN used_bytes; DROP TABLE audit;
-	CREATE TABLE audit(seq INTEGER PRIMARY KEY,occurred_at INTEGER NOT NULL,action TEXT NOT NULL,device_id BLOB NOT NULL REFERENCES devices(id));
-	CREATE INDEX audit_revocations ON audit(seq) WHERE action='revoke';
-	INSERT INTO audit(seq,occurred_at,action,device_id) SELECT 42,1,'redeem',id FROM devices;
-	PRAGMA user_version=1;`)
-	old.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	l, err = OpenLedger(path)
+func TestAdminAtomicityAndRevoke(t *testing.T) {
+	ctx := t.Context()
+	l, err := OpenLedger(filepath.Join(t.TempDir(), "ledger.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	if l.Lookup(id) == nil {
-		t.Fatal("lost device")
+	u := proof.ID{1}
+	if err := l.CreateUserUntil(ctx, u, time.Now().Add(-time.Second)); err == nil {
+		t.Fatal("past expiry accepted")
 	}
-	if err = l.Revoke(t.Context(), id); err != nil {
+	if err := l.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if err = l.List(t.Context(), "audit", &out); err != nil {
+	a, b := enroll(t, l, u), enroll(t, l, u)
+	if err := l.Revoke(ctx, proof.ID{}); err == nil || errors.Is(err, ErrAlreadyRevoked) {
+		t.Fatal("missing device", err)
+	}
+	if err := l.Revoke(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"seq":42`) || !strings.Contains(out.String(), `"seq":43`) {
-		t.Fatal("migration lost sequence")
+	if err := l.Revoke(ctx, a); !errors.Is(err, ErrAlreadyRevoked) {
+		t.Fatal("duplicate revoke", err)
+	}
+	if _, err := l.db.Exec("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT,'audit fault'); END"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.RevokeUser(ctx, u); err == nil {
+		t.Fatal("audit fault lost")
+	}
+	var unchanged int
+	if err := l.db.QueryRow("SELECT revoked_at IS NULL FROM devices WHERE id=?", b[:]).Scan(&unchanged); err != nil || unchanged != 1 {
+		t.Fatal("not rolled back", err)
+	}
+	if _, err := l.db.Exec("DROP TRIGGER reject_audit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.RevokeUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := l.db.QueryRow("SELECT count(*) FROM devices WHERE revoked_at IS NULL").Scan(&n); err != nil || n != 0 {
+		t.Fatal("surviving device", err)
+	}
+}
+
+func TestRejectOldLedgers(t *testing.T) {
+	for _, version := range []int{0, 1, 2, 3} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ledger.db")
+			if err := os.WriteFile(path, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			old, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			if _, err := old.Exec(fmt.Sprintf("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('original'); PRAGMA user_version=%d", version)); err != nil {
+				t.Fatal(err)
+			}
+			if l, err := OpenLedger(path); err == nil {
+				l.Close()
+				t.Fatal("accepted old ledger")
+			} else if !strings.Contains(err.Error(), "rebuild") {
+				t.Fatal(err)
+			}
+			var marker string
+			var after int
+			if err := old.QueryRow("SELECT value FROM marker").Scan(&marker); err != nil || marker != "original" {
+				t.Fatal("old data changed", err)
+			}
+			if err := old.QueryRow("PRAGMA user_version").Scan(&after); err != nil || after != version {
+				t.Fatal("old version changed", err)
+			}
+		})
+	}
+}
+
+func TestLedgerBackup(t *testing.T) {
+	ctx := t.Context()
+	l, err := OpenLedger(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	user := proof.ID{8}
+	if err := l.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	id := enroll(t, l, user)
+	dst := filepath.Join(t.TempDir(), "private copy.db")
+	if err := l.Backup(ctx, "relative.db"); err == nil {
+		t.Fatal("accepted relative backup path")
+	}
+	if err := l.Backup(ctx, dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Backup(ctx, dst); !errors.Is(err, os.ErrExist) {
+		t.Fatal("existing backup", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("backup mode", err)
+	}
+	backup, err := OpenLedger(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	if backup.Lookup(id) == nil {
+		t.Fatal("missing enrolled device")
+	}
+	for _, kind := range []string{"users", "devices", "audit"} {
+		var source, copy bytes.Buffer
+		if err := l.List(ctx, kind, &source); err != nil {
+			t.Fatal(err)
+		}
+		if err := backup.List(ctx, kind, &copy); err != nil {
+			t.Fatal(err)
+		}
+		if source.String() != copy.String() {
+			t.Fatalf("%s differ", kind)
+		}
 	}
 }

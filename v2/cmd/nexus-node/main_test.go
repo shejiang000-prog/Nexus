@@ -42,15 +42,6 @@ func TestAdminListings(t *testing.T) {
 	if err := admin([]string{db, "revoke", strings.Repeat("0", 32)}, &bytes.Buffer{}); err == nil {
 		t.Fatal("accepted missing device")
 	}
-	run("set-quota", user, "0")
-	if !strings.Contains(run("users"), `"quota_bytes":0`) {
-		t.Fatal("zero quota missing")
-	}
-	run("set-quota", user, "unlimited")
-	if !strings.Contains(run("users"), `"quota_bytes":null`) {
-		t.Fatal("unlimited quota missing")
-	}
-	run("reconcile")
 	run("backup", filepath.Join(t.TempDir(), "copy.db"))
 	users, devices, audit := run("users"), run("devices"), run("audit")
 	if !strings.Contains(users, user) || devices != "" || !strings.Contains(audit, "create_user") || !strings.Contains(audit, "invite") || strings.Contains(users+devices+audit, token) {

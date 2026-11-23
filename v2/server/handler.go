@@ -103,10 +103,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		if e != nil {
 			return e
 		}
-		if e = h.ledger.startQuotaNode(); e != nil {
-			h.ledger.Close()
-			return e
-		}
 		h.devices = h.ledger
 		// Caddy waits for long-lived CONNECT requests before calling Cleanup.
 		for _, s := range app.(*caddyhttp.App).Servers {
@@ -189,7 +185,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if bound == nil {
 		return next.ServeHTTP(w, r)
 	}
-	var meter *quotaAccount
 	if h.ledger != nil {
 		// Wake blocked upstream reads and downstream writes on either carrier.
 		q := http3.NexusConn(r.Context())
@@ -197,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		if q == nil && tcp == nil {
 			return next.ServeHTTP(w, r)
 		}
-		a, unregister, ok := h.ledger.register(bound.Device(), func() {
+		unregister, ok := h.ledger.register(bound.Device(), func() {
 			if q != nil {
 				q.CloseWithError(0, "")
 			} else {
@@ -208,10 +203,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			return next.ServeHTTP(w, r)
 		}
 		defer unregister()
-		if a.admit(r.Context()) != nil {
-			return next.ServeHTTP(w, r)
-		}
-		meter = a
 	}
 	dest := r.Host
 	network := "tcp"
@@ -266,15 +257,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		return e
 	}
 	if network == "udp" {
-		return relayUDP(w, r, conn, conn.RemoteAddr().String(), meter)
+		return relayUDP(w, r, conn, conn.RemoteAddr().String())
 	}
 	upDone := make(chan struct{})
 	go func() {
 		defer close(upDone)
-		io.Copy(quotaWriter{r.Context(), meter, conn}, r.Body)
+		io.Copy(conn, r.Body)
 		conn.(*net.TCPConn).CloseWrite()
 	}()
-	_, e = io.Copy(quotaWriter{r.Context(), meter, flushingWriter{w, flush}}, conn)
+	_, e = io.Copy(flushingWriter{w, flush}, conn)
 	conn.Close()
 	r.Body.Close()
 	<-upDone
@@ -294,7 +285,7 @@ func (w flushingWriter) Write(p []byte) (int, error) {
 	return n, e
 }
 
-func relayUDP(w http.ResponseWriter, r *http.Request, c net.Conn, addr string, meter *quotaAccount) error {
+func relayUDP(w http.ResponseWriter, r *http.Request, c net.Conn, addr string) error {
 	var reader io.Reader = r.Body
 	var writer io.Writer = flushingWriter{w, http.NewResponseController(w)}
 	closeStream := func() { r.Body.Close() }
@@ -349,7 +340,7 @@ func relayUDP(w http.ResponseWriter, r *http.Request, c net.Conn, addr string, m
 			if e != nil {
 				return
 			}
-			if _, e = meter.write(r.Context(), packet, true, c.Write); e != nil {
+			if _, e = c.Write(packet); e != nil {
 				return
 			}
 			c.SetReadDeadline(time.Now().Add(idle))
@@ -362,12 +353,7 @@ func relayUDP(w http.ResponseWriter, r *http.Request, c net.Conn, addr string, m
 			return nil
 		}
 		c.SetReadDeadline(time.Now().Add(idle))
-		if _, e = meter.write(r.Context(), buf[:n], true, func(p []byte) (int, error) {
-			if err := a.WritePacket(p); err != nil {
-				return 0, err
-			}
-			return len(p), nil
-		}); e != nil {
+		if e = a.WritePacket(buf[:n]); e != nil {
 			return e
 		}
 	}

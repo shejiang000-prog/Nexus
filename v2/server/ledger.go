@@ -33,7 +33,6 @@ var schema string
 var errDenied = errors.New("redemption denied")
 
 type Ledger struct {
-	owner     *sql.DB
 	db        *sql.DB
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -45,24 +44,14 @@ type Ledger struct {
 	devices   map[proof.ID]deviceState
 	mu        sync.Mutex
 	active    map[proof.ID]map[*activeFlow]struct{}
-	meters    map[proof.ID]*quotaAccount
-	retired   map[*quotaAccount]bool
-	quotaDone chan struct{}
-	flowEnded chan struct{}
-	pending   map[*quotaAccount]struct{}
 	flows     sync.WaitGroup
 	closing   bool
 }
 type deviceState struct {
-	user    proof.ID
-	quota   sql.NullInt64
 	key     *ecdsa.PublicKey
 	expires sql.NullInt64
 }
-type activeFlow struct {
-	stop  func()
-	meter *quotaAccount
-}
+type activeFlow struct{ stop func() }
 
 // Closing an unrelated descriptor to an open SQLite database can release all
 // of this process's POSIX record locks on that inode. Publish a closed, private
@@ -106,6 +95,10 @@ func OpenLedger(path string) (*Ledger, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(2)
+	if err = initSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	var mode string
 	if err = db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil || mode != "wal" {
 		db.Close()
@@ -113,10 +106,6 @@ func OpenLedger(path string) (*Ledger, error) {
 			return nil, err
 		}
 		return nil, errors.New("ledger requires WAL")
-	}
-	if err = initSchema(db); err != nil {
-		db.Close()
-		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &Ledger{path: path, file: info, db: db, cancel: cancel, done: make(chan struct{}), active: make(map[proof.ID]map[*activeFlow]struct{})}
@@ -132,12 +121,6 @@ func OpenLedger(path string) (*Ledger, error) {
 		db.Close()
 		return nil, err
 	}
-	l.meters = make(map[proof.ID]*quotaAccount)
-	l.retired = make(map[*quotaAccount]bool)
-	l.quotaDone = make(chan struct{})
-	l.flowEnded = make(chan struct{}, 1)
-	l.pending = make(map[*quotaAccount]struct{})
-	go l.checkpoints(ctx)
 	go l.watchRevocations(ctx)
 	return l, nil
 }
@@ -154,25 +137,19 @@ func initSchema(db *sql.DB) error {
 	}
 	switch version {
 	case 0:
+		var existing bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*')").Scan(&existing); err != nil {
+			return err
+		}
+		if existing {
+			return errors.New("unversioned ledger; rebuild the ledger at a new path")
+		}
 		if _, err = tx.Exec(schema); err != nil {
 			return err
 		}
-	case 1:
-		if _, err = tx.Exec(`ALTER TABLE audit RENAME TO old_audit;
-		CREATE TABLE audit(seq INTEGER PRIMARY KEY,occurred_at INTEGER NOT NULL,action TEXT NOT NULL,device_id BLOB REFERENCES devices(id),user_id BLOB REFERENCES users(id));
-		INSERT INTO audit(seq,occurred_at,action,device_id) SELECT seq,occurred_at,action,device_id FROM old_audit;
-		DROP TABLE old_audit;
-		PRAGMA user_version=2;`); err != nil {
-			return err
-		}
-	case 2, 3:
+	case 4:
 	default:
-		return errors.New("unsupported ledger schema")
-	}
-	if version < 3 {
-		if _, err := tx.Exec(quotaSchema); err != nil {
-			return err
-		}
+		return fmt.Errorf("unsupported ledger schema v%d; rebuild the ledger at a new path", version)
 	}
 	return tx.Commit()
 }
@@ -180,13 +157,8 @@ func (l *Ledger) Close() error {
 	l.cancel()
 	l.disconnectAll()
 	<-l.done
-	<-l.quotaDone
 	l.flows.Wait()
-	var err error
-	for _, a := range l.accounts() {
-		err = errors.Join(err, a.checkpoint(true))
-	}
-	return errors.Join(err, l.stopQuotaNode(), l.reader.Close(), l.db.Close())
+	return errors.Join(l.reader.Close(), l.db.Close())
 }
 
 // A dedicated reader sees commits from every writer, including this process.
@@ -207,23 +179,22 @@ func (l *Ledger) refresh(ctx context.Context) error {
 	if version == l.version && l.devices != nil {
 		return nil
 	}
-	rows, err := l.reader.QueryContext(ctx, `SELECT d.id,public_key,u.expires_at,u.id,u.quota_bytes FROM devices d JOIN invites i ON i.digest=d.invite_digest JOIN users u ON u.id=i.user_id WHERE d.revoked_at IS NULL`)
+	rows, err := l.reader.QueryContext(ctx, `SELECT d.id,public_key,u.expires_at FROM devices d JOIN invites i ON i.digest=d.invite_digest JOIN users u ON u.id=i.user_id WHERE d.revoked_at IS NULL`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	devices := make(map[proof.ID]deviceState)
 	for rows.Next() {
-		var id, pub, user []byte
+		var id, pub []byte
 		var state deviceState
-		if err := rows.Scan(&id, &pub, &state.expires, &user, &state.quota); err != nil {
+		if err := rows.Scan(&id, &pub, &state.expires); err != nil {
 			return err
 		}
 		x, y := elliptic.UnmarshalCompressed(elliptic.P256(), pub)
-		if len(id) != 16 || len(user) != 16 || x == nil {
+		if len(id) != 16 || x == nil {
 			return errors.New("invalid ledger device")
 		}
-		state.user = proof.ID(user)
 		state.key = &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
 		devices[proof.ID(id)] = state
 	}
@@ -231,17 +202,6 @@ func (l *Ledger) refresh(ctx context.Context) error {
 		return err
 	}
 	l.mu.Lock()
-	for id, next := range devices {
-		if prev, ok := l.devices[id]; ok && prev.quota != next.quota {
-			if a := l.meters[next.user]; a != nil {
-				if !next.quota.Valid || prev.quota.Valid && next.quota.Int64 > prev.quota.Int64 {
-					a.setLimit(next.quota)
-				} else {
-					l.retireQuotaLocked(a)
-				}
-			}
-		}
-	}
 	l.devices = devices
 	l.pruneLocked()
 	l.mu.Unlock()
@@ -250,16 +210,12 @@ func (l *Ledger) refresh(ctx context.Context) error {
 }
 func (l *Ledger) pruneLocked() {
 	for id, flows := range l.active {
-		valid := l.keyLocked(id) != nil
-		for flow := range flows {
-			if valid && !flow.meter.retired.Load() {
-				continue
-			}
-			delete(flows, flow)
-			go flow.stop()
+		if l.keyLocked(id) != nil {
+			continue
 		}
-		if len(flows) == 0 {
-			delete(l.active, id)
+		delete(l.active, id)
+		for flow := range flows {
+			go flow.stop()
 		}
 	}
 }
@@ -442,45 +398,32 @@ func (l *Ledger) Lookup(id proof.ID) *ecdsa.PublicKey {
 }
 func (l *Ledger) keyLocked(id proof.ID) *ecdsa.PublicKey {
 	state := l.devices[id]
-	if l.closing || state.quota.Valid && state.quota.Int64 == 0 || state.expires.Valid && state.expires.Int64 <= time.Now().Unix() {
+	if l.closing || state.expires.Valid && state.expires.Int64 <= time.Now().Unix() {
 		return nil
 	}
 	return state.key
 }
 
 // register closes the gap between authentication and opening the first business stream.
-func (l *Ledger) register(id proof.ID, stop func()) (*quotaAccount, func(), bool) {
+func (l *Ledger) register(id proof.ID, stop func()) (func(), bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.keyLocked(id) == nil {
-		return nil, nil, false
+		return nil, false
 	}
-	user := l.devices[id].user
-	a := l.meters[user]
-	if a == nil {
-		a = &quotaAccount{ledger: l, user: user}
-		a.setLimit(l.devices[id].quota)
-		l.meters[user] = a
-	}
-	a.refs.Add(1)
 	l.flows.Add(1)
-	flow := &activeFlow{stop: stop, meter: a}
+	flow := &activeFlow{stop: stop}
 	if l.active[id] == nil {
 		l.active[id] = map[*activeFlow]struct{}{}
 	}
 	l.active[id][flow] = struct{}{}
-	return a, func() {
+	return func() {
 		defer l.flows.Done()
 		l.mu.Lock()
 		delete(l.active[id], flow)
 		if len(l.active[id]) == 0 {
 			delete(l.active, id)
 		}
-		a.refs.Add(-1)
-		if len(l.pending) == 0 {
-			l.flowEnded <- struct{}{}
-		}
-		l.pending[a] = struct{}{}
 		l.mu.Unlock()
 	}, true
 }
@@ -517,18 +460,58 @@ func (l *Ledger) Revoke(ctx context.Context, id proof.ID) error {
 	return l.refresh(ctx)
 }
 
+func (l *Ledger) RevokeUser(ctx context.Context, user proof.ID) error {
+	return l.userWrite(ctx, user, "revoke_user", `UPDATE devices SET revoked_at=? WHERE revoked_at IS NULL AND invite_digest IN (SELECT digest FROM invites WHERE user_id=?)`, time.Now().Unix(), user[:])
+}
+
+// Backup publishes the verified copy atomically. Link refuses an existing
+// destination, including one created concurrently during VACUUM.
+func (l *Ledger) Backup(ctx context.Context, path string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("absolute backup path required")
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ledger-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if _, err := l.db.ExecContext(ctx, "VACUUM INTO ?", tmp.Name()); err != nil {
+		return err
+	}
+	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(tmp.Name()), RawQuery: "mode=ro&immutable=1"}
+	copyDB, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return err
+	}
+	defer copyDB.Close()
+	var result string
+	if err := copyDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return errors.New("backup integrity check failed")
+	}
+	return os.Link(tmp.Name(), path)
+}
+
 // List emits one JSON object per record. Columns are explicitly allowlisted.
 func (l *Ledger) List(ctx context.Context, kind string, out io.Writer) error {
 	var query string
 	switch kind {
 	case "users":
-		query = `SELECT json_object('id',lower(hex(id)),'expires_at',expires_at,'quota_bytes',quota_bytes,
-			'used_bytes',used_bytes+coalesce((SELECT sum(CASE WHEN state='frozen' THEN reserved_bytes ELSE committed_bytes END)
-			FROM quota_leases WHERE user_id=u.id AND state IN ('active','frozen')),0)) FROM users u ORDER BY id`
+		query = `SELECT json_object('id',lower(hex(id)),'expires_at',expires_at) FROM users ORDER BY id`
 	case "devices":
 		query = `SELECT json_object('id',lower(hex(d.id)),'user_id',lower(hex(i.user_id)),'name',d.name,'revoked_at',d.revoked_at) FROM devices d JOIN invites i ON d.invite_digest=i.digest ORDER BY d.id`
 	case "audit":
-		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END,'lease_id',CASE WHEN a.lease_id IS NOT NULL THEN lower(hex(a.lease_id)) END,'bytes',a.bytes) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
+		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
 	default:
 		return errors.New("unknown listing")
 	}

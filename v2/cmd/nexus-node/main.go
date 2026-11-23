@@ -14,7 +14,6 @@ import (
 	"github.com/shejiang000-prog/Nexus/v2/server"
 	"io"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -30,12 +29,11 @@ func main() {
 }
 
 func admin(args []string, out io.Writer) error {
-	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | set-quota USER_HEX BYTES|unlimited | reconcile | backup ABSOLUTE_PATH | audit}")
+	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit}")
 	if len(args) < 2 {
 		return usage
 	}
 	var id proof.ID
-	var quota *int64
 	var until time.Time
 	var err error
 	switch args[1] {
@@ -50,9 +48,9 @@ func admin(args []string, out io.Writer) error {
 				return errors.New("expiry must be in the future")
 			}
 		}
-	case "invite", "set-quota", "revoke", "revoke-user":
+	case "invite", "revoke", "revoke-user":
 		want := 3
-		if args[1] == "invite" || args[1] == "set-quota" {
+		if args[1] == "invite" {
 			want = 4
 		}
 		if len(args) != want {
@@ -66,12 +64,6 @@ func admin(args []string, out io.Writer) error {
 		}
 		if args[1] == "invite" {
 			until, err = time.Parse(time.RFC3339, args[3])
-		} else if args[1] == "set-quota" && args[3] != "unlimited" {
-			n, e := strconv.ParseInt(args[3], 10, 64)
-			if e != nil || n < 0 {
-				return usage
-			}
-			quota = &n
 		}
 	case "backup":
 		if len(args) != 3 {
@@ -80,7 +72,7 @@ func admin(args []string, out io.Writer) error {
 		if _, err := os.Stat(args[0]); err != nil {
 			return err
 		}
-	case "users", "devices", "audit", "reconcile":
+	case "users", "devices", "audit":
 		if len(args) != 2 {
 			return usage
 		}
@@ -115,10 +107,6 @@ func admin(args []string, out io.Writer) error {
 		}
 	case "revoke-user":
 		return l.RevokeUser(ctx, id)
-	case "set-quota":
-		return l.SetQuota(ctx, id, quota)
-	case "reconcile":
-		return l.Reconcile(ctx)
 	case "backup":
 		return l.Backup(ctx, args[2])
 	default:
