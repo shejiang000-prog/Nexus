@@ -27,7 +27,7 @@ def main():
             subprocess.run(['openssl', *args], cwd=tmp, check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
         hosts = work/'hosts'
-        hosts.write_bytes(Path('/etc/hosts').read_bytes()+b'\n127.0.0.1 nexus.test target.example.test\n')
+        hosts.write_bytes(Path('/etc/hosts').read_bytes()+b'\n127.0.0.1 nexus.test refused.nexus.test target.example.test\n')
         subprocess.run(['mount', '--bind', hosts, '/etc/hosts'], check=True)
         openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
                 '-nodes', '-days', '2', '-subj', '/CN=Nexus Lab CA', '-addext',
@@ -45,7 +45,7 @@ def main():
         site = {'listen': [addr], 'protocols': ['h1','h2'], 'automatic_https': {'disable':True},
                 'tls_connection_policies': [{}], 'routes': [{'handle': [
                     {'handler':'acme_server','ca':'lab','lifetime':'5m',
-                     'challenges':['http-01','tls-alpn-01']}, {'handler':'static_response','body':'Lab site'}]}]}
+                     'policy':{'deny':{'domains':['refused.nexus.test']}}, 'challenges':['http-01','tls-alpn-01']}, {'handler':'static_response','body':'Lab site'}]}]}
         cfg = {'admin':{'disabled':True},'apps':{'pki':{'certificate_authorities':{
                     'lab':{'root':root,'install_trust':False,'intermediate_lifetime':'12h'}}},
                'tls':{'certificates':{'load_files':[{'certificate':str(work/'tls.pem'),'key':str(work/'tls.key')}]}},
