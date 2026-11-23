@@ -237,6 +237,33 @@ def main():
             echo(bst);bc.udp()
             print(proto,'2 users TCP/UDP, rotation/disable, private literal/name denied; old stream observed closed at %.3fs'%observed,flush=True)
 
+            old_b=exported(b,proto)
+            service.terminate()
+            service.wait(8)
+            try:
+                ledger('compat','rotate',b,proto)
+            except subprocess.CalledProcessError:
+                pass
+            else:
+                raise AssertionError("offline apply unexpectedly succeeded")
+            def status():
+                return next(row for row in json.loads(ledger('compat','status',b)) if row['protocol']==proto)
+            pending=status()
+            assert pending['result']!='applied' and pending['applied_generation']!=pending['generation']
+            # A legacy cache belongs to an earlier service instance. Startup must use the DB.
+            (addr.parent/'active.json').write_text('invalid stale cache')
+            service=st.enter_context(process([opt.node,'compat-serve',proto],root/(proto+'-restarted.log')))
+            wait(ready)
+            revoked=factory(old_b)
+            refused(lambda:revoked.tcp(12));refused(revoked.udp)
+            ledger('compat','apply',proto)
+            confirmed=status()
+            assert confirmed['result']=='applied' and confirmed['applied_generation']==pending['generation']
+            restored=factory(exported(b,proto))
+            restored.tcp().close();restored.udp()
+            assert not (addr.parent/'active.json').exists()
+            print(proto,'offline rotation survived restart; old credential rejected before replay; same generation confirmed',flush=True)
+
         check_mihomo(ledger('compat','export',b,'mihomo'),ledger('compat','export',b,'links').splitlines())
         print('mihomo fields checked',flush=True)
 

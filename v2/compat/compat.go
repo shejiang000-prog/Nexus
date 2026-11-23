@@ -68,40 +68,12 @@ func (s Snapshot) usersByID() (map[string]Credential, error) {
 	return users, nil
 }
 
-func saveFile(dir, name string, data []byte) error {
-	f, err := os.CreateTemp(dir, ".pending-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err = os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
-
-func (s *service) apply(req Snapshot, persist bool) error {
+func (s *service) apply(req Snapshot) error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	return s.applyLocked(req, persist)
+	return s.applyLocked(req)
 }
-func (s *service) applyLocked(req Snapshot, persist bool) error {
+func (s *service) applyLocked(req Snapshot) error {
 	if req.Protocol != s.protocol || req.Revision < 0 || req.Revision < s.live.Revision {
 		return errors.New("outdated protocol snapshot")
 	}
@@ -135,15 +107,6 @@ func (s *service) applyLocked(req Snapshot, persist bool) error {
 		started = append(started, w)
 		workers[id] = w
 	}
-	if persist {
-		raw, err := json.Marshal(req)
-		if err != nil {
-			return err
-		}
-		if err = saveFile(s.dir, "active.json", raw); err != nil {
-			return err
-		}
-	}
 	s.mu.Lock()
 	old := s.workers
 	s.users = users
@@ -174,13 +137,17 @@ func (s *service) maintain() {
 		w := s.workers[id]
 		if c.active() && (w == nil || !w.running()) || !c.active() && w != nil {
 			// Retry just the missing worker. The apply path reuses every healthy generation.
-			_ = s.applyLocked(s.live, false)
+			_ = s.applyLocked(s.live)
 			return
 		}
 	}
 }
 
 func (s *service) handle(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" && r.URL.Path == "/ready" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != "POST" || r.URL.Path != "/apply" {
 		http.NotFound(w, r)
 		return
@@ -192,14 +159,14 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
-	if err := s.apply(next, true); err != nil {
+	if err := s.apply(next); err != nil {
 		w.WriteHeader(409)
 		return
 	}
 	w.WriteHeader(204)
 }
 
-func Serve(ctx context.Context, root, protocol string) error {
+func Serve(ctx context.Context, root, protocol string, load func(context.Context) (Snapshot, error)) error {
 	if !enabled(protocol) {
 		return errors.New("unsupported compatibility service")
 	}
@@ -224,15 +191,6 @@ func Serve(ctx context.Context, root, protocol string) error {
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return errors.New("compatibility state directory must be 0700")
 	}
-	var snapshot = Snapshot{Protocol: protocol}
-	raw, err = os.ReadFile(filepath.Join(s.dir, "active.json"))
-	if err == nil {
-		if err = json.Unmarshal(raw, &snapshot); err != nil {
-			return errors.New("invalid compatibility snapshot")
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
 	var local net.Listener
 	if protocol == "hysteria2" {
 		local, err = s.startHy()
@@ -254,9 +212,6 @@ func Serve(ctx context.Context, root, protocol string) error {
 			s.hy.stop()
 		}
 	}()
-	if err = s.apply(snapshot, false); err != nil {
-		return err
-	}
 	path := socket(root, protocol)
 	if fi, err := os.Lstat(path); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
@@ -276,6 +231,19 @@ func Serve(ctx context.Context, root, protocol string) error {
 	}
 	defer control.Close()
 	if err = os.Chmod(path, 0600); err != nil {
+		return err
+	}
+	// Bind the control endpoint before reading the DB. Concurrent administrative
+	// changes can queue their apply, while public authentication stays closed.
+	snapshot, err := load(ctx)
+	if err != nil {
+		return err
+	}
+	if err = s.apply(snapshot); err != nil {
+		return err
+	}
+	// Old laboratory builds cached raw credentials here. The ledger now owns all persistent state.
+	if err = os.Remove(filepath.Join(s.dir, "active.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	h := &http.Server{Handler: http.HandlerFunc(s.handle), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 15 * time.Second}
