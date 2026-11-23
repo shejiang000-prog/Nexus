@@ -65,6 +65,9 @@ func (h host) upgrade(ctx context.Context, d deployment, o Options) (err error) 
 	if err = os.Mkdir(newBin, 0755); err != nil {
 		return err
 	}
+	if err = os.Chmod(newBin, 0755); err != nil {
+		return err
+	}
 	o.Ports = d.Ports
 	if err = stageBinaries(ctx, o, newBin); err != nil {
 		return err
@@ -190,6 +193,15 @@ func (h host) uninstall(ctx context.Context, d deployment, purge bool) (err erro
 			for _, p := range trash {
 				err = errors.Join(err, os.RemoveAll(p))
 			}
+			if purge && err == nil {
+				files, e := os.ReadDir(h.path(base))
+				if e != nil {
+					return
+				}
+				if len(files) == 0 {
+					err = os.Remove(h.path(base))
+				}
+			}
 		}
 	}()
 	move := func(path string) error {
@@ -266,7 +278,7 @@ func (h host) uninstall(ctx context.Context, d deployment, purge bool) (err erro
 		if _, err = h.command(ctx, "userdel", account); err != nil {
 			return err
 		}
-		defer func() { os.Remove(h.path(base)) }()
+
 	} else {
 		d.Installed = false
 		if err = h.writeManifest(d); err != nil {

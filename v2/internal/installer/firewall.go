@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -42,9 +44,78 @@ type ruleset struct {
 	entries                 []nftEntry
 }
 
+// Restrict changes to base policies whose existing exceptions we understand.
+func verdictMatch(v nftEntry) (map[string]any, bool) {
+	var expressions []map[string]any
+	for _, raw := range v.Expr {
+		var object map[string]any
+		if json.Unmarshal(raw, &object) != nil || len(object) != 1 {
+			return nil, false
+		}
+		if _, ok := object["counter"]; !ok {
+			expressions = append(expressions, object)
+		}
+	}
+	if len(expressions) != 2 {
+		return nil, false
+	}
+	if _, ok := expressions[1]["accept"]; !ok {
+		return nil, false
+	}
+	match, ok := expressions[0]["match"].(map[string]any)
+	return match, ok
+}
+func allowedPort(v nftEntry) (socket, bool) {
+	m, ok := verdictMatch(v)
+	if !ok || m["op"] != "==" {
+		return socket{}, false
+	}
+	port, ok := m["right"].(float64)
+	if !ok || port != float64(int(port)) || port < 1 || port > 65535 {
+		return socket{}, false
+	}
+	for _, n := range []string{"tcp", "udp"} {
+		if reflect.DeepEqual(m["left"], map[string]any{"payload": map[string]any{"protocol": n, "field": "dport"}}) {
+			return socket{n, int(port)}, true
+		}
+	}
+	return socket{}, false
+}
+func basicAllow(v nftEntry) bool {
+	m, ok := verdictMatch(v)
+	if !ok {
+		return false
+	}
+	if m["op"] == "==" && m["right"] == "lo" && reflect.DeepEqual(m["left"], map[string]any{"meta": map[string]any{"key": "iifname"}}) {
+		return true
+	}
+	if !reflect.DeepEqual(m["left"], map[string]any{"ct": map[string]any{"key": "state"}}) {
+		return false
+	}
+	if m["op"] != "in" && m["op"] != "==" {
+		return false
+	}
+	switch right := m["right"].(type) {
+	case string:
+		return right == "established" || right == "related"
+	case map[string]any:
+		states, ok := right["set"].([]any)
+		if !ok || len(states) == 0 {
+			return false
+		}
+		for _, x := range states {
+			if x != "established" && x != "related" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (h host) rules(ctx context.Context, d deployment) (ruleset, error) {
 	r := ruleset{token: "nexus-v2-" + d.Token}
-	b, e := h.command(ctx, "nft", "-j", "list", "ruleset")
+	b, e := h.command(ctx, "nft", "-j", "-a", "list", "ruleset")
 	if e != nil {
 		return r, e
 	}
@@ -83,8 +154,14 @@ func (h host) rules(ctx context.Context, d deployment) (ruleset, error) {
 					r.native = true
 				}
 			case "rule":
-				if v.Chain != "input" || owned && !strings.HasPrefix(v.Comment, r.token+"-") {
-					return r, errors.New("unrecognized firewall rule in managed chain")
+				sock, known := allowedPort(v)
+				if v.Chain != "input" || !known && !basicAllow(v) {
+					return r, errors.New("unrecognized firewall rule in input chain")
+				}
+				if owned || strings.HasPrefix(v.Comment, r.token+"-") {
+					if !known || v.Comment != fmt.Sprintf("%s-%s-%d", r.token, sock.net, sock.port) || !slices.Contains(sockets(d), sock) {
+						return r, errors.New("managed firewall rule was modified")
+					}
 				}
 				r.entries = append(r.entries, v)
 			default:
@@ -115,6 +192,11 @@ func (h host) firewall(ctx context.Context, d deployment, add bool) error {
 		found := false
 		for _, v := range r.entries {
 			if v.Comment != comment {
+				if add {
+					if allowed, ok := allowedPort(v); ok && allowed == s {
+						found = true
+					}
+				}
 				continue
 			}
 			if v.Table != table || v.Handle <= 0 {

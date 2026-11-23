@@ -256,7 +256,7 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 		d.ConfigFiles = append(d.ConfigFiles, f.Name())
 	}
 	var tx transaction
-	defer tx.rollback(&err)
+	defer func() { tx.rollback(&err) }()
 	bg := context.Background()
 	if !retained {
 		if _, err = h.command(ctx, "useradd", "--system", "--user-group", "--no-create-home", "--home-dir", state, "--shell", "/usr/sbin/nologin", account); err != nil {
@@ -273,23 +273,31 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 			return e
 		}
 		tx.undo(func() error { return os.RemoveAll(target) })
+		if err := os.Chmod(target, mode); err != nil {
+			return err
+		}
 		return os.Chown(target, uid, gid)
 	}
 	if !retained {
 		if err = newDir(base, 0755, 0, 0); err != nil {
 			return err
 		}
-		if err = newDir(state, 0700, d.UID, d.GID); err != nil {
+		if err = newDir(state, 0700, 0, 0); err != nil {
 			return err
 		}
 		if err = newDir(state+"/backups", 0700, d.UID, d.GID); err != nil {
 			return err
 		}
 	}
+	if !retained {
+		if err = os.Chown(h.path(state), d.UID, d.GID); err != nil {
+			return err
+		}
+	}
 	if err = newDir(base+"/bin", 0755, 0, 0); err != nil {
 		return err
 	}
-	if err = newDir(cfg, 0700, d.UID, d.GID); err != nil {
+	if err = newDir(cfg, 0700, 0, 0); err != nil {
 		return err
 	}
 	bins, err := os.ReadDir(stagedBin)
@@ -309,6 +317,9 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 		if err = os.Chown(dst, d.UID, d.GID); err != nil {
 			return err
 		}
+	}
+	if err = os.Chown(h.path(cfg), d.UID, d.GID); err != nil {
+		return err
 	}
 	if _, err = h.command(ctx, "runuser", "-u", account, "--", base+"/bin/nexus-node", "ledger", state+"/ledger.db", "users"); err != nil {
 		return err

@@ -43,6 +43,9 @@ func copyFile(dst string, r io.Reader, mode os.FileMode) error {
 		return err
 	}
 	n, err := io.Copy(f, io.LimitReader(r, assetLimit+1))
+	if err == nil {
+		err = f.Chmod(mode)
+	}
 	if n > assetLimit {
 		err = errors.New("asset exceeds size limit")
 	}
