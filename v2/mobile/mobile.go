@@ -139,4 +139,6 @@ func (s *Stream) Read(max int) ([]byte, error) {
 	return nil, e
 }
 func (s *Stream) Write(p []byte) (int, error) { return s.s.Write(p) }
+// CloseWrite ends the CONNECT request while keeping the response readable until Close.
+func (s *Stream) CloseWrite() error { return s.s.(interface{ CloseWrite() error }).CloseWrite() }
 func (s *Stream) Close() error                { return s.s.Close() }

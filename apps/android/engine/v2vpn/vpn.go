@@ -102,7 +102,12 @@ func (h *handler) Dispatch(ctx context.Context, link *transport.Link) {
 	defer stream.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		_ = buf.Copy(link.Reader, buf.NewWriter(stream))
+		if err := buf.Copy(link.Reader, buf.NewWriter(stream)); err == nil {
+			// Android's shutdownOutput ends only the CONNECT request body.
+			if err := stream.CloseWrite(); err == nil {
+				return
+			}
+		}
 		done <- struct{}{}
 	}()
 	go func() {
@@ -129,6 +134,11 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 	// The TUN groups UDP by source socket, while V2 associations have fixed destinations.
 	// Keep independent associations, including for apps querying several servers from one socket.
 	peers := map[xnet.Destination]*mobile.Association{}
+	type retiredPeer struct {
+		source xnet.Destination
+		peer   *mobile.Association
+	}
+	retired := make(chan retiredPeer, 64)
 	var writers sync.Mutex
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -150,6 +160,19 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 			if !original.IsValid() {
 				original = out.Target
 			}
+			// Only the upload loop owns the map. A read-side EOF frees its slot
+			// even when no further datagram arrives for that destination.
+		drain:
+			for {
+				select {
+				case p := <-retired:
+					if peers[p.source] == p.peer {
+						delete(peers, p.source)
+					}
+				default:
+					break drain
+				}
+			}
 			peer := peers[original]
 			if peer == nil && len(peers) < 64 {
 				dest := original
@@ -163,6 +186,13 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 				} else {
 					peers[original] = peer
 					go func(a *mobile.Association, source xnet.Destination) {
+						defer func() {
+							a.Close()
+							select {
+							case retired <- retiredPeer{source, a}:
+							case <-readCtx.Done():
+							}
+						}()
 						for {
 							p, e := a.ReadPacket()
 							if e != nil {

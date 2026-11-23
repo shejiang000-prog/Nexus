@@ -273,6 +273,7 @@ func (s *stream) Write(p []byte) (int, error) {
 	}
 	return n, e
 }
+func (s *stream) CloseWrite() error { return s.out.Close() }
 func (s *stream) Close() error { s.close(); return nil }
 
 // initial is optional optimistic data. No automatic replay is performed.
