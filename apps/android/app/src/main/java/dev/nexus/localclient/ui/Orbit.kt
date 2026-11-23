@@ -43,7 +43,8 @@ internal fun Link.tone():Color = when(this) {
 }
 
 @Composable
-internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
+internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit,diameter:Dp=Sizes.dial) {
+    val core=(diameter * (Sizes.dialCore / Sizes.dial)).coerceAtLeast(48.dp)
     val c=MaterialTheme.colorScheme
     val p=palette
     val link=state.link()
@@ -88,7 +89,7 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
     val track=p.line
     val verb=if(state.active)"断开" else "连接"
     val signalFill=remember(p) { Brush.linearGradient(listOf(p.signal,p.signalDeep)) }
-    Box(Modifier.size(Sizes.dial).graphicsLayer{scaleX=scale;scaleY=scale;translationX=shake.value.dp.toPx()},contentAlignment=Alignment.Center) {
+    Box(Modifier.size(diameter).graphicsLayer{scaleX=scale;scaleY=scale;translationX=shake.value.dp.toPx()},contentAlignment=Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val unit=size.minDimension/260f
             val t=ms.longValue
@@ -111,10 +112,10 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
             }
             if(on && motion && active) repeat(2){i->
                 val f=((t+i*1400)%2800)/2800f
-                drawCircle(accent.copy(alpha=.30f*(1-f)),(Sizes.dialCore.toPx()/2*(.55f+.95f*f)),style=Stroke(1.dp.toPx()))
+                drawCircle(accent.copy(alpha=.30f*(1-f)),(core.toPx()/2*(.55f+.95f*f)),style=Stroke(1.dp.toPx()))
             }
         }
-        Box(Modifier.size(Sizes.dialCore).graphicsLayer {
+        Box(Modifier.size(core).graphicsLayer {
             val breath=if(on && active && motion) 1f+.02f*(1-cos(2*PI*(ms.longValue%3200)/3200)).toFloat() else 1f
             scaleX=breath;scaleY=breath
         }.shadow(lift,CircleShape,ambientColor=accent.copy(alpha=.5f),spotColor=accent)

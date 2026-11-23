@@ -200,9 +200,9 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         !state.vpn && state.port>0->"本地转发已开启";on->"已连接 · 网络受保护";state.vpn->"正在连接…";else->"未连接"}
     val traffic=rememberTraffic(state)
     val motion=LocalMotion.current
-    val dial:@Composable ()->Unit={
+    val dial:@Composable (Dp)->Unit={ diameter ->
         Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(Space.xs)){
-            Orbit(state,enabled,toggle)
+            Orbit(state,enabled,toggle,diameter)
             StatusPill(link,status)
             AnimatedContent(on,transitionSpec={
                 (fadeIn(tweenFor(motion,Motion.emphasized))+scaleIn(tweenFor(motion,Motion.emphasized),initialScale=if(motion) .92f else 1f)) togetherWith
@@ -214,10 +214,10 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
             }
         }
     }
-    val details:@Composable ()->Unit={
+    val details:@Composable (Boolean)->Unit={ short ->
         CurrentNode(region,displayName(node).ifBlank{"选择节点"},nodeInfo,latency,region=="NX",pick)
         ModeSwitch(bypass,mode)
-        AnimatedContent(if(bypass && state.shoes)SplitRouting.SHOES else if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",
+        if (!short || !on) AnimatedContent(if(bypass && state.shoes)SplitRouting.SHOES else if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",
             transitionSpec={ fadeThrough(motion) },label="分流说明") { text ->
             Text(text,Modifier.fillMaxWidth(),color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,textAlign=TextAlign.Center)
         }
@@ -240,15 +240,18 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         motionTween(Motion.emphasized),label="页面底色")
     BoxWithConstraints(Modifier.fillMaxSize().drawBehind {
         if(wash.alpha>0f) {
-            val wide=maxOf(size.width,size.height)>=600.dp.toPx() && size.width>size.height
+            val wide=size.width>=480.dp.toPx() && size.width>size.height
             val centre=androidx.compose.ui.geometry.Offset(if(wide) size.width*.25f else size.width/2,Sizes.dial.toPx()/2+Space.xs.toPx())
             drawCircle(Brush.radialGradient(listOf(wash,wash.copy(alpha=wash.alpha*.4f),Color.Transparent),centre,size.width*.8f),size.width*.8f,centre)
         }
     }){
-        if(maxWidth>=600.dp && maxWidth>maxHeight)Row(Modifier.fillMaxSize().padding(horizontal=Space.page),horizontalArrangement=Arrangement.spacedBy(Space.xl)){
-            Column(Modifier.weight(.85f).verticalScroll(rememberScrollState())){dial()}
-            Column(Modifier.weight(1.25f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.sm)){details()}
+        val wide=maxWidth>=480.dp && maxWidth>maxHeight
+        val diameter=(maxHeight - (if(wide) 80.dp else 260.dp)).coerceIn(88.dp,Sizes.dial)
+        if(wide) Row(Modifier.fillMaxSize().padding(horizontal=Space.page),verticalAlignment=Alignment.CenterVertically,
+            horizontalArrangement=Arrangement.spacedBy(Space.md)) {
+            Column(Modifier.weight(.8f).verticalScroll(rememberScrollState())){dial(diameter)}
+            Column(Modifier.weight(1.35f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.xs)){details(maxHeight<230.dp)}
         } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page,vertical=Space.xs),
-            verticalArrangement=Arrangement.spacedBy(Space.sm)){dial();details()}
+            verticalArrangement=Arrangement.spacedBy(Space.sm)){dial(diameter);details(false)}
     }
 }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -56,18 +57,37 @@ internal fun V2InviteConfirmation(invite:V2Invite, completed:(V2Node)->Unit, dis
 internal fun V2DeviceScreen(node:V2Node, tunnel:TunnelState, select:()->Unit, remove:()->Unit) {
     var confirm by remember { mutableStateOf(false) }
     val active=tunnel.active && tunnel.node==node.key
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page),
-        verticalArrangement=Arrangement.spacedBy(Space.sm)) {
-        Text("设备信息",style=MaterialTheme.typography.headlineMedium)
-        Column {
-            ListRow(node.name, node.authority, GroupPlace.First)
-            ListRow("设备 ID",node.deviceId.take(8)+"…"+node.deviceId.takeLast(4),GroupPlace.Middle)
-            ListRow("有效期",node.expiryText(),GroupPlace.Middle)
-            ListRow("连接状态","V2 · "+node.statusText(tunnel),GroupPlace.Last)
-        }
-        if (!active) PrimaryAction(select,Modifier.fillMaxWidth()) { Text("使用此节点") }
+    val identity:@Composable ()->Unit={
+        ListRow(node.name,node.authority,GroupPlace.First)
+        ListRow("设备 ID",node.deviceId.take(8)+"…"+node.deviceId.takeLast(4),GroupPlace.Last)
+    }
+    val status:@Composable ()->Unit={
+        ListRow("有效期",node.expiryText(),GroupPlace.First)
+        ListRow("连接状态","V2 · "+node.statusText(tunnel),GroupPlace.Last)
+    }
+    val removeRow:@Composable ()->Unit={
         ListRow("在本机移除此节点",if(active) "请先断开此节点" else "",enabled=!active,
             titleColor=MaterialTheme.colorScheme.error) { confirm=true }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal=Space.page)) {
+        val wide=maxWidth>=480.dp && maxWidth>maxHeight
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.sm)) {
+            Text("设备信息",style=MaterialTheme.typography.headlineMedium)
+            if(wide) {
+                Row(horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
+                    Column(Modifier.weight(1f)){identity()}
+                    Column(Modifier.weight(1f)){status()}
+                }
+                Row(horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
+                    if(!active) PrimaryAction(select,Modifier.weight(1f)) { Text("使用此节点") }
+                    Box(Modifier.weight(1f)){removeRow()}
+                }
+            } else {
+                Column {identity();status()}
+                if(!active) PrimaryAction(select,Modifier.fillMaxWidth()) { Text("使用此节点") }
+                removeRow()
+            }
+        }
     }
     if (confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("在本机移除此节点？")},
         text={Text("本机保存的设备密钥将被删除。如需重新加入，请向邀请人索取新邀请。")},
