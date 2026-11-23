@@ -402,7 +402,12 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 		return nil
 	}
 	site := object{"handler": "static_response", "headers": object{"Content-Type": []string{"text/plain; charset=utf-8"}}, "body": "Welcome.\n"}
-	routes := []object{{"match": []object{{"path": []string{"/"}, "method": []string{"HEAD", "GET"}}}, "handle": []object{site}}, {"handle": []object{{"handler": "static_response", "status_code": 404}}}}
+	routes := []object{
+		{"match": []object{{"path": []string{"/"}, "method": []string{"HEAD", "GET"}}}, "handle": []object{site}},
+		{"match": []object{{"path": []string{"/health.bin"}, "method": []string{"HEAD", "GET"}}},
+			"handle": []object{{"handler": "static_response", "body": strings.Repeat("0", 32768), "headers": object{"Content-Type": []string{"application/octet-stream"}}}}},
+		{"handle": []object{{"handler": "static_response", "status_code": 404}}},
+	}
 	servers := object{}
 	public := func(port int, siteRoutes []object) object {
 		return object{"listen": []string{":" + strconv.Itoa(port)}, "protocols": []string{"h1", "h2"}, "automatic_https": object{"disable_redirects": true}, "tls_connection_policies": []object{{"protocol_min": "tls1.3"}}, "routes": siteRoutes}

@@ -73,6 +73,9 @@ func TestDeploymentInputAndPEM(t *testing.T) {
 	if err != nil || !json.Valid(conf) || !strings.Contains(string(conf), "nexus.test:24443") {
 		t.Fatal("V2 authority missing")
 	}
+	if !strings.Contains(string(conf), `"/health.bin"`) || !strings.Contains(string(conf), strings.Repeat("0", 32768)) {
+		t.Fatal("missing auto-transport health object")
+	}
 	o.Domain = "other.test"
 	if err = renderDeployment(t.Context(), o, t.TempDir()); err == nil {
 		t.Fatal("accepted wrong certificate SAN")
