@@ -46,6 +46,10 @@ func main() {
 		return
 	}
 	key := must(x509.ParsePKCS8PrivateKey(must(os.ReadFile("device.key.der")))).(*ecdsa.PrivateKey)
+	if mode == "public-key" {
+		fmt.Printf("%x\n", elliptic.MarshalCompressed(key.Curve, key.X, key.Y))
+		return
+	}
 	if mode == "server" {
 		type M = map[string]any
 		home := must(os.Getwd())
@@ -54,6 +58,10 @@ func main() {
 			panic(e)
 		}
 		handler := M{"handler": "nexus", "authority": authority, "device_keys": M{"00000000000000000000000000000000": hex.EncodeToString(elliptic.MarshalCompressed(key.Curve, key.X, key.Y))}, "allow_exact": []string{"127.0.0.1:32443", "127.0.0.1:32554"}}
+		if ledger := os.Getenv("LAB_QUOTA_DB"); ledger != "" {
+			delete(handler, "device_keys")
+			handler["ledger_path"] = ledger
+		}
 		node := M{"listen": []string{endpoint}, "automatic_https": M{"disable": true}, "enable_datagrams": os.Getenv("LAB_CAPSULES") != "1", "tls_connection_policies": []M{{"protocol_min": "tls1.3"}}, "routes": []M{{"handle": []M{handler, {"handler": "file_server", "root": filepath.Join(home, "site")}}}}}
 		config := M{"admin": M{"disabled": true}, "apps": M{"tls": M{"certificates": M{"load_files": []M{{"certificate": "server.pem", "key": "server.key"}}}}, "http": M{"servers": M{"lab": node}, "grace_period": "100ms"}}}
 		if e := os.WriteFile("node.json", must(json.Marshal(config)), 0600); e != nil {
