@@ -141,6 +141,9 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 			return nil, os.Rename(l.path(src), filepath.Join(l.path(dest), filepath.Base(src)))
 		case "/usr/bin/cp":
 			src, dest := rest[len(rest)-2], rest[len(rest)-1]
+			if strings.HasSuffix(dest, "/") {
+				dest = filepath.Join(dest, filepath.Base(src))
+			}
 			return nil, copyPath(l.path(dest), l.path(src), 0600)
 		default:
 			return nil, fmt.Errorf("unexpected service command %s", cmd)
@@ -234,6 +237,24 @@ func TestInstallRepeatUpgradeRollbackAndPurge(t *testing.T) {
 	}
 	if _, e := os.Stat(l.path(state + "/ledger.db")); e != nil {
 		t.Fatal(e)
+	}
+	// A trial start after reinstall may migrate the retained ledger.
+	oldRunner := l.command
+	l.command = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+		if n == "systemctl" && strings.Join(args, " ") == "enable --now nexus-v2.service" {
+			if e := os.WriteFile(l.path(state+"/ledger.db"), []byte("trial schema"), 0600); e != nil {
+				t.Fatal(e)
+			}
+			return nil, errors.New("failed new service")
+		}
+		return oldRunner(ctx, n, args...)
+	}
+	if e := l.run(t.Context(), "install", o, sampleRender); e == nil {
+		t.Fatal("expected failed reinstall")
+	}
+	l.command = oldRunner
+	if b, e := os.ReadFile(l.path(state + "/ledger.db")); e != nil || string(b) != "initial" {
+		t.Fatal("retained database was not restored", e)
 	}
 	run("install", o)
 	run("uninstall", Options{Purge: true})

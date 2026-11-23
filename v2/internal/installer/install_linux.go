@@ -321,6 +321,11 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 	if err = os.Chown(h.path(cfg), d.UID, d.GID); err != nil {
 		return err
 	}
+	if retained {
+		if err = h.protectRetained(ctx, &tx); err != nil {
+			return err
+		}
+	}
 	if _, err = h.command(ctx, "runuser", "-u", account, "--", base+"/bin/nexus-node", "ledger", state+"/ledger.db", "users"); err != nil {
 		return err
 	}

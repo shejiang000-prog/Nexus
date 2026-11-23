@@ -37,6 +37,57 @@ func (h host) stop(ctx context.Context, d deployment) error {
 func (h host) backup(ctx context.Context, dest string) error {
 	return h.asService(ctx, base+"/bin/nexus-node", "ledger", state+"/ledger.db", "backup", dest)
 }
+
+var ledgerFiles = []string{"ledger.db", "ledger.db-wal", "ledger.db-shm", "compat-reality", "compat-hysteria2"}
+
+// All accesses to persisted service data run under its unprivileged account.
+func (h host) transferState(ctx context.Context, from, to string, names []string, move bool) error {
+	for _, n := range names {
+		src := filepath.Join(from, n)
+		if _, e := os.Lstat(h.path(src)); errors.Is(e, os.ErrNotExist) {
+			continue
+		} else if e != nil {
+			return e
+		}
+		var err error
+		if move {
+			err = h.asService(ctx, "/usr/bin/mv", "--", src, to+"/")
+		} else {
+			err = h.asService(ctx, "/usr/bin/cp", "-a", "--", src, to+"/")
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h host) protectRetained(ctx context.Context, tx *transaction) error {
+	if e := h.requireClosedDB(); e != nil {
+		return e
+	}
+	dir := state + "/backups/reinstall-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	if e := h.asService(ctx, "/usr/bin/mkdir", "-m", "0700", "--", dir); e != nil {
+		return e
+	}
+	if e := h.transferState(ctx, state, dir, ledgerFiles, false); e != nil {
+		return e
+	}
+	tx.undo(func() error {
+		bg := context.Background()
+		if e := h.requireClosedDB(); e != nil {
+			return e
+		}
+		if e := h.asService(bg, "/usr/bin/mkdir", "-m", "0700", "--", dir+"/failed"); e != nil {
+			return e
+		}
+		if e := h.transferState(bg, state, dir+"/failed", ledgerFiles, true); e != nil {
+			return e
+		}
+		return h.transferState(bg, dir, state, ledgerFiles, false)
+	})
+	return nil
+}
 func (h host) upgrade(ctx context.Context, d deployment, o Options) (err error) {
 	if err = h.validateOwned(ctx, d); err != nil {
 		return err
@@ -83,16 +134,8 @@ func (h host) upgrade(ctx context.Context, d deployment, o Options) (err error) 
 	if err = h.backup(ctx, backupDir+"/before-switch.db"); err != nil {
 		return errors.Join(err, h.start(bg, d))
 	}
-	for _, p := range []string{"reality", "hysteria2"} {
-		src := state + "/compat-" + p
-		if _, e := os.Lstat(h.path(src)); errors.Is(e, os.ErrNotExist) {
-			continue
-		} else if e != nil {
-			return errors.Join(e, h.start(bg, d))
-		}
-		if e := h.asService(ctx, "/usr/bin/cp", "-a", "--", src, backupDir+"/"); e != nil {
-			return errors.Join(e, h.start(bg, d))
-		}
+	if e := h.transferState(ctx, state, backupDir, ledgerFiles[3:], false); e != nil {
+		return errors.Join(e, h.start(bg, d))
 	}
 	if err = os.Rename(binDir, oldBin); err != nil {
 		return errors.Join(err, h.start(bg, d))
@@ -124,28 +167,14 @@ func (h host) upgrade(ctx context.Context, d deployment, o Options) (err error) 
 		if e := h.asService(bg, "/usr/bin/mkdir", "-m", "0700", "--", failed); e != nil {
 			return e
 		}
-		for _, n := range []string{"ledger.db", "ledger.db-wal", "ledger.db-shm", "compat-reality", "compat-hysteria2"} {
-			if _, e := os.Lstat(h.path(state + "/" + n)); errors.Is(e, os.ErrNotExist) {
-				continue
-			} else if e != nil {
-				return e
-			}
-			if e := h.asService(bg, "/usr/bin/mv", "--", state+"/"+n, failed+"/"); e != nil {
-				return e
-			}
+		if e := h.transferState(bg, state, failed, ledgerFiles, true); e != nil {
+			return e
 		}
 		if e := h.asService(bg, "/usr/bin/cp", "--preserve=mode", "--", backupDir+"/before-switch.db", state+"/ledger.db"); e != nil {
 			return e
 		}
-		for _, p := range []string{"compat-reality", "compat-hysteria2"} {
-			if _, e := os.Lstat(h.path(backupDir + "/" + p)); errors.Is(e, os.ErrNotExist) {
-				continue
-			} else if e != nil {
-				return e
-			}
-			if e := h.asService(bg, "/usr/bin/cp", "-a", "--", backupDir+"/"+p, state+"/"); e != nil {
-				return e
-			}
+		if e := h.transferState(bg, backupDir, state, ledgerFiles[3:], false); e != nil {
+			return e
 		}
 		if e := os.Rename(binDir, newBin); e != nil {
 			return e
