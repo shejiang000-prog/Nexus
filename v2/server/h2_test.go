@@ -41,7 +41,7 @@ func TestH2UDPMarkerAfterAuthentication(t *testing.T) {
 	for _, authenticated := range []bool{false, true} {
 		sessions := new(sync.Map)
 		if authenticated {
-			b := new(proof.Binding)
+			b := new(sessionBinding)
 			if !b.Accept(header, devices, func() ([]byte, error) { return secret, nil }) {
 				t.Fatal("setup")
 			}
