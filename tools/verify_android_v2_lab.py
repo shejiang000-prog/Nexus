@@ -22,8 +22,14 @@ def run(adb, package, fixture, runner, probe):
     shell("run-as",package,"mkdir","-p","no_backup",check=True)
     cfg = json.loads(fixture.read_bytes())
     # Neither the invitation nor the control capability appears in argv, instrumentation output, or shared storage.
-    subprocess.run([*a,"exec-in","run-as",package,"sh","-c","'umask 077; cat > no_backup/m3.json'"],
-                          input=fixture.read_bytes(), stdout=subprocess.DEVNULL, check=True, timeout=12)
+    data = fixture.read_bytes()
+    private_file = "no_backup/m3.json"
+    shell("run-as",package,"touch",private_file,check=True)
+    shell("run-as",package,"chmod","600",private_file,check=True)
+    subprocess.run([*a,"shell","-T","run-as",package,"tee",private_file],
+                   input=data, stdout=subprocess.DEVNULL, check=True, timeout=12)
+    if int(shell("run-as",package,"stat","-c","%s",private_file,check=True).stdout) != len(data):
+        raise RuntimeError("incomplete private instrumentation configuration")
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
     with tempfile.TemporaryFile() as log:
         proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3",runner], stdout=log,stderr=subprocess.STDOUT)

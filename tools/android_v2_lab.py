@@ -85,6 +85,10 @@ def serve(node, xray_zip, host, work):
         authority = "nexus.test:" + str(port)
         handler = {"handler":"nexus","authority":authority,"ledger_path":str(db),"allow_exact":[target]}
         config = {"admin":{"disabled":True},"apps":{"tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}},"http":{"servers":{"node":{"listen":[f"{host}:{port}"],"automatic_https":{"disable":True},"enable_datagrams":True,"tls_connection_policies":[{"protocol_min":"tls1.3"}],"routes":[{"handle":[handler,{"handler":"static_response","status_code":404}]}]}}}}}
+        routes = config["apps"]["http"]["servers"]["node"]["routes"]
+        routes.insert(0, {"match":[{"path":["/health.bin"],"method":["GET","HEAD"]}],
+                          "handle":[{"handler":"static_response","body":"0"*32768,
+                                     "headers":{"Content-Type":["application/octet-stream"]}}]})
         def process(binary, args, config, name):
             cfg = work/(name+".json");cfg.write_text(json.dumps(config))
             log = stack.enter_context((work/(name+".log")).open("wb"))
