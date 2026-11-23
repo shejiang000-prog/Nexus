@@ -7,7 +7,7 @@ import tempfile
 import time
 
 
-def run(adb, package, fixture, runner):
+def run(adb, package, fixture, runner, probe):
     a = [str(adb), "-s", "emulator-5554"]
     def shell(*args, **kw):
         return subprocess.run([*a, "shell", *args], stdout=subprocess.PIPE,
@@ -38,7 +38,7 @@ def run(adb, package, fixture, runner):
                     print("stage",stage,flush=True)
                     if stage in ("probe-v2","probe-xray"):
                         output=subprocess.check_output([*a,"shell","am","instrument","-w","-e","m3","yes","-e","vpn","on",
-                            "-e","echo",cfg["target"],"-e","port",str(cfg["echoPort"]),"dev.nexus.vpnprobe/.Probe"],timeout=40)
+                            "-e","echo",cfg["target"],"-e","port",str(cfg["echoPort"]),probe],timeout=40)
                         if b"INSTRUMENTATION_CODE: -1" not in output:raise RuntimeError("separate UID probe failed: "+output.decode(errors="replace"))
                         print(stage,"separate UID TCP and UDP passed",flush=True)
                         shell("run-as",package,"touch","no_backup/m3-probe-ok",check=True)
@@ -57,5 +57,6 @@ if __name__=="__main__":
     p.add_argument("adb",type=Path);p.add_argument("package",choices=["dev.nexus.lab.m0","dev.nexus.localclient"])
     p.add_argument("fixture",type=Path)
     p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
+    p.add_argument("--probe",default="dev.nexus.vpnprobe/.Probe",choices=["dev.nexus.vpnprobe/.Probe","dev.nexus.lab.m31.probe/dev.nexus.vpnprobe.Probe"])
     opt=p.parse_args()
-    run(opt.adb,opt.package,opt.fixture,opt.runner)
+    run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe)
