@@ -17,9 +17,10 @@ p.add_argument("source", type=Path, help="local libXray git checkout")
 p.add_argument("patched", type=Path, nargs="?", help="output of prepare_v2.py --android (default: prepare fresh verified sources)")
 p.add_argument("output", type=Path)
 a = p.parse_args()
-output = a.output.resolve()
-if output.is_relative_to(ROOT) and output != ROOT / "apps/android/app/build/engines/nexus-v2.aar":
-    p.error("output must be the Gradle build artifact or an external AAR")
+output = a.output.absolute()
+gradle_output = ROOT / "apps/android/app/build/engines/nexus-v2.aar"
+if output.is_symlink() or output.resolve() != gradle_output and (output.resolve().is_relative_to(ROOT) or output.exists()):
+    p.error("output must be the Gradle build artifact or a new external AAR")
 output.parent.mkdir(parents=True, exist_ok=True)
 if subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip() != "go1.27.4":
     p.error("Go 1.27.4 is required")
@@ -35,8 +36,8 @@ for tool in ("gomobile", "gobind"):
 @contextmanager
 def build_workspace():
     # gomobile embeds the absolute paths of local replacements in both Go binaries.
-    work = Path(os.environ.get("NEXUS_AAR_WORKDIR", Path(tempfile.gettempdir()) / "nexus-v2-gomobile")).resolve()
-    if work.is_relative_to(ROOT):
+    work = Path(os.environ.get("NEXUS_AAR_WORKDIR", Path(tempfile.gettempdir()) / "nexus-v2-gomobile")).absolute()
+    if work.resolve().is_relative_to(ROOT):
         p.error("choose an external NEXUS_AAR_WORKDIR")
     try:
         work.mkdir(mode=0o700)
