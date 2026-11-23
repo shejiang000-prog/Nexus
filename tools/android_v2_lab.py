@@ -108,6 +108,9 @@ def serve(node, xray_zip, host, work):
         binary.chmod(0o700)
         xport = freeport(); client = str(uuid.uuid4())
         xc = {"inbounds":[{"listen":host,"port":xport,"protocol":"vless","settings":{"clients":[{"id":client}],"decryption":"none"}}],"outbounds":[{"protocol":"blackhole","tag":"deny"},{"protocol":"freedom","tag":"echo"}],"routing":{"rules":[{"ip":[TARGET],"port":str(echo),"outboundTag":"echo"}]},"log":{"loglevel":"none"}}
+        xc["outbounds"][1]["settings"] = {"finalRules":[
+            {"action":"allow","ip":[TARGET + "/32"],"port":str(echo)},
+            {"action":"block"}]}
         xr=process(binary,["run","-config"],xc,"xray-server")
         lock = threading.Lock()
         ctl = secrets.token_urlsafe(32)
