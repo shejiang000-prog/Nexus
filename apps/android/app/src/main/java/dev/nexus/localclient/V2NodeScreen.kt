@@ -18,8 +18,8 @@ import java.util.Locale
 
 internal fun V2Node.expiryText():String {
     val seconds = expiresAt ?: return if (expiryKnown) "长期有效" else "到期时间未知"
-    val date = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date(seconds * 1000))
-    return "${date}到期"
+    val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(seconds * 1000))
+    return "$date 到期"
 }
 
 internal fun V2Node.statusText(tunnel:TunnelState):String = when {
@@ -62,7 +62,7 @@ internal fun V2DeviceScreen(node:V2Node, tunnel:TunnelState, select:()->Unit, re
         ListRow("设备 ID",node.deviceId.take(8)+"…"+node.deviceId.takeLast(4),GroupPlace.Last)
     }
     val status:@Composable ()->Unit={
-        ListRow("有效期",node.expiryText(),GroupPlace.First)
+        ListRow("有效期（本地时间）",node.expiryText(),GroupPlace.First)
         ListRow("连接状态","V2 · "+node.statusText(tunnel),GroupPlace.Last)
     }
     val removeRow:@Composable ()->Unit={
