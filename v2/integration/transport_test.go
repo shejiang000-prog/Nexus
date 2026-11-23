@@ -43,7 +43,7 @@ func TestNode(t *testing.T) {
 	t.Run("ledger", func(t *testing.T) { testNode(t, true, false) })
 }
 func TestLedgerLoad(t *testing.T) { testNode(t, true, true) }
-func testNode(t *testing.T, useLedger, load bool) {
+func testNode(t *testing.T, useLedger, load bool, scenarios ...func(*testing.T, *nodeLab)) {
 	bin := os.Getenv("NEXUS_NODE_TEST_BINARY")
 	if bin == "" {
 		t.Skip("set NEXUS_NODE_TEST_BINARY to a built nexus-node")
@@ -123,7 +123,11 @@ func testNode(t *testing.T, useLedger, load bool) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer ledger.Close()
+		t.Cleanup(func() {
+			if ledger != nil {
+				ledger.Close()
+			}
+		})
 		if e = ledger.CreateUser(t.Context(), user); e != nil {
 			t.Fatal(e)
 		}
@@ -135,35 +139,20 @@ func testNode(t *testing.T, useLedger, load bool) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	cmd := exec.Command(bin, "run", "--config", write("node.json", data))
-	cmd.Dir = dir
-	cmd.Env = []string{"HOME=" + dir, "XDG_DATA_HOME=" + dir, "XDG_CONFIG_HOME=" + dir}
-	var log bytes.Buffer
-	cmd.Stderr = &log
-	if e = cmd.Start(); e != nil {
-		t.Fatal(e)
+	lab := &nodeLab{bin: bin, dir: dir, dbPath: filepath.Join(dir, "ledger.db"), config: write("node.json", data),
+		authority: authority, endpoint: endpoint, tcp: tcp.Addr().String(), udp: u.LocalAddr().String(),
+		roots: x509.NewCertPool(), user: user, ledger: ledger}
+	lab.roots.AppendCertsFromPEM(ca)
+	lab.start(t)
+	defer lab.stop(t, os.Kill)
+	roots := lab.roots
+	if len(scenarios) != 0 {
+		defer func() { ledger = lab.ledger }()
+		for _, scenario := range scenarios {
+			scenario(t, lab)
+		}
+		return
 	}
-	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-		if t.Failed() {
-			t.Log(log.String())
-		}
-	}()
-	ready := time.Now().Add(8 * time.Second)
-	for {
-		c, e := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
-		if e == nil {
-			c.Close()
-			break
-		}
-		if time.Now().After(ready) {
-			t.Fatal("node readiness timeout")
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(ca)
 	if load {
 		runLoad(t, ledger, user, authority, endpoint, tcp.Addr().String(), roots)
 		return

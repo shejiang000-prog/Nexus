@@ -110,6 +110,7 @@ type redeemSources struct {
 	mu    sync.Mutex
 	until time.Time
 	count map[netip.Addr]int
+	total int
 }
 
 func (s *redeemSources) allow(remote string, now time.Time) bool {
@@ -118,15 +119,20 @@ func (s *redeemSources) allow(remote string, now time.Time) bool {
 		return false
 	}
 	ip := peer.Addr().Unmap()
+	if ip.Is6() {
+		ip = netip.PrefixFrom(ip, 64).Masked().Addr()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !now.Before(s.until) {
 		s.until = now.Add(time.Second)
 		s.count = make(map[netip.Addr]int)
+		s.total = 0
 	}
-	if s.count[ip] >= 16 || (s.count[ip] == 0 && len(s.count) >= 4096) {
+	if s.count[ip] >= 16 || s.total >= 256 {
 		return false
 	}
 	s.count[ip]++
+	s.total++
 	return true
 }
