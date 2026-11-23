@@ -39,10 +39,20 @@ internal fun RecoverySettings(alwaysOn:Boolean,openVpnSettings:()->Unit){
     Column {
         ListRow("断线自动恢复",if(alwaysOn) "已设为始终开启的 VPN，被系统关闭或重启后自动重连"
             else "系统清理后台时可能关闭 Nexus。设为「始终开启的 VPN」后会自动重连",GroupPlace.First,
-            trailing={ Text(if(alwaysOn) "已开启" else "去开启 ›",color=c.primary,fontWeight=FontWeight.SemiBold) },
+            trailing={ if(alwaysOn) Text("已开启",color=c.primary,style=MaterialTheme.typography.labelLarge) else LinkLabel("去开启") },
             onClick=if(alwaysOn) null else openVpnSettings)
         ListRow("开机后自动连接","重启解锁后恢复上次的连接。三星等手机可能拦截，以上一项为准",GroupPlace.Last,
             trailing={ Switch(enabled,{enabled=it;p.edit().putBoolean("boot-connect",it).apply()},colors=switchColors()) })
+    }
+}
+
+/** A trailing call to action on a list row: accent text with a chevron. */
+@Composable
+internal fun LinkLabel(text:String) {
+    val c=MaterialTheme.colorScheme
+    Row(verticalAlignment=Alignment.CenterVertically) {
+        Text(text,color=c.primary,style=MaterialTheme.typography.labelLarge)
+        GlyphIcon(Glyph.Chevron,Modifier.padding(start=Space.xxs),size=14.dp,tint=c.primary)
     }
 }
 
@@ -89,7 +99,7 @@ internal fun UpdateSettings(){
             trailing={ Switch(auto,{auto=it;prefs.edit().putBoolean("automatic",it).apply()},colors=switchColors()) })
         val release=latest
         if(release!=null) ListRow("有新版本 "+release.version,release.summary.lines().firstOrNull { it.isNotBlank() }.orEmpty().take(80),GroupPlace.Last,
-            trailing={ Text("去下载 ›",color=c.primary,fontWeight=FontWeight.SemiBold) }) { browse(ctx,release.page) }
+            trailing={ LinkLabel("去下载") }) { browse(ctx,release.page) }
         else ListRow("检查更新",when { busy->"正在检查…"; checked->"当前 "+BuildConfig.VERSION_NAME+" 已是最新"; else->"当前版本 "+BuildConfig.VERSION_NAME },
             GroupPlace.Last,enabled=!busy) { busy=true;scope.launch {try{checked=ReleaseUpdates.check(ctx,true)}finally{busy=false}} }
     }

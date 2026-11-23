@@ -78,7 +78,7 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                        Box(Modifier.size(44.dp).background(signalSoft,androidx.compose.foundation.shape.RoundedCornerShape(14.dp)),
+                        Box(Modifier.size(44.dp).background(signalSoft,Shapes.control),
                             contentAlignment=androidx.compose.ui.Alignment.Center) { CompositionLocalProvider(LocalContentColor provides c.primary) { SectionIcon(2) } }
                         Column(Modifier.weight(1f)) {
                             Text("接入服务器",style=MaterialTheme.typography.titleLarge,fontWeight=androidx.compose.ui.text.font.FontWeight.Bold)
@@ -88,10 +88,10 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
                     val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,focusedBorderColor=c.primary,
                         unfocusedContainerColor=c.background,focusedContainerColor=c.background)
                     OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
-                        shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),colors=field)
+                        shape=Shapes.control,colors=field)
                     OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
                         visualTransformation=PasswordVisualTransformation(),label={ Text("root 密码（仅用一次）") },
-                        shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),colors=field)
+                        shape=Shapes.control,colors=field)
                     Text("密码不会保存。App 会生成自己的管理密钥，以后用它登录。",color=c.onSurfaceVariant,fontSize=13.sp)
                 }
             }
@@ -106,7 +106,7 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
                     Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                         Text("一般不用改。端口是服务器的网络入口，DNS 用来查找网站地址。",color=c.onSurfaceVariant,fontSize=14.sp)
                         val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,unfocusedContainerColor=c.background,focusedContainerColor=c.background)
-                        val shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
+                        val shape=Shapes.control
                         OutlinedTextField(dns,{dns=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("DNS")},shape=shape,colors=field)
                         Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(port,{port=it},Modifier.weight(1f),singleLine=true,label={Text("连接端口")},shape=shape,colors=field)
@@ -131,7 +131,7 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             // Current invite limits as three tappable tiles; tapping any of them opens the editor.
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 listOf("有效期" to "$days 天","设备" to "$count 台","流量" to (mb.takeIf { it.isNotBlank() }?.let { "$it MB" } ?: "不限")).forEach { (label,value) ->
-                    Surface(modifier=Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceVariant,
+                    Surface(modifier=Modifier.weight(1f),shape=Shapes.control,color=MaterialTheme.colorScheme.surfaceVariant,
                         onClick={ expanded=!expanded }) {
                         Column(Modifier.padding(vertical=10.dp).fillMaxWidth(),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally) {
                             Text(label,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=13.sp)
@@ -202,7 +202,7 @@ internal fun usageAmount(bytes: Long) = java.lang.String.format(java.util.Locale
 @Composable
 internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
     val c=MaterialTheme.colorScheme
-    Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)){
+    NexusCard {
         Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
                 Column(Modifier.weight(1f)){
@@ -221,7 +221,7 @@ internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
             val used=devices?.let {rows->usageAmount((0 until rows.length()).sumOf {rows.getJSONObject(it).optLong("used")})}
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("已授权设备" to authorized,"累计流量" to used).forEach{(label,value)->
-                    Surface(Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),color=c.surfaceVariant){
+                    Surface(Modifier.weight(1f),shape=Shapes.control,color=c.surfaceVariant){
                         Column(Modifier.padding(horizontal=12.dp,vertical=10.dp)){
                             // One line at any font scale: shrink long amounts instead of wrapping "MB".
                             androidx.compose.foundation.text.BasicText(value?:"—",
@@ -250,7 +250,7 @@ internal fun DeviceCard(row:JSONObject,busy:Boolean,place:GroupPlace=GroupPlace.
         if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=68.dp),color=c.outlineVariant)
         Row(Modifier.fillMaxWidth().padding(14.dp).graphicsLayer{alpha=if(revoked).6f else 1f},
             verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(40.dp).background(c.surfaceVariant,androidx.compose.foundation.shape.RoundedCornerShape(13.dp)),
+            Box(Modifier.size(40.dp).background(c.surfaceVariant,Shapes.chip),
                 contentAlignment=androidx.compose.ui.Alignment.Center) {
                 Canvas(Modifier.size(20.dp)){ val w=size.width; val ink=c.onSurfaceVariant
                     drawRoundRect(ink,androidx.compose.ui.geometry.Offset(w*.27f,w*.06f),androidx.compose.ui.geometry.Size(w*.46f,w*.88f),
@@ -265,7 +265,7 @@ internal fun DeviceCard(row:JSONObject,busy:Boolean,place:GroupPlace=GroupPlace.
                     Box(Modifier.fillMaxWidth((used.toDouble()/quota).toFloat().coerceIn(0.02f,1f)).fillMaxHeight()
                         .background(if(used>=quota) c.error else signal,androidx.compose.foundation.shape.CircleShape)) }
             }
-            if(!revoked) OutlinedButton(revoke,Modifier.heightIn(min=44.dp),enabled=!busy,shape=androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            if(!revoked) OutlinedButton(revoke,Modifier.heightIn(min=44.dp),enabled=!busy,shape=Shapes.chip,
                 border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant),contentPadding=PaddingValues(horizontal=14.dp)) { Text("撤销",color=c.onSurface) }
             else Text("已撤销",color=c.onSurfaceVariant,fontSize=14.sp)
         }
@@ -281,7 +281,7 @@ internal fun ToolRow(title:String,detail:String,place:GroupPlace,enabled:Boolean
             .padding(horizontal=16.dp,vertical=10.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text(title,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
                 Text(detail,color=c.onSurfaceVariant,fontSize=13.sp) }
-            Text("›",color=c.onSurfaceVariant,fontSize=22.sp)
+            GlyphIcon(Glyph.Chevron,size=18.dp,tint=c.outline)
         }
     }
 }
@@ -293,7 +293,7 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
     val message=INVITE_MESSAGE+"\n"+link
     var copied by remember(link){mutableStateOf(false)}
     ModalBottomSheet(onDismissRequest=close,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),
-        shape=androidx.compose.foundation.shape.RoundedCornerShape(topStart=30.dp,topEnd=30.dp),containerColor=MaterialTheme.colorScheme.surface) {
+        shape=Shapes.sheet,containerColor=MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start=20.dp,end=20.dp,bottom=16.dp),
             horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(10.dp)){
             Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
@@ -305,7 +305,7 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
             Text("对方用 Nexus 扫码，或收到消息后打开 Nexus",color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(limits.isNotEmpty())Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("有效期","设备","流量").zip(limits).forEach{(label,value)->
-                    Surface(Modifier.weight(1f),shape=androidx.compose.foundation.shape.RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.surfaceVariant){
+                    Surface(Modifier.weight(1f),shape=Shapes.control,color=MaterialTheme.colorScheme.surfaceVariant){
                         Column(Modifier.padding(8.dp),horizontalAlignment=androidx.compose.ui.Alignment.CenterHorizontally){
                             Text(label,color=MaterialTheme.colorScheme.onSurfaceVariant);Text(value,style=numberStyle)
                         }
@@ -370,7 +370,7 @@ internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, co
             }
             Text("本机名称（对方会在设备列表里看到）",color=c.onSurfaceVariant)
             OutlinedTextField(name,{name=it.take(64)},Modifier.fillMaxWidth(),singleLine=true,enabled=!busy && !done,
-                shape=androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                shape=Shapes.control,
                 colors=OutlinedTextFieldDefaults.colors(unfocusedContainerColor=c.surface,unfocusedBorderColor=c.outlineVariant))
             ClaimButton(done,busy) { busy=true;scope.launch {
                 try { accepted(withContext(Dispatchers.IO) { current.claim(name.ifBlank {Build.MODEL.take(64)}) });done=true }
