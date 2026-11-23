@@ -334,6 +334,28 @@ func TestLossEvidenceIsBoundToTheSamplingWindow(t *testing.T) {
 	}
 }
 
+func TestFastDownloadComparesUnloadedCarriers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var closed atomic.Bool
+		var calls atomic.Int32
+		round := func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			time.Sleep(time.Millisecond)
+			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+		}
+		h2 := &transportLane{kind: "h2", health: "https://node.test/health.bin", round: round}
+		fresh := &transportLane{kind: "h3", health: h2.health, round: round, close: func() { closed.Store(true) }}
+		s := selector{ctx: t.Context(), lane: &transportLane{kind: "h3", round: func(*http.Request) (*http.Response, error) {
+			t.Error("sampled saturated lane")
+			return nil, errors.New("busy")
+		}},
+			dial: func(context.Context, string) (*transportLane, error) { return fresh, nil }}
+		if s.slowerOnFreshH3(h2) || calls.Load() != 2*(1+8) || !closed.Load() {
+			t.Fatal("healthy path downgraded or temporary carrier was left open")
+		}
+	})
+}
+
 func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
 	t.Run("throttled", func(t *testing.T) { testAndroidSlow(t, 25000, false, false) })
 	t.Run("bursty-download", func(t *testing.T) { testAndroidSlow(t, 1<<20, true, true) })
@@ -378,7 +400,24 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty, loss bool) {
 			time.Sleep(500 * time.Microsecond)
 			return answer(), nil
 		}}
-		s := &selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1), dial: func(context.Context, string) (*transportLane, error) { return h2, nil }}
+		var fresh atomic.Int32
+		s := &selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1), dial: func(_ context.Context, kind string) (*transportLane, error) {
+			if kind == "h2" {
+				return h2, nil
+			}
+			epoch := fresh.Add(1)
+			seen := 0
+			return &transportLane{kind: "h3", health: h3.health, close: func() {}, round: func(*http.Request) (*http.Response, error) {
+				checks.Add(1)
+				seen++
+				if epoch == 1 && seen > 1+int(objects) {
+					time.Sleep(time.Millisecond)
+				} else {
+					time.Sleep(5 * time.Millisecond)
+				}
+				return answer(), nil
+			}}, nil
+		}}
 		h3.active.Store(1)
 		r, w := io.Pipe()
 		defer r.Close()
@@ -407,7 +446,7 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty, loss bool) {
 		go s.watch()
 		select {
 		case kind := <-s.events:
-			if bursty && !loss || kind != "h2" || checks.Load() != 4*objects || checks.Load() != h2Checks.Load() {
+			if bursty && !loss || kind != "h2" || checks.Load() != 4*objects+fresh.Load() || checks.Load() != h2Checks.Load() {
 				t.Fatalf("switched to %s after %d H3 and %d H2 objects", kind, checks.Load(), h2Checks.Load())
 			}
 		case <-time.After(10 * time.Second):

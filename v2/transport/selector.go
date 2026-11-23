@@ -222,6 +222,27 @@ func (s *selector) capacityBatch(l *transportLane, count int) time.Duration {
 	return max(time.Since(start), time.Nanosecond)
 }
 
+// Compare equally loaded carriers. An idle H2 probe must not win solely
+// because the old H3 connection is already serving a saturated download.
+func (s *selector) slowerOnFreshH3(h2 *transportLane) bool {
+	h3, err := s.probeH3(s.ctx)
+	if err != nil {
+		return false
+	}
+	defer h3.close()
+	// Authenticate and warm both connections with the identical object.
+	for _, count := range [...]int{1, 8, 8} {
+		done := make(chan time.Duration, 1)
+		go func() { done <- s.capacityBatch(h3, count) }()
+		h2time := s.capacityBatch(h2, count)
+		h3time := <-done
+		if h2time == 0 || h3time == 0 || count > 1 && !slowAndroidSample(h3time, h2time) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *selector) probeH3(parent context.Context) (*transportLane, error) {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
@@ -397,17 +418,14 @@ func (s *selector) watch() {
 			continue
 		}
 		weak = 0
-		count := 1
-		if s.androidVPN && delta >= 1<<20 {
-			// A high-throughput but bursty download can finish one 32 KiB
-			// object within a single Android clock tick.
-			if !losses.impaired(s.ctx, l) {
-				continue
-			}
-			count = 8
+		bursty := s.androidVPN && delta >= 1<<20
+		if bursty && !losses.impaired(s.ctx, l) {
+			continue
 		}
 		sample := make(chan time.Duration, 1)
-		go func() { sample <- s.capacityBatch(l, count) }()
+		if !bursty {
+			go func() { sample <- s.capacity(l) }()
+		}
 		var alt *transportLane
 		if pending != nil {
 			alt = <-pending
@@ -423,21 +441,24 @@ func (s *selector) watch() {
 		if alt == nil {
 			continue
 		}
-		h2time := s.capacityBatch(alt, count)
-		h3time := <-sample
-		degraded := h3time == 0 || h3time > 4*h2time
-		if s.androidVPN {
-			degraded = slowAndroidSample(h3time, h2time)
-			if degraded && !(h3time == 0 && l.stats() == now) {
-				// Positive QUIC progress can still mean heavy throttling. Confirm
-				// twice on the same carriers before moving new flows to H2.
-				go func() { sample <- s.capacityBatch(l, count) }()
-				h2time = s.capacityBatch(alt, count)
-				h3time = <-sample
+		var degraded bool
+		if bursty {
+			degraded = s.slowerOnFreshH3(alt)
+		} else {
+			h2time := s.capacity(alt)
+			h3time := <-sample
+			degraded = h2time > 0 && (h3time == 0 || h3time > 4*h2time)
+			if s.androidVPN {
 				degraded = slowAndroidSample(h3time, h2time)
+				if degraded && !(h3time == 0 && l.stats() == now) {
+					go func() { sample <- s.capacity(l) }()
+					h2time = s.capacity(alt)
+					h3time = <-sample
+					degraded = slowAndroidSample(h3time, h2time)
+				}
 			}
 		}
-		if h2time > 0 && degraded {
+		if degraded {
 			if !s.set(l, alt) {
 				continue
 			}
