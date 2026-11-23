@@ -23,7 +23,7 @@
 
 `Authority` 是验证证书与生成 exporter context 的入口，始终包含端口。`Endpoint` 是实际拨号地址，默认等于 Authority。Roots 为空时用系统信任库。ClientHello 可选，接受调用方提供的受信 H2 配置样本。缺省使用内置 Chrome 157 配置。固定版本的 uTLS 生成各连接独有的随机数、会话 ID、密钥份额和 SNI，生成文件仅保存签名算法列表及公开的信任锚标识。Device 为 16 字节 ID。Sign 接受完整待签字节，须用 ECDSA P-256/SHA-256 签名并返回 64 字节大端 r||s。连接竞速可能并行向签名器提出请求，每条成功建立的传输连接各有自己的证明。
 
-`Mode` 支持 auto（默认）、h3、h2。HealthPath 默认是同源的 `/health.bin`，节点在 H2/H3 上验证每个健康 GET/HEAD 的连接证明，GET 返回 32,768 字节，HEAD 只返回元数据。节点按认证时的账本快照在成功响应中设置 `Nexus-Account-Expires`。当前节点长期账户及静态设备使用 0，旧节点缺少该字段时保持未知。自定义 HealthPath 时同步设置节点 handler 的 `health_path`。普通站点不能单独配置公开的健康文件或同名静态响应。OnState 收到初始通道和切换成功后的通道名，由单独的 goroutine 串行回调；回调应迅速返回。Stop 后可通过 State 查询终止状态。每个物理网络或入口配置使用独立 Client，变更时调用 Stop 并重建。VPN 层负责传入 Protector。节点返回多个地址时依次尝试，每次在剩余截止时间内给下一地址留出机会。服务端核验全部 DNS 结果后才拨号。UDP 的 connect 只能反映本地路由及套接字错误，无响应时不会迁移旧关联。
+`Mode` 支持 auto（默认）、h3、h2。HealthPath 默认是同源的 `/health.bin`，节点在 H2/H3 上验证每个健康 GET/HEAD 的连接证明，GET 返回 32,768 字节，HEAD 只返回元数据。有授权的 H3 健康响应还携带服务端本连接的十进制 `Nexus-QUIC-Sent` 和 `Nexus-QUIC-Lost`。前者为 QUIC 发送包数（含重传和 ACK），后者为该 BBR 发送器累计判丢的 ACK-eliciting 包数。只比较同一连接的相邻样本，迟到的 ACK 不撤销已报告的丢失声明。节点按认证时的账本快照在成功响应中设置 `Nexus-Account-Expires`。当前节点长期账户及静态设备使用 0，旧节点缺少该字段时保持未知。自定义 HealthPath 时同步设置节点 handler 的 `health_path`。普通站点不能单独配置公开的健康文件或同名静态响应。OnState 收到初始通道和切换成功后的通道名，由单独的 goroutine 串行回调；回调应迅速返回。Stop 后可通过 State 查询终止状态。每个物理网络或入口配置使用独立 Client，变更时调用 Stop 并重建。VPN 层负责传入 Protector。节点返回多个地址时依次尝试，每次在剩余截止时间内给下一地址留出机会。服务端核验全部 DNS 结果后才拨号。UDP 的 connect 只能反映本地路由及套接字错误，无响应时不会迁移旧关联。
 
 首次竞速给 H3 250 ms 先发时间。已有业务的 H3 首个静默窗口预建 H2（相邻预建至少间隔 10 秒），两个 500 ms 弱进展窗口后比较两条连接的同源健康对象。H2 可用且 H3 无响应或超过 H2 用时的四倍时，新流转到 H2。H3 仍有收包时旧流排空，持续静默再主动关闭。H2 至少驻留 30 秒才探测回切。旧流上的数据不会自动转发到新连接。H3 路径 MTU 放不下的报文退回关联自己的 capsule。
 

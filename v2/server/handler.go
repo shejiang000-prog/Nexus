@@ -29,6 +29,10 @@ type MemoryDevices map[proof.ID]*ecdsa.PublicKey
 
 func (m MemoryDevices) Lookup(id proof.ID) *ecdsa.PublicKey { return m[id] }
 
+type sessionBinding struct {
+	proof.Binding
+	declaredLost func() uint64 // Bound to the congestion controller of this H3 connection.
+}
 type bindingKey struct{}
 type socketKey struct{}
 type Handler struct {
@@ -128,7 +132,7 @@ func (h *Handler) Cleanup() error {
 	}
 	return nil
 }
-func (h *Handler) authenticate(r *http.Request) *proof.Binding {
+func (h *Handler) authenticate(r *http.Request) *sessionBinding {
 	vals := r.Header.Values("Proxy-Authorization")
 	if len(vals) > 1 {
 		return nil
@@ -141,8 +145,8 @@ func (h *Handler) authenticate(r *http.Request) *proof.Binding {
 		if m == nil {
 			return nil
 		}
-		b, _ := m.LoadOrStore(h, new(proof.Binding))
-		bound := b.(*proof.Binding)
+		b, _ := m.LoadOrStore(h, new(sessionBinding))
+		bound := b.(*sessionBinding)
 		if bound.Accept(header, h.devices, secret) {
 			return bound
 		}
@@ -152,30 +156,32 @@ func (h *Handler) authenticate(r *http.Request) *proof.Binding {
 		return nil
 	}
 	if v, ok := h.sessions.Load(q); ok {
-		bound := v.(*proof.Binding)
+		bound := v.(*sessionBinding)
 		if bound.Accept(header, h.devices, secret) {
 			return bound
 		}
 		return nil
 	}
-	fresh := new(proof.Binding)
+	fresh := new(sessionBinding)
 	if !fresh.Accept(header, h.devices, secret) {
 		return nil
 	}
+	size := bbr.GetInitialPacketSize(q.RemoteAddr())
+	if x := q.InitialPacketSize(); x > 0 {
+		size = min(size, x)
+	}
+	cc := bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard)
+	fresh.declaredLost = cc.DeclaredLostPackets
 	v, loaded := h.sessions.LoadOrStore(q, fresh)
 	if loaded {
-		bound := v.(*proof.Binding)
+		bound := v.(*sessionBinding)
 		if bound.Accept(header, h.devices, secret) {
 			return bound
 		}
 		return nil
 	}
 	context.AfterFunc(q.Context(), func() { h.sessions.Delete(q) })
-	size := bbr.GetInitialPacketSize(q.RemoteAddr())
-	if x := q.InitialPacketSize(); x > 0 {
-		size = min(size, x)
-	}
-	q.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
+	q.SetCongestionControl(cc)
 	return fresh
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
@@ -228,6 +234,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", "32768")
 		w.Header().Set("Cache-Control", "private, no-store")
+		if q := http3.NexusConn(r.Context()); q != nil {
+			w.Header().Set("Nexus-QUIC-Sent", strconv.FormatUint(q.ConnectionStats().PacketsSent, 10))
+			w.Header().Set("Nexus-QUIC-Lost", strconv.FormatUint(bound.declaredLost(), 10))
+		}
 		w.WriteHeader(http.StatusOK)
 		if r.Method == "GET" {
 			_, err := w.Write(healthBody[:])

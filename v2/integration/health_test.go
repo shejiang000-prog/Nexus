@@ -86,7 +86,7 @@ func TestAuthenticatedHealthAndRenewal(t *testing.T) {
 				}
 				for _, method := range []string{"GET", "HEAD"} {
 					site := request(method, "/does-not-exist", "")
-					if site.code != 404 || site.headers.Get("Proxy-Authentication-Info") != "" || site.headers.Get("Nexus-Account-Expires") != "" {
+					if site.code != 404 || site.headers.Get("Proxy-Authentication-Info") != "" || site.headers.Get("Nexus-Account-Expires") != "" || site.headers.Get("Nexus-QUIC-Lost") != "" || site.headers.Get("Nexus-QUIC-Sent") != "" {
 						t.Fatalf("%s fallback %v", method, site)
 					}
 					for _, invalid := range []string{"", "invalid"} {
@@ -97,6 +97,15 @@ func TestAuthenticatedHealthAndRenewal(t *testing.T) {
 					ok := request(method, "/health.bin", auth)
 					if ok.code != 200 || ok.headers.Get("Nexus-Account-Expires") != "0" || ok.length != 32768 || (method == "GET" && !bytes.Equal(ok.body, make([]byte, 32768))) || method == "HEAD" && len(ok.body) != 0 {
 						t.Fatalf("invalid authenticated %s: %d len=%d", method, ok.code, ok.length)
+					}
+					if mode == "h3" {
+						sent, e := strconv.ParseUint(ok.headers.Get("Nexus-QUIC-Sent"), 10, 64)
+						lost, err := strconv.ParseUint(ok.headers.Get("Nexus-QUIC-Lost"), 10, 64)
+						if e != nil || err != nil || sent == 0 || lost > sent {
+							t.Fatal("invalid sender statistics")
+						}
+					} else if ok.headers.Get("Nexus-QUIC-Lost") != "" || ok.headers.Get("Nexus-QUIC-Sent") != "" {
+						t.Fatal("sender statistics outside authenticated H3 health response")
 					}
 					if got := request(method, "/health.bin", ""); !reflect.DeepEqual(site, got) {
 						t.Fatalf("%s no proof on previously bound connection", method)

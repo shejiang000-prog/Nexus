@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/quic-go/congestion"
@@ -166,9 +167,10 @@ func configForProfile(profile Profile) profileConfig {
 }
 
 type bbrSender struct {
-	rttStats congestion.RTTStatsProvider
-	clock    Clock
-	pacer    *common.Pacer
+	declaredLost atomic.Uint64
+	rttStats     congestion.RTTStatsProvider
+	clock        Clock
+	pacer        *common.Pacer
 
 	mode bbrMode
 
@@ -536,7 +538,13 @@ func (b *bbrSender) OnCongestionEvent(number congestion.PacketNumber, lostBytes,
 	// Do nothing.
 }
 
+// DeclaredLostPackets counts sender-side loss declarations. Late ACKs do not undo a declaration.
+func (b *bbrSender) DeclaredLostPackets() uint64 { return b.declaredLost.Load() }
+
 func (b *bbrSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime monotime.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
+	if len(lostPackets) != 0 {
+		b.declaredLost.Add(uint64(len(lostPackets)))
+	}
 	totalBytesAckedBefore := b.sampler.TotalBytesAcked()
 	totalBytesLostBefore := b.sampler.TotalBytesLost()
 
