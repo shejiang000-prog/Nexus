@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ const (
 func TestInstalledACMERenewal(t *testing.T) {
 	if os.Getenv("NEXUS_TEST_INSTALLED") != "1" || os.Getenv("NEXUS_TEST_ACME_RENEWAL") != "1" {
 		t.Skip("requires disposable three-protocol NexusLab private ACME installation")
+	}
+	if os.Getenv("WSL_DISTRO_NAME") != "NexusLab" {
+		t.Fatal("ACME renewal test can only run on disposable NexusLab")
 	}
 	check := func(err error) {
 		t.Helper()
@@ -132,7 +136,7 @@ func TestInstalledACMERenewal(t *testing.T) {
 	admin := func(args ...string) string {
 		t.Helper()
 		args = append([]string{"ledger", "/var/lib/nexus-v2/ledger.db"}, args...)
-		out, err := exec.CommandContext(ctx, acmeLabBin, args...).Output()
+		out, err := exec.CommandContext(ctx, "runuser", append([]string{"-u", "nexus-v2", "--", acmeLabBin}, args...)...).Output()
 		if err != nil {
 			t.Fatalf("ledger operation %s failed: %v", args[2], err)
 		}
@@ -142,7 +146,7 @@ func TestInstalledACMERenewal(t *testing.T) {
 	defer func() {
 		c, done := context.WithTimeout(context.Background(), 20*time.Second)
 		defer done()
-		if err := exec.CommandContext(c, acmeLabBin, "ledger", "/var/lib/nexus-v2/ledger.db", "revoke-user", user).Run(); err != nil {
+		if err := exec.CommandContext(c, "runuser", "-u", "nexus-v2", "--", acmeLabBin, "ledger", "/var/lib/nexus-v2/ledger.db", "revoke-user", user).Run(); err != nil {
 			t.Errorf("revoke test user: %v", err)
 		}
 	}()
@@ -186,18 +190,48 @@ func TestInstalledACMERenewal(t *testing.T) {
 		}
 		return resp.StatusCode, string(data), resp.Header
 	}
-	h3 := http3.Transport{EnableDatagrams: true, DisableCompression: true}
-	public, err := dial("v2")
+	const renewalRatio = 0.75
+	automation := cfg["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)
+	automation["renew_interval"] = "1s"
+	automation["policies"].([]any)[0].(map[string]any)["renewal_window_ratio"] = renewalRatio
+	accelerated, err := json.Marshal(cfg)
 	check(err)
-	local, err := dial("hysteria2")
-	check(err)
+	prepareACMELabTimer(t, accelerated)
+	// Wait out a stale certificate or an initial start-up renewal. Only accept
+	// a valid common leaf whose renewal window is still in the future.
+	var public, local *quic.Conn
+	var before *x509.Certificate
+	var windowStart time.Time
+	ready := time.Now().Add(80 * time.Second)
+	for time.Now().Before(ready) {
+		public, err = dial("v2")
+		if err == nil {
+			local, err = dial("hysteria2")
+			if err == nil {
+				before = local.ConnectionState().TLS.PeerCertificates[0]
+				lifetime := before.NotAfter.Sub(before.NotBefore)
+				windowStart = before.NotBefore.Add(time.Duration(float64(lifetime) * (1 - renewalRatio)))
+				if lifetime > 10*time.Minute {
+					t.Fatal("requires short-lived lab certificates")
+				}
+				if bytes.Equal(public.ConnectionState().TLS.PeerCertificates[0].Raw, before.Raw) && time.Until(windowStart) > 4*time.Second {
+					break
+				}
+				local.CloseWithError(0, "waiting for initial lab leaf")
+				local = nil
+			}
+			public.CloseWithError(0, "waiting for initial lab leaf")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if local == nil {
+		t.Fatalf("no shared unexpired certificate before its renewal window: %v", err)
+	}
 	defer local.CloseWithError(0, "test complete")
+	defer public.CloseWithError(0, "test complete")
+	h3 := http3.Transport{EnableDatagrams: true, DisableCompression: true}
 	hy := h3.NewClientConn(local)
 	web := h3.NewClientConn(public)
-	before := local.ConnectionState().TLS.PeerCertificates[0]
-	if !bytes.Equal(public.ConnectionState().TLS.PeerCertificates[0].Raw, before.Raw) {
-		t.Fatal("initial service certificates differ")
-	}
 	for _, tc := range []struct {
 		path, auth string
 		status     int
@@ -213,7 +247,6 @@ func TestInstalledACMERenewal(t *testing.T) {
 			}
 		}
 	}
-	public.CloseWithError(0, "site checks complete")
 	authenticate := func() {
 		t.Helper()
 		if code, _, _ := request(hy, "/auth", user+":"+password); code != 233 {
@@ -221,38 +254,12 @@ func TestInstalledACMERenewal(t *testing.T) {
 		}
 	}
 	authenticate()
+	started := time.Now()
+	if !started.Before(windowStart) {
+		t.Fatal("test connection was authenticated after the leaf entered its renewal window")
+	}
 	// This ClientConn is pinned to a single QUIC connection. RoundTrip cannot
 	// reconnect while the test waits for both new handshakes to change leaf.
-	temp := filepath.Join(t.TempDir(), "caddy-lab.json")
-	reload := func(path string) error {
-		rctx, done := context.WithTimeout(context.Background(), 20*time.Second)
-		defer done()
-		return exec.CommandContext(rctx, acmeLabBin, "reload", "--config", path, "--address", "unix/"+acmeLabSocket).Run()
-	}
-	writeConfig := func() {
-		t.Helper()
-		data, err := json.Marshal(cfg)
-		check(err)
-		check(os.WriteFile(temp, data, 0600))
-		check(reload(temp))
-	}
-	defer func() {
-		if err := reload(acmeLabConfig); err != nil {
-			t.Errorf("restore installed Caddy configuration: %v", err)
-		}
-	}()
-	apps := cfg["apps"].(map[string]any)
-	managed := apps["tls"].(map[string]any)
-	// A hot reload reuses CertMagic's managed cache and its original ticker.
-	// Release the previous management entry, then reacquire the existing leaf
-	// from storage under the short-lived lab policy.
-	apps["tls"] = map[string]any{"certificates": map[string]any{"load_files": []any{map[string]any{"certificate": site.Certificate, "key": site.KeyFile}}}}
-	writeConfig()
-	apps["tls"] = managed
-	automation := managed["automation"].(map[string]any)
-	automation["renew_interval"] = "1s"
-	automation["policies"].([]any)[0].(map[string]any)["renewal_window_ratio"] = 0.99
-	writeConfig()
 	leaf := func(p string) (*x509.Certificate, error) {
 		q, err := dial(p)
 		if err != nil {
@@ -263,10 +270,17 @@ func TestInstalledACMERenewal(t *testing.T) {
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
+	pulses := 0
+	lastPulse := started
 	for time.Now().Before(deadline) {
 		c, e1 := leaf("v2")
 		h, e2 := leaf("hysteria2")
 		lastErr = errors.Join(e1, e2)
+		if time.Since(lastPulse) >= 2*time.Second {
+			authenticate()
+			pulses++
+			lastPulse = time.Now()
+		}
 		if lastErr == nil && c.SerialNumber.Cmp(before.SerialNumber) != 0 && bytes.Equal(c.Raw, h.Raw) {
 			b, err := os.ReadFile(site.Certificate)
 			check(err)
@@ -275,7 +289,10 @@ func TestInstalledACMERenewal(t *testing.T) {
 				continue
 			}
 			authenticate()
-			t.Logf("Leaf serial changed %s -> %s on both ports; original authenticated QUIC connection still returned 233", before.SerialNumber.Text(16), c.SerialNumber.Text(16))
+			if time.Now().Before(windowStart) {
+				t.Fatal("observed new leaf before renewal window")
+			}
+			t.Logf("Automatic renewal changed leaf %s -> %s on both ports after %s; original QUIC connection retained status 233 (%d intermediate checks)", before.SerialNumber.Text(16), c.SerialNumber.Text(16), time.Since(started).Round(time.Millisecond), pulses)
 			return
 		}
 		select {
@@ -285,4 +302,78 @@ func TestInstalledACMERenewal(t *testing.T) {
 		}
 	}
 	t.Fatalf("both fresh handshakes did not converge on a renewed ACME leaf: %v", lastErr)
+}
+
+// CertMagic creates its maintenance ticker at process start. Install a private
+// lab config before measurement, and retain the original inode for restoration.
+func prepareACMELabTimer(t *testing.T, accelerated []byte) {
+	t.Helper()
+	const caddyUnit = "nexus-v2.service"
+	const hyUnit = "nexus-v2-hysteria2.service"
+	systemctl := func(args ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return exec.CommandContext(ctx, "systemctl", args...).Run()
+	}
+	for _, unit := range []string{caddyUnit, hyUnit} {
+		if err := systemctl("is-active", "--quiet", unit); err != nil {
+			t.Fatalf("requires active %s: %v", unit, err)
+		}
+	}
+	restart := func() error {
+		if err := systemctl("restart", caddyUnit); err != nil {
+			return err
+		}
+		// Hysteria2 requires Caddy. Some systemd versions stop the dependent
+		// while restarting its prerequisite.
+		if err := systemctl("is-active", "--quiet", hyUnit); err != nil {
+			return systemctl("start", hyUnit)
+		}
+		return nil
+	}
+	info, err := os.Lstat(acmeLabConfig)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		t.Fatal("requires a regular private installer configuration")
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	dir, err := os.MkdirTemp(filepath.Dir(acmeLabConfig), ".acme-lab-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(dir); err != nil {
+			t.Errorf("temporary lab config retained in %s: %v", dir, err)
+		}
+	})
+	tmp := filepath.Join(dir, "accelerated.json")
+	if err = os.WriteFile(tmp, accelerated, info.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(tmp) })
+	if err = os.Chown(tmp, int(st.Uid), int(st.Gid)); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(tmp, info.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(dir, "original.json")
+	if err = os.Link(acmeLabConfig, original); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(tmp, acmeLabConfig); err != nil {
+		os.Remove(original)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Rename(original, acmeLabConfig); err != nil {
+			t.Errorf("restore original lab configuration: %v", err)
+			return
+		}
+		if err := restart(); err != nil {
+			t.Errorf("restart restored Caddy: %v", err)
+		}
+	})
+	if err := restart(); err != nil {
+		t.Fatalf("restart lab Caddy with short maintenance interval: %v", err)
+	}
 }
