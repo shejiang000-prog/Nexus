@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,6 +73,14 @@ func TestQuotaReservationsAndRecovery(t *testing.T) {
 	if held != limit || first == (proof.ID{}) || tail == (proof.ID{}) {
 		t.Fatal("concurrent grants", amounts)
 	}
+	// A lower limit cannot grant more credit against the old reservations.
+	small := int64(1024)
+	check(admin.SetQuota(ctx, user, &small))
+	_, grant, _, err := l.reserveQuota(ctx, user)
+	if err != nil || grant != 0 {
+		t.Fatal("credit granted below live reservations", grant, err)
+	}
+	check(admin.SetQuota(ctx, user, &limit))
 	check(l.settleQuota(ctx, first, 90, false))
 	check(l.settleQuota(ctx, first, 75, false))
 	check(l.settleQuota(ctx, first, 90, false))
@@ -166,5 +175,49 @@ func TestAdminAtomicityAndRevoke(t *testing.T) {
 	var n int
 	if err := l.db.QueryRow("SELECT count(*) FROM devices WHERE revoked_at IS NULL").Scan(&n); err != nil || n != 0 {
 		t.Fatal("surviving device", err)
+	}
+}
+
+func TestQuotaOwnerSurvivesSecondOpen(t *testing.T) {
+	if path := os.Getenv("NEXUS_TEST_OWNED_LEDGER"); path != "" {
+		second, err := OpenLedger(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer second.Close()
+		if err := second.startQuotaNode(); err == nil {
+			second.stopQuotaNode()
+			t.Fatal("second process acquired live ledger")
+		}
+		return
+	}
+	path := filepath.Join(t.TempDir(), "node.db")
+	node, err := OpenLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	if err := node.startQuotaNode(); err != nil {
+		t.Fatal(err)
+	}
+	defer node.stopQuotaNode()
+	reload, err := OpenLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reload.Close()
+	if err := reload.startQuotaNode(); err == nil {
+		t.Fatal("reload acquired live ledger")
+	}
+	alias := filepath.Join(filepath.Dir(path), "alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, alias} {
+		child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestQuotaOwnerSurvivesSecondOpen$")
+		child.Env = append(os.Environ(), "NEXUS_TEST_OWNED_LEDGER="+p)
+		if out, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("owner check %s: %v: %s", filepath.Base(p), err, out)
+		}
 	}
 }

@@ -34,13 +34,17 @@ PRAGMA user_version=3;`
 // A second SQLite file supplies a process-lifetime lock without blocking
 // ledger writers. A killed process drops the lock in the kernel.
 func (l *Ledger) startQuotaNode() error {
-	path := l.path + ".owner"
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	realPath, err := filepath.EvalSymlinks(l.path)
 	if err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
+	path := realPath + ".owner"
+	info, err := privateLedgerFile(path)
+	if err != nil {
 		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		return errors.New("private node owner file required")
 	}
 	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	owner, err := sql.Open("sqlite", uri.String())
@@ -107,7 +111,10 @@ func (l *Ledger) reserveQuota(ctx context.Context, user proof.ID) (id proof.ID, 
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,user_id,lease_id,bytes) VALUES(unixepoch(),'reserve',?,?,?)", user[:], id[:], reserved); err != nil {
 		return id, 0, false, err
 	}
-	return id, reserved, quota.Valid && reserved == remaining, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return proof.ID{}, 0, false, err
+	}
+	return id, reserved, quota.Valid && reserved == remaining, nil
 }
 
 func (l *Ledger) settleQuota(ctx context.Context, id proof.ID, committed int64, final bool) error {

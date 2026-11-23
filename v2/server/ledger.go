@@ -62,16 +62,33 @@ type activeFlow struct {
 	meter *quotaAccount
 }
 
+// Closing an unrelated descriptor to an open SQLite database can release all
+// of this process's POSIX record locks on that inode. Publish a closed, private
+// file on first creation and use stat alone for an existing file.
+func privateLedgerFile(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return info, err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".ledger-init-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(f.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	return os.Stat(path)
+}
+
 func OpenLedger(path string) (*Ledger, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("absolute ledger path required")
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	info, err := f.Stat()
-	f.Close()
+	info, err := privateLedgerFile(path)
 	if err != nil {
 		return nil, err
 	}
