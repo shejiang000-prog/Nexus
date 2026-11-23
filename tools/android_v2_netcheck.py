@@ -11,8 +11,9 @@ import time
 
 
 class UdpShape:
-    def __init__(self, nic, host, port):
+    def __init__(self, nic, host, port, stats):
         self.nic, self.host, self.port = nic, host, str(port)
+        self.stats = stats
         self.resources = None
 
     def close(self):
@@ -47,6 +48,11 @@ class UdpShape:
             cmd("tc","filter","add",*select,"flower","ip_proto","udp","src_ip",self.host,"src_port",self.port,
                 "action","mirred","egress","redirect","dev",dev)
             stack.callback(cmd,"tc","filter","del",*select)
+            def save_counts():
+                q = json.loads(subprocess.check_output(["tc","-j","-s","qdisc","show","dev",dev]))[0]
+                with self.stats.open("a") as out:
+                    print(json.dumps({"mode":mode,**{k:q[k] for k in ("packets","bytes","drops")}}),file=out)
+            stack.callback(save_counts)
             self.resources = stack.pop_all()
 
 

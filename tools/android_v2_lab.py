@@ -131,7 +131,7 @@ def serve(node, xray_zip, host, work):
         ctl = secrets.token_urlsafe(32)
         nic = next(row["ifname"] for row in json.loads(subprocess.check_output(["ip","-j","-4","addr"]))
                    if any(a["local"] == host for a in row["addr_info"]))
-        shape = UdpShape(nic, host, port)
+        shape = UdpShape(nic, host, port, work / "tc.jsonl")
         stack.callback(shape.close)
         capture = IdleCapture(nic, host, port, access, work)
         stack.callback(capture.close)
