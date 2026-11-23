@@ -18,20 +18,25 @@ type Credential struct {
 	Generation int64  `json:"generation"`
 	ExpiresAt  int64  `json:"expires_at,omitempty"`
 	UUID       string `json:"uuid,omitempty"`
-	PrivateKey string `json:"private_key,omitempty"`
-	PublicKey  string `json:"public_key,omitempty"`
-	ShortID    string `json:"short_id,omitempty"`
 	Password   string `json:"password,omitempty"`
+}
+type RealityKey struct {
+	Generation int64  `json:"generation"`
+	PrivateKey string `json:"private_key"`
+	PublicKey  string `json:"public_key"`
+	ShortID    string `json:"short_id"`
 }
 type Snapshot struct {
 	Protocol    string       `json:"protocol"`
 	Revision    int64        `json:"revision"`
 	Credentials []Credential `json:"credentials"`
+	RealityKey  *RealityKey  `json:"reality_key,omitempty"`
 }
 type deployment struct {
-	Domain string         `json:"domain"`
-	Ports  map[string]int `json:"ports"`
-	Target string         `json:"reality_target"`
+	Domain      string         `json:"domain"`
+	Ports       map[string]int `json:"ports"`
+	Target      string         `json:"reality_target"`
+	ServerNames []string       `json:"reality_server_names"`
 }
 
 func enabled(p string) bool { return p == "reality" || p == "hysteria2" }
