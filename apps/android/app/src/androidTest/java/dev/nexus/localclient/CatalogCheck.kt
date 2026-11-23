@@ -235,33 +235,11 @@ class CatalogCheck : Instrumentation() {
     private fun checkProbeDisabled(result: Bundle) {
         clickSplitLabel("节点")
         clickSplitLabel("筛选与测速",true)
-        fun nodes(n: android.view.accessibility.AccessibilityNodeInfo): Sequence<android.view.accessibility.AccessibilityNodeInfo> =
-            sequence {
-                yield(n)
-                for (i in 0 until n.childCount) n.getChild(i)?.let { yieldAll(nodes(it)) }
-            }
-        val seen = mutableSetOf<String>()
-        repeat(28) {
-            val tree = uiAutomation.rootInActiveWindow?.let(::nodes)?.toList().orEmpty()
-            val label = tree.firstOrNull { it.text?.toString() == "测试真实连通" }
-            if (label != null && tree.any { it.text?.toString() == "请先断开 VPN" }) {
-                check(generateSequence(label) { it.parent }.any { !it.isEnabled })
-                check(TunnelService.state.value.vpn)
-                result.putString("vpn","active VPN: real-test button disabled, disconnect hint visible")
-                return
-            }
-            tree.firstOrNull()?.packageName?.let { seen.add(it.toString()) }
-            tree.mapNotNull { it.text?.toString() }.filter { it in setOf("我的网络","订阅总览","添加节点","仅收藏","请先断开 VPN","测试真实连通","连接","收藏") }.forEach(seen::add)
-            result.putString("seen",seen.joinToString())
-            val metrics = targetContext.resources.displayMetrics
-            val x = metrics.widthPixels / 2
-            val y = metrics.heightPixels
-            uiAutomation.executeShellCommand("input swipe $x ${y*8/10} $x ${y*4/10} 500").use {
-                android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes()
-            }
-            Thread.sleep(250)
-        }
-        error("probe button not found")
+        val button=splitLabel("测试真实连通",true)
+        check(generateSequence(button) { it.parent }.any { !it.isEnabled })
+        splitLabel("请先断开 VPN",true)
+        check(TunnelService.state.value.vpn)
+        result.putString("vpn","active VPN: real-test button disabled, disconnect hint visible")
     }
 
     private fun batchProbe(result: Bundle, lab: Boolean) = runBlocking {
