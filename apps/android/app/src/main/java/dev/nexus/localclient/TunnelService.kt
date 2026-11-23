@@ -162,7 +162,7 @@ class TunnelService : VpnService() {
             getSharedPreferences("local",0).edit()
                 .putBoolean("always-on", android.os.Build.VERSION.SDK_INT >= 29 && isAlwaysOn()).apply()
             selected = plan
-            state.value = TunnelState(vpn = true, waiting = true)
+            state.value = TunnelState(vpn = true, waiting = true, node = plan.node)
             val observer = object : ConnectivityManager.NetworkCallback() {
                 private val candidates = linkedMapOf<Network, Int>()
                 private fun selectNetwork() {
@@ -173,7 +173,7 @@ class TunnelService : VpnService() {
                     network = next
                     setUnderlyingNetworks(listOfNotNull(next).toTypedArray())
                     if (next != null) startWorker(requireNotNull(selected)) else {
-                        state.value = TunnelState(vpn = true, waiting = true)
+                        state.value = TunnelState(vpn = true, waiting = true, node = selected?.node)
                         manager.notify(1, notification("等待网络恢复"))
                     }
                 }

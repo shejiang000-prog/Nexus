@@ -156,7 +156,7 @@ object CompatEngine {
         }
     }
 
-    fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
+    internal fun run(service: VpnService, network: Network, systemDns: String, outbound: JSONObject,
                           tun: ParcelFileDescriptor, cancel: ParcelFileDescriptor, health: (() -> Boolean)?, split: ByteArray = byteArrayOf(), v2: V2Session? = null, ready: () -> Unit): Int = engineLock.withLock {
         socketProtection = { fd ->
             runCatching {

@@ -51,7 +51,7 @@ internal fun diagnosticResponse(site: String, status: Int, content: String?, ela
 }
 
 @Composable
-fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, onSelect: (Profile) -> Unit, close: () -> Unit) {
+fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, onSelect: (Profile) -> Unit, close: () -> Unit, selectedV2Key: String? = null) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("local", 0) }
     val scope = rememberCoroutineScope()
@@ -63,9 +63,10 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
     var newAddress by remember { mutableStateOf<String?>(null) }
     var ipConsent by remember { mutableStateOf(false) }
     var pickApps by remember { mutableStateOf(false) }
-    val selected = tunnel.activeProfile ?: current
-    val subscription = tunnel.subscription.isNotEmpty()
-    val key = if (subscription) tunnel.subscription else selected?.let { it.server + "/" + it.fingerprint }
+    val v2Key = (if (tunnel.active) tunnel.node else selectedV2Key)?.takeIf { it.startsWith("v2:") }
+    val selected = (tunnel.activeProfile ?: current).takeIf { v2Key == null }
+    val subscription = v2Key == null && tunnel.subscription.isNotEmpty()
+    val key = v2Key ?: if (subscription) tunnel.subscription else selected?.let { it.server + "/" + it.fingerprint }
     var apps by remember(key) { mutableStateOf(prefs.getStringSet("apps/$key",emptySet()).orEmpty().toSet()) }
     var monitoring by remember(key) { mutableStateOf(prefs.getBoolean("monitor/$key",false)) }
     var hold by remember(key) { mutableStateOf(prefs.getBoolean("hold/$key",false)) }
@@ -96,7 +97,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
                 }
                 val network = cm.activeNetwork
                 if (network == null || cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true ||
-                    (!subscription && profile?.dns == null) || !tunnel.vpn || tunnel.starting || tunnel.waiting || tunnel.error.isNotEmpty()) {
+                    (v2Key == null && !subscription && profile?.dns == null) || !tunnel.vpn || tunnel.starting || tunnel.waiting || tunnel.error.isNotEmpty()) {
                     lines += if (tunnel.vpn && apps.isNotEmpty() && context.packageName !in apps) "当前策略只接管所选应用。要在 Nexus 内检测，请将 Nexus 加入业务应用。" else "请连接全设备 VPN 后验证网页和出口"
                 } else {
                     lines += if (subscription) "订阅节点 · ${tunnel.subscription}" else "设备认证和节点 OPEN 已完成"
@@ -140,7 +141,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
         if (servers.isNotEmpty()) {
             SectionLabel("私人节点出口")
             servers.forEachIndexed { i, server ->
-                val chosen = server.server == current?.server && server.fingerprint == current.fingerprint
+                val chosen = v2Key == null && server.server == current?.server && server.fingerprint == current.fingerprint
                 val open = !chosen && !tunnel.active && pinned == null
                 ListRow(server.name, server.server, groupPlace(i, servers.lastIndex, false, false),
                     trailing = { Text(if (chosen) "当前出口" else "选择", color = if (chosen) theme.onSurfaceVariant else theme.primary,
@@ -148,7 +149,12 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
                     onClick = if (open) ({ runCatching { server.save(context) }.onSuccess { onSelect(server) }.onFailure { result = "切换失败" } }) else null)
             }
         }
-        if (current != null) {
+        if (v2Key != null) {
+            SectionLabel("V2 节点设置")
+            val scopeLabel = if (apps.isEmpty()) "全设备都走代理" else "只有选中的 ${apps.size} 个应用走代理"
+            ListRow("应用范围", if (tunnel.active) "$scopeLabel · 断开后可修改" else scopeLabel,
+                enabled = !tunnel.active) { pickApps = true }
+        } else if (current != null) {
             SectionLabel("私人节点设置")
             val rows = buildList<Pair<String, @Composable (GroupPlace) -> Unit>> {
                 if (current.dns != null) {
@@ -187,9 +193,9 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
         }
         SectionLabel("检测")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PrimaryAction(enabled = !busy && (current != null || subscription), modifier = Modifier.fillMaxWidth(), onClick = { diagnose(false) }) {
-                Text(if (subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
-            SecondaryAction(enabled = !busy && (selected?.dns != null || subscription) && tunnel.vpn, modifier = Modifier.fillMaxWidth(), onClick = { ipConsent = true }) {
+            PrimaryAction(enabled = !busy && (v2Key != null || current != null || subscription), modifier = Modifier.fillMaxWidth(), onClick = { diagnose(false) }) {
+                Text(if (v2Key != null || subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
+            SecondaryAction(enabled = !busy && (v2Key != null || selected?.dns != null || subscription) && tunnel.vpn, modifier = Modifier.fillMaxWidth(), onClick = { ipConsent = true }) {
                 Text("查询公网出口") }
             if (!tunnel.vpn) Text("连接 VPN 后可以检测连通性、查询公网出口", color = theme.onSurfaceVariant, fontSize = 13.sp)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -202,7 +208,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
         confirmButton={TextButton(onClick={monitoring=prefs.edit().putBoolean("monitor/$key",true).commit();monitorConsent=false}){Text("启用")}},
         dismissButton={TextButton(onClick={monitorConsent=false}){Text("取消")}})
     if (pickApps) {
-        var draft by remember { mutableStateOf(apps) }
+        var draft by remember(key) { mutableStateOf(apps) }
         var launchers by remember { mutableStateOf(emptyList<Pair<String,String>>()) }
         LaunchedEffect(Unit) {
             launchers = withContext(Dispatchers.IO) {
