@@ -111,6 +111,7 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
     val last = prefs.getString(TunnelService.LAST,null)
     val resume = prefs.getString(TunnelService.RESUME,null)
     var temporary: String? = null
+    var v2Key: String? = null
     fun awaitVpn(previous: Long): Network {
         val deadline = SystemClock.elapsedRealtime()+30000
         while (SystemClock.elapsedRealtime()<deadline) {
@@ -123,7 +124,14 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
     }
     try {
         if (fixture!=null) override.writeText("resolvers:"+fixture.getString("host")+":"+fixture.getInt("domesticPort")+"\ndomain:local.split.test\nip:2001:db8::/64\n")
-        val intent = if (engine=="private") {
+        val intent = if (engine=="v2") {
+            requireNotNull(fixture)
+            val node = V2Devices.enroll(ctx,V2Invite.parse(fixture.getString("invitation")),
+                fixture.getString("endpoint"),fixture.getString("ca").toByteArray())
+            v2Key = node.key
+            Intent(ctx,TunnelService::class.java).setAction("v2").putExtra("v2-key",node.key)
+                .putExtra("dns",fixture.getString("proxy"))
+        } else if (engine=="private") {
             val p=requireNotNull(Profile.load(ctx))
             check(p.tlsName=="nexus.test" && InetAddress.getByName(p.server.substringBefore(':')).isSiteLocalAddress)
             Intent(ctx,TunnelService::class.java).setAction("vpn")
@@ -205,6 +213,7 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
         while(TunnelService.state.value.active && SystemClock.elapsedRealtime()<deadline) Thread.sleep(80)
         override.delete()
         temporary?.let(store::remove)
+        v2Key?.let { V2Devices.remove(ctx,it) }
         check(prefs.edit().putString(TunnelService.LAST,last).putString(TunnelService.RESUME,resume).apply {
             if(saved==null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY,saved)
         }.commit())

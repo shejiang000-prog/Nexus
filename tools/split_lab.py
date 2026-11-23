@@ -11,7 +11,7 @@ from pathlib import Path
 
 PROXY = "192.0.2.45"
 
-def serve(args, root, nodes, inbounds, shoes):
+def serve(args, root, nodes, inbounds, shoes, v2_node=None):
     assert ipaddress.ip_address(args.host).is_private and args.host != PROXY
     with contextlib.ExitStack() as stack:
         def command(*cmd):
@@ -24,6 +24,7 @@ def serve(args, root, nodes, inbounds, shoes):
             stack.callback(server.shutdown)
             return server.server_address[1]
 
+        v2_pid = None
         def path(handler):
             host, port = handler.client_address
             if host not in {args.host, PROXY, "127.0.0.1"}:
@@ -32,6 +33,9 @@ def serve(args, root, nodes, inbounds, shoes):
             udp = isinstance(handler.server, socketserver.UDPServer)
             sockets = subprocess.check_output(
                 ["ss", "-Hnaup" if udp else "-Hnatp", "sport", "=", f":{port}"], text=True)
+            if v2_pid is not None and f"pid={v2_pid}," in sockets:
+                print("NODE V2", "UDP" if udp else "TCP", flush=True)
+                return "node"
             for engine in ("nexus-server", "xray", "shoes"):
                 if f'"{engine}",' in sockets:
                     print("NODE", engine, "UDP" if udp else "TCP", flush=True)
@@ -96,6 +100,14 @@ def serve(args, root, nodes, inbounds, shoes):
         listener(socketserver.ThreadingTCPServer,(PROXY,53),DnsTcp)
         # A peer can connect only to the two lab receipt targets and node-side DNS.
         allowed=[(args.host,port),(PROXY,port),(PROXY,53)]
+        if v2_node is not None:
+            with v2_fixture(root,v2_node,args.host,allowed) as (v2_pid,metadata):
+                with args.fixture.open("x") as f:
+                    json.dump(dict(metadata,host=args.host,proxy=PROXY,port=port,domesticPort=direct_dns),f)
+                stack.callback(args.fixture.unlink,missing_ok=True)
+                print("V2 split fixtures ready",flush=True)
+                input()
+            return
         final = [dict(action="allow",ip=[ip],port=str(p)) for ip,p in allowed] + [dict(action="block")]
         out=[dict(protocol="freedom",tag="receipt",settings=dict(finalRules=final)),dict(protocol="blackhole",tag="deny")]
         rules=[dict(ip=[ip],port=str(p),outboundTag="receipt") for ip,p in allowed]
@@ -117,3 +129,65 @@ def serve(args, root, nodes, inbounds, shoes):
         stack.callback(args.fixture.unlink,missing_ok=True)
         print("split fixtures ready",flush=True)
         input()
+
+
+@contextlib.contextmanager
+def v2_fixture(root, node, host, allowed):
+    import base64
+    import datetime
+    import time
+    from lab_identity import generate
+    keys = root / "keys"
+    generate(keys)
+    ledger = [node, "ledger", root / "ledger.db"]
+    expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    user = subprocess.check_output([*ledger,"create-user",expires],text=True).strip()
+    token = subprocess.check_output([*ledger,"invite",user,expires],text=True).strip()
+    with socket.socket() as sock:
+        sock.bind((host,0))
+        port = sock.getsockname()[1]
+    authority = f"nexus.test:{port}"
+    endpoint = f"{host}:{port}"
+    route = {"handler":"nexus","authority":authority,"ledger_path":str(root/"ledger.db"),
+             "allow_exact":[f"{ip}:{p}" for ip,p in allowed]}
+    policy = {"listen":[endpoint],"automatic_https":{"disable":True},"enable_datagrams":True,
+              "tls_connection_policies":[{"protocol_min":"tls1.3"}],
+              "routes":[{"match":[{"path":["/health.bin"],"method":["GET","HEAD"]}],
+                         "handle":[{"handler":"static_response","body":"0"*32768}]},
+                        {"handle":[route,{"handler":"static_response","status_code":404}]}]}
+    config = {"admin":{"disabled":True},"apps":{"http":{"servers":{"node":policy}},
+              "tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}}}}
+    file = root / "node.json"
+    file.write_text(json.dumps(config))
+    blob = json.dumps(dict(v=2,host="nexus.test",port=port,invite=token,name="V2 split")).encode()
+    invite = "nexus://invite/v2#" + base64.urlsafe_b64encode(blob).decode().rstrip("=")
+    import os
+    proc = subprocess.Popen([node,"run","--config",file],env={**os.environ,"HOME":str(root)},
+                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if proc.poll() is not None: raise RuntimeError("V2 split node exited")
+            try:
+                with socket.create_connection((host,port),.15): break
+            except OSError: time.sleep(.1)
+        else: raise RuntimeError("V2 split node unavailable")
+        yield proc.pid, dict(invitation=invite,endpoint=endpoint,ca=(keys/"ca.pem").read_text())
+    finally:
+        proc.terminate()
+        proc.wait(timeout=8)
+
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import tempfile
+    os.umask(0o077)
+    parser=argparse.ArgumentParser(description="Run isolated V2 DNS and split-route receipts in NexusLab")
+    parser.add_argument("--host",required=True)
+    parser.add_argument("--v2-node",required=True,type=Path)
+    parser.add_argument("--fixture",required=True,type=Path)
+    args=parser.parse_args()
+    if os.environ.get("WSL_DISTRO_NAME") != "NexusLab":
+        parser.error("requires NexusLab")
+    with tempfile.TemporaryDirectory() as tmp:
+        serve(args,Path(tmp),[],[],[],args.v2_node.resolve())
