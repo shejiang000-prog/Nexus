@@ -125,9 +125,16 @@ func (l *Ledger) ChangeCompat(ctx context.Context, user proof.ID, protocol, acti
 	return tx.Commit()
 }
 
+// CompatSnapshot reads the authoritative desired state before a compatibility
+// service opens its public listener. It does not acknowledge an application.
+func (l *Ledger) CompatSnapshot(ctx context.Context, protocol string) (compat.Snapshot, error) {
+	snap, _, err := l.compatSnapshot(ctx, protocol)
+	return snap, err
+}
+
 func (l *Ledger) compatSnapshot(ctx context.Context, protocol string) (snap compat.Snapshot, applied int64, err error) {
 	snap.Protocol = protocol
-	tx, err := l.db.BeginTx(ctx, nil)
+	tx, err := l.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return snap, 0, err
 	}

@@ -108,7 +108,7 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	}
 	_, err = l.db.Exec("UPDATE users SET expires_at=1")
 	check(err)
-	expired, _, err := l.compatSnapshot(ctx, "reality")
+	expired, err := l.CompatSnapshot(ctx, "reality")
 	check(err)
 	if len(expired.Credentials) != 1 || expired.Credentials[0].ExpiresAt != 1 || expired.Revision != second.Generation {
 		t.Fatal("expiry changed snapshot membership or revision")
