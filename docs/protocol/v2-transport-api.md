@@ -32,7 +32,7 @@
 |1|配置或输入不合法，修正配置或报文大小。|
 |2|证书验证失败，检查入口、信任锚和时间。|
 |3|设备签名或认证确认失败，检查该设备的绑定。|
-|4|并发、额度或资源不足，遵从调用方退避策略。|
+|4|并发或资源不足，遵从调用方退避策略。|
 |5|目标被策略拒绝、解析或拨号失败，检查目标。|
 |6|传输中断。重新打开业务前确认其重试语义。|
 |7|乐观数据可能已经发出且没有最终响应，结果未知。非 2xx 按具体状态码返回，2xx 缺少确认标记返回 3。有副作用的请求交给业务层核对。|
@@ -72,4 +72,4 @@ NEXUS_NODE_TEST_BINARY="$OUT/nexus-node" go test -race ./...
 
 节点读取 Caddy JSON。服务器的 `enable_datagrams` 控制监听上的原生 H3 DATAGRAM。nexus handler 接收 authority、只含公钥的 device_keys，可选 allow_exact 放行精确 IP:port。文件站点作为后续 handler。默认策略检查本次解析的所有结果，并只拨已经核验的字面地址。公开文件目录与身份和证书目录必须独立。systemd 示例位于 `v2/deploy/`。
 
-互通字节见 `v2/proof/testdata/connection.json`，包含普通 exporter 标签、主机和 IPv6 context、设备签名、邀请签名和拒绝样例。exporter 字节为确定性输入。对真实握手的验证在 integration 包中进行。邀请事务、额度账本和活动撤销归 M1。[TLS exporter](https://www.rfc-editor.org/rfc/rfc8446#section-7.5) · [CONNECT-UDP](https://www.rfc-editor.org/rfc/rfc9298)
+互通字节见 `v2/proof/testdata/connection.json`，包含普通 exporter 标签、主机和 IPv6 context、设备签名、邀请签名和拒绝样例。exporter 字节为确定性输入。对真实握手的验证在 integration 包中进行。邀请事务、授权账本和活动撤销归 M1。[TLS exporter](https://www.rfc-editor.org/rfc/rfc8446#section-7.5) · [CONNECT-UDP](https://www.rfc-editor.org/rfc/rfc9298)
