@@ -60,6 +60,7 @@ internal fun Instrumentation.m3UiCheck(result: Bundle) {
         val routes = requireNotNull(cm.getLinkProperties(network))
         check(routes.dnsServers.any { it.hostAddress == "1.1.1.1" })
         check(routes.routes.count { it.isDefaultRoute } >= 2)
+        splitLabel("上传",false)
         shot("connected")
         ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
         splitLabel("点按圆环即可连接",false)
