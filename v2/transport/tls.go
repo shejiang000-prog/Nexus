@@ -89,28 +89,32 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	return c, nil
 }
 
-func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), error) {
+func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), func() packetCounters, error) {
 	family, bind := "udp4", "0.0.0.0:0"
 	if peer.IP.To4() == nil {
 		family, bind = "udp6", "[::]:0"
 	}
 	sock, e := (&net.ListenConfig{Control: socketControl(protect)}).ListenPacket(ctx, family, bind)
 	if e != nil {
-		return nil, nil, e
+		return nil, nil, nil, e
 	}
 	tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
 	closeAll := func() { tr.Close(); sock.Close() }
 	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
 	if e != nil {
 		closeAll()
-		return nil, nil, e
+		return nil, nil, nil, e
 	}
 	size := bbr.GetInitialPacketSize(c.RemoteAddr())
 	if x := c.InitialPacketSize(); x > 0 {
 		size = min(size, x)
 	}
-	c.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
-	return c, closeAll, nil
+	sender := bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard)
+	c.SetCongestionControl(sender)
+	packets := func() packetCounters {
+		return packetCounters{c.ConnectionStats().PacketsSent, sender.DeclaredLostPackets()}
+	}
+	return c, closeAll, packets, nil
 }
 
 func dialEndpoint(ctx context.Context, c Config, dial func(context.Context, netip.AddrPort) (*transportLane, error)) (*transportLane, error) {

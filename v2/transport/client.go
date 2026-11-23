@@ -231,7 +231,7 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		l.usable = h.CanTakeNewRequest
 		l.round = h.RoundTrip
 	} else {
-		q, closeAll, e := dialQUIC(ctx, net.UDPAddrFromAddrPort(peer), name, c.Roots, c.Protect)
+		q, closeAll, packets, e := dialQUIC(ctx, net.UDPAddrFromAddrPort(peer), name, c.Roots, c.Protect)
 		if e != nil {
 			return nil, e
 		}
@@ -239,6 +239,7 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		l.dead = q.Context().Done()
 		l.usable = func() bool { return q.Context().Err() == nil }
 		l.stats = func() uint64 { return q.ConnectionStats().BytesReceived }
+		l.packets = packets
 		export = q.ExportKeyingMaterial
 		l.h3 = (&http3.Transport{MaxResponseHeaderBytes: 262144, EnableDatagrams: true}).NewClientConn(q)
 		l.round = l.h3.RoundTrip
@@ -272,16 +273,10 @@ func (c *Client) Confirm() error {
 	}
 	ctx, cancel := context.WithTimeout(c.s.ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, l.health, nil)
+	resp, err := l.healthHead(ctx)
 	if err != nil {
 		return networkError(err)
 	}
-	l.healthHeaders(req)
-	resp, err := l.round(req)
-	if err != nil {
-		return networkError(err)
-	}
-	resp.Body.Close()
 	if resp.StatusCode == 200 && resp.Header.Get("Proxy-Authentication-Info") == "" {
 		// Older nodes serve a public file. Only an acknowledged CONNECT proves identity.
 		a, err := l.openUDP(ctx, "1.1.1.1:53", func() {})
@@ -291,6 +286,19 @@ func (c *Client) Confirm() error {
 		return a.Close()
 	}
 	return l.accepted(resp)
+}
+func (l *transportLane) healthHead(ctx context.Context) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, l.health, nil)
+	if err != nil {
+		return nil, err
+	}
+	l.healthHeaders(req)
+	resp, err := l.round(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body.Close()
+	return resp, nil
 }
 func (l *transportLane) healthHeaders(r *http.Request) {
 	l.headers(r)

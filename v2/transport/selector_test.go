@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -292,23 +293,80 @@ func TestAndroidRecoveryActivityPowerAndBackoff(t *testing.T) {
 	})
 }
 
-func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
-	t.Run("throttled", func(t *testing.T) { testAndroidSlow(t, 25000, false) })
-	t.Run("bursty-download", func(t *testing.T) { testAndroidSlow(t, 1<<20, true) })
+func TestLossWindowIgnoresUnverifiedCounters(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, tc := range []struct{ proof, sent, lost string }{
+			{"", "200", "100"}, {"Nexus2", "", ""}, {"Nexus2", "200", "invalid"}, {"Nexus2", "200", "300"},
+		} {
+			l := &transportLane{health: "https://node.test/health.bin", round: func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodHead {
+					t.Fatalf("fast path requested %s", r.Method)
+				}
+				h := make(http.Header)
+				h.Set("Proxy-Authentication-Info", tc.proof)
+				h.Set("Nexus-QUIC-Sent", tc.sent)
+				h.Set("Nexus-QUIC-Lost", tc.lost)
+				return &http.Response{StatusCode: 200, Header: h, Body: http.NoBody}, nil
+			}}
+			window := lossWindow{remote: packetCounters{100, 1}, measured: time.Now()}
+			if window.impaired(t.Context(), l) {
+				t.Fatal("accepted unverified counters", tc)
+			}
+		}
+	})
 }
 
-func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty bool) {
+func TestLossEvidenceIsBoundToTheSamplingWindow(t *testing.T) {
+	for _, tc := range []struct {
+		first, last packetCounters
+		want        bool
+	}{
+		{packetCounters{}, packetCounters{1000, 200}, false},
+		{packetCounters{100, 1}, packetCounters{}, false},
+		{packetCounters{100, 9}, packetCounters{120, 8}, false},
+		{packetCounters{100, 1}, packetCounters{101, 2}, false},
+		{packetCounters{100, 1}, packetCounters{1100, 50}, false},
+		{packetCounters{100, 1}, packetCounters{1100, 51}, true},
+	} {
+		if got := tc.last.impairedSince(tc.first); got != tc.want {
+			t.Errorf("%v to %v: impaired %t, want %t", tc.first, tc.last, got, tc.want)
+		}
+	}
+}
+
+func TestAndroidSlowRequiresTwoComparisons(t *testing.T) {
+	t.Run("throttled", func(t *testing.T) { testAndroidSlow(t, 25000, false, false) })
+	t.Run("bursty-download", func(t *testing.T) { testAndroidSlow(t, 1<<20, true, true) })
+	t.Run("busy-lossless-download", func(t *testing.T) { testAndroidSlow(t, 1<<20, true, false) })
+}
+
+func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty, loss bool) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		var received atomic.Uint64
-		var checks atomic.Int32
+		var checks, h2Checks atomic.Int32
 		answer := func() *http.Response {
 			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}
 		}
 		h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: received.Load, close: func() {}}
-		h3.round = func(*http.Request) (*http.Response, error) {
-			if checks.Add(1) == 2 {
+		objects := int32(1)
+		if bursty {
+			objects = 8
+		}
+		var heads atomic.Int32
+		h3.round = func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodHead {
+				n := int64(heads.Add(1))
+				res := answer()
+				res.Header.Set("Nexus-QUIC-Sent", strconv.FormatInt(n*1024, 10))
+				if loss {
+					n *= 128
+				}
+				res.Header.Set("Nexus-QUIC-Lost", strconv.FormatInt(n, 10))
+				return res, nil
+			}
+			if (checks.Add(1)-1)/objects == 1 {
 				time.Sleep(time.Millisecond)
 			} else {
 				time.Sleep(5 * time.Millisecond)
@@ -316,6 +374,7 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty bool) {
 			return answer(), nil
 		}
 		h2 := &transportLane{kind: "h2", health: h3.health, close: func() {}, usable: func() bool { return true }, round: func(*http.Request) (*http.Response, error) {
+			h2Checks.Add(1)
 			time.Sleep(500 * time.Microsecond)
 			return answer(), nil
 		}}
@@ -348,11 +407,13 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty bool) {
 		go s.watch()
 		select {
 		case kind := <-s.events:
-			if kind != "h2" || checks.Load() != 4 {
-				t.Fatalf("switched to %s after %d measurements", kind, checks.Load())
+			if bursty && !loss || kind != "h2" || checks.Load() != 4*objects || checks.Load() != h2Checks.Load() {
+				t.Fatalf("switched to %s after %d H3 and %d H2 objects", kind, checks.Load(), h2Checks.Load())
 			}
 		case <-time.After(10 * time.Second):
-			t.Fatal("weak business progress did not switch with two slow health samples")
+			if !bursty || loss || checks.Load() != 0 || h2Checks.Load() != 0 || heads.Load() < 2 || heads.Load() > 5 {
+				t.Fatalf("H3 retained after %d/%d objects, bursty=%t loss=%t", checks.Load(), h2Checks.Load(), bursty, loss)
+			}
 		}
 		h3.active.Store(0)
 		time.Sleep(time.Second)

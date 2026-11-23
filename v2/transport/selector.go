@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ type transportLane struct {
 	round        func(*http.Request) (*http.Response, error)
 	close        func()
 	stats        func() uint64
+	packets      func() packetCounters
 	dead         <-chan struct{}
 	usable       func() bool
 	active       atomic.Int64
@@ -158,6 +160,68 @@ func (s *selector) capacityContext(parent context.Context, l *transportLane) tim
 	// An authenticated TLS response with the exact body length is still success.
 	return max(time.Since(start), time.Nanosecond)
 }
+
+type packetCounters struct{ sent, lost uint64 }
+
+func (p packetCounters) impairedSince(start packetCounters) bool {
+	if start.sent == 0 || p.sent <= start.sent || p.lost < start.lost {
+		return false
+	}
+	sent, lost := p.sent-start.sent, p.lost-start.lost
+	// Three losses and at least 5% of sent packets distinguish sustained
+	// congestion from occasional retransmission on an otherwise fast path.
+	return lost >= 3 && lost >= 1+(sent-1)/20
+}
+
+type lossWindow struct {
+	local, remote  packetCounters
+	measured, next time.Time
+}
+
+func (w *lossWindow) impaired(ctx context.Context, l *transportLane) bool {
+	if time.Now().Before(w.next) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 850*time.Millisecond)
+	defer cancel()
+	var remote, local packetCounters
+	if resp, err := l.healthHead(ctx); err == nil && l.accepted(resp) == nil {
+		sent, err1 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Sent"), 10, 64)
+		lost, err2 := strconv.ParseUint(resp.Header.Get("Nexus-QUIC-Lost"), 10, 64)
+		if err1 == nil && err2 == nil && lost <= sent {
+			remote = packetCounters{sent, lost}
+		}
+	}
+	if l.packets != nil {
+		local = l.packets()
+	}
+	now := time.Now()
+	recent := now.Sub(w.measured) <= 6*time.Second
+	impaired := recent && (remote.impairedSince(w.remote) || local.impairedSince(w.local))
+	w.local, w.remote, w.measured = local, remote, now
+	if recent && !impaired {
+		w.next = now.Add(3 * time.Second)
+	}
+	return impaired
+}
+
+// Several equal, consecutive transfers put fast LAN measurements above coarse
+// clock resolution and average out the latency of a single lost packet.
+func (s *selector) capacityBatch(l *transportLane, count int) time.Duration {
+	if count == 1 {
+		return s.capacity(l)
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	for range count {
+		if s.capacityContext(ctx, l) == 0 {
+			return 0
+		}
+	}
+	return max(time.Since(start), time.Nanosecond)
+}
+
 func (s *selector) probeH3(parent context.Context) (*transportLane, error) {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
@@ -211,6 +275,7 @@ func (s *selector) watch() {
 	lastProgress := time.Now()
 	var weak, success int
 	var observed *transportLane
+	var losses lossWindow
 	probeInterval := 30 * time.Second
 	var lastH2 time.Time
 	nextProbe := time.Now().Add(30 * time.Second)
@@ -258,6 +323,7 @@ func (s *selector) watch() {
 			previousStalls = l.stalledReads.Load()
 			lastProgress = time.Now()
 			observed = l
+			losses = lossWindow{}
 		}
 		if owner != l {
 			discard()
@@ -331,8 +397,17 @@ func (s *selector) watch() {
 			continue
 		}
 		weak = 0
+		count := 1
+		if s.androidVPN && delta >= 1<<20 {
+			// A high-throughput but bursty download can finish one 32 KiB
+			// object within a single Android clock tick.
+			if !losses.impaired(s.ctx, l) {
+				continue
+			}
+			count = 8
+		}
 		sample := make(chan time.Duration, 1)
-		go func() { sample <- s.capacity(l) }()
+		go func() { sample <- s.capacityBatch(l, count) }()
 		var alt *transportLane
 		if pending != nil {
 			alt = <-pending
@@ -348,7 +423,7 @@ func (s *selector) watch() {
 		if alt == nil {
 			continue
 		}
-		h2time := s.capacity(alt)
+		h2time := s.capacityBatch(alt, count)
 		h3time := <-sample
 		degraded := h3time == 0 || h3time > 4*h2time
 		if s.androidVPN {
@@ -356,8 +431,8 @@ func (s *selector) watch() {
 			if degraded && !(h3time == 0 && l.stats() == now) {
 				// Positive QUIC progress can still mean heavy throttling. Confirm
 				// twice on the same carriers before moving new flows to H2.
-				go func() { sample <- s.capacity(l) }()
-				h2time = s.capacity(alt)
+				go func() { sample <- s.capacityBatch(l, count) }()
+				h2time = s.capacityBatch(alt, count)
 				h3time = <-sample
 				degraded = slowAndroidSample(h3time, h2time)
 			}
