@@ -89,3 +89,6 @@ internal fun nexusTypography():Typography {
         labelMedium=style(14,20,FontWeight.Medium),
         labelSmall=style(12,16,FontWeight.Medium))
 }
+
+/** Secondary line under a row title (node type, card detail): between bodyMedium and bodySmall. */
+internal val Typography.detail get() = bodySmall.copy(fontSize=14.sp,lineHeight=20.sp)

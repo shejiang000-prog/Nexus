@@ -222,7 +222,7 @@ class MainActivity : ComponentActivity() {
                     "关于" -> AboutScreen()
                     "诊断" -> NetworkScreen(profile,tunnel,bypass,::changeMode,{profile=it;choose("private")},goBack)
                     "连接" -> {
-                        if(!loaded && !tunnel.active) LinearProgressIndicator(Modifier.fillMaxWidth()) else {
+                        if(!loaded && !tunnel.active) HomeSkeleton() else {
                             val first=catalog?.sources.isNullOrEmpty() && profile==null && !tunnel.active
                             val activeRow=tunnel.node?.let { key -> rows.firstOrNull { it.favorite==key } }
                             val shownRow=if(tunnel.active) activeRow else selected.takeUnless { privateNode }
@@ -261,8 +261,8 @@ class MainActivity : ComponentActivity() {
                                 Column {
                                     SectionLabel("分流模式")
                                     ModeSwitch(bypass,::changeMode)
-                                    Text(if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",Modifier.padding(start=4.dp,top=8.dp),
-                                        color=colors.onSurfaceVariant,fontSize=14.sp)
+                                    Text(if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",Modifier.padding(start=Space.xs,top=Space.sm),
+                                        color=colors.onSurfaceVariant,style=MaterialTheme.typography.detail)
                                     SectionLabel("自动恢复")
                                     val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
                                     RecoverySettings(alwaysOn) {
@@ -285,7 +285,7 @@ class MainActivity : ComponentActivity() {
                             }
                             "高级" -> {
                                 Text("高级",style=MaterialTheme.typography.headlineMedium)
-                                Text("旧版私人节点用公钥和配置文件授权。以下操作需要先断开连接。",color=colors.onSurfaceVariant,fontSize=14.sp)
+                                Text("旧版私人节点用公钥和配置文件授权。以下操作需要先断开连接。",color=colors.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                                 Column {
                                     SectionLabel("旧版配置")
                                     ListRow("导出本机公钥","交给服务器拥有者签发配置",GroupPlace.First,enabled=!tunnel.active) { export.launch("nexus-device.pub") }
@@ -296,7 +296,7 @@ class MainActivity : ComponentActivity() {
                                         enabled=profile!=null && !tunnel.active) {
                                         startForegroundService(Intent(this@MainActivity,TunnelService::class.java).setAction("connect"));page="连接"
                                     }
-                                    if(tunnel.active) Text("请先在连接页断开",Modifier.padding(start=4.dp,top=10.dp),color=colors.onSurfaceVariant,fontSize=14.sp)
+                                    if(tunnel.active) Text("请先在连接页断开",Modifier.padding(start=Space.xs,top=10.dp),color=colors.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                                 }
                             }
 

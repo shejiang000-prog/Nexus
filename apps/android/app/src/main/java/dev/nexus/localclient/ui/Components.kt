@@ -218,7 +218,7 @@ internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,se
             RegionBadge(region)
             Column(Modifier.weight(1f).padding(vertical=10.dp)) {
                 Text(name,style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp),maxLines=1,overflow=TextOverflow.Ellipsis)
-                Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.bodySmall.copy(fontSize=14.sp,lineHeight=20.sp),maxLines=1)
+                Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=1)
                 if(info.isNotBlank()) Text(info,color=signalAmber,style=MaterialTheme.typography.bodySmall)
             }
             LatencyMeter(latency,testing)
@@ -305,7 +305,7 @@ internal fun CurrentNode(region:String,name:String,detail:String,latency:Long?,p
             RegionBadge(region,private)
             Column(Modifier.weight(1f)) {
                 Text(name,style=MaterialTheme.typography.titleMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(detail.isNotEmpty()) Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.bodySmall.copy(fontSize=14.sp),maxLines=1)
+                if(detail.isNotEmpty()) Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=1)
             }
             LatencyMeter(latency)
             GlyphIcon(Glyph.Chevron,size=18.dp,tint=c.outline)
@@ -334,7 +334,7 @@ internal fun AutoSelection(checked:Boolean,enabled:Boolean,onChange:(Boolean)->U
                 val motion=LocalMotion.current
                 AnimatedContent(checked,transitionSpec={ fadeThrough(motion) },label="自动选择说明"){ on ->
                     Text(if(on)"按当前网络的实测结果选择节点" else "正在使用手动选择的节点",color=c.onSurfaceVariant,
-                        style=MaterialTheme.typography.bodySmall.copy(fontSize=14.sp,lineHeight=20.sp)) }}
+                        style=MaterialTheme.typography.detail) }}
             Switch(checked,onChange,enabled=enabled,colors=switchColors())
         }
     }

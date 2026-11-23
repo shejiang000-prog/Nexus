@@ -13,6 +13,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.io.File
@@ -36,10 +40,12 @@ internal data class RateSample(val at:Long,val up:Double?,val down:Double?)
 internal data class Traffic(val time:String="00:00:00",val samples:List<RateSample> = emptyList())
 
 @Composable
-internal fun rememberTraffic(state:TunnelState):Traffic {
+/** Ticks once a second while connected. Returned as State so only the readers recompose, not the whole page. */
+internal fun rememberTraffic(state:TunnelState):State<Traffic> {
     val ctx=LocalContext.current
     val active=LocalForeground.current
-    var traffic by remember(state.connectedAt) { mutableStateOf(Traffic()) }
+    val holder=remember(state.connectedAt) { mutableStateOf(Traffic()) }
+    var traffic by holder
     LaunchedEffect(state.connectedAt,active,state.vpn) {
         if(state.connectedAt==0L || !active)return@LaunchedEffect
         var previous:Pair<Long,Long>?=null
@@ -55,31 +61,40 @@ internal fun rememberTraffic(state:TunnelState):Traffic {
             previous=counts;at=now;delay(1000)
         }
     }
-    return traffic
+    return holder
 }
 
 @Composable
-internal fun RateTiles(traffic:Traffic) {
+internal fun RateTiles(read:()->Traffic) {
+    val traffic=read()
     val c=MaterialTheme.colorScheme
+    val p=palette
     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)){
         listOf("下载","上传").forEachIndexed { index,label ->
             val samples=traffic.samples
             fun rate(s:RateSample)=if(index==0)s.down else s.up
             val latest=samples.lastOrNull()?.let(::rate)
             val peak=samples.maxOfOrNull{rate(it)?:0.0}?.coerceAtLeast(1.0)?:1.0
-            Surface(Modifier.weight(1f),shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)){
-                Column(Modifier.padding(12.dp)){
-                    Text(label,color=c.onSurfaceVariant)
-                    Text(if(latest==null)"—" else java.lang.String.format(java.util.Locale.ROOT,if(latest>=1e6)"%.2f MB/s" else "%.1f KB/s",latest/if(latest>=1e6)1e6 else 1e3),style=numberStyle)
-                    Canvas(Modifier.fillMaxWidth().height(21.dp)){
-                        val end=samples.lastOrNull()?.at?:return@Canvas
-                        var previous:Offset?=null
-                        samples.forEach { s ->
-                            val point=rate(s)?.let { Offset(size.width*(1f-(end-s.at)/24000f),size.height-2f-(it/peak*(size.height-4f)).toFloat()) }
-                            if(point!=null && previous!=null)drawLine(c.onSurfaceVariant,previous!!,point,1.5.dp.toPx())
-                            previous=point
-                        }
+            val tone=if(index==0) p.signal else p.signalDeep
+            NexusCard(Modifier.weight(1f)){
+                Column(Modifier.padding(start=Space.md,end=Space.md,top=Space.md)){
+                    Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                        androidx.compose.foundation.layout.Box(Modifier.size(22.dp).background(tone.copy(alpha=.16f),Shapes.pill),
+                            contentAlignment=androidx.compose.ui.Alignment.Center){
+                            GlyphIcon(if(index==0) Glyph.Down else Glyph.Up,size=13.dp,tint=if(index==0) c.primary else lerp(tone,c.onSurface,.25f)) }
+                        Text(label,color=c.onSurfaceVariant,style=MaterialTheme.typography.labelMedium)
                     }
+                    Text(if(latest==null)"—" else java.lang.String.format(java.util.Locale.ROOT,if(latest>=1e6)"%.2f MB/s" else "%.1f KB/s",latest/if(latest>=1e6)1e6 else 1e3),
+                        Modifier.padding(top=Space.xs),style=numberStyle.copy(fontSize=20.sp,lineHeight=26.sp),fontWeight=FontWeight.SemiBold)
+                }
+                Canvas(Modifier.fillMaxWidth().height(30.dp)){
+                    val end=samples.lastOrNull()?.at?:return@Canvas
+                    val points=samples.mapNotNull { s -> rate(s)?.let { Offset(size.width*(1f-(end-s.at)/24000f),size.height-2f-(it/peak*(size.height-6f)).toFloat()) } }
+                    if(points.size<2) return@Canvas
+                    val line=Path().apply { points.forEachIndexed { i,o -> if(i==0) moveTo(o.x,o.y) else lineTo(o.x,o.y) } }
+                    val area=Path().apply { addPath(line);lineTo(points.last().x,size.height);lineTo(points.first().x,size.height);close() }
+                    drawPath(area,Brush.verticalGradient(listOf(tone.copy(alpha=.28f),tone.copy(alpha=0f))))
+                    drawPath(line,tone,style=Stroke(1.8.dp.toPx(),cap=StrokeCap.Round,join=StrokeJoin.Round))
                 }
             }
         }

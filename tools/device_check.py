@@ -8,7 +8,7 @@ from pathlib import Path
 
 PACKAGE = "dev.nexus.android"
 RUNNER = PACKAGE + ".test/dev.nexus.localclient.CatalogCheck"
-SCREENS = ("first", "connect", "nodes", "server", "settings", "invite", "receive", "connecting")
+SCREENS = ("first", "connect", "nodes", "server", "settings", "invite", "receive", "connecting", "failed")
 
 
 def main():
