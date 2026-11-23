@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,10 +17,14 @@ def advanced_clock(shell):
     automatic = shell("cmd","time_detector","is_auto_detection_enabled",check=True).stdout.strip().decode()
     if automatic not in ("true","false"):
         raise RuntimeError("unknown guest clock settings")
+    state = shell("cmd","time_detector","get_time_state",check=True).stdout
+    confirm = re.search(rb"mUserShouldConfirmTime=(true|false)", state)
+    if confirm is None:
+        raise RuntimeError("unknown guest time confidence")
     def set_time(seconds):
         uptime = float(shell("cat","/proc/uptime",check=True).stdout.split()[0])
-        shell("cmd","time_detector","suggest_manual_time","--elapsed_realtime",str(int(uptime*1000)),
-              "--unix_epoch_time",str(int(seconds*1000)),check=True)
+        shell("cmd","time_detector","set_time_state_for_tests","--elapsed_realtime",str(int(uptime*1000)),
+              "--unix_epoch_time",str(int(seconds*1000)),"--user_should_confirm_time",confirm[1].decode(),check=True)
         if abs(int(shell("date","+%s",check=True).stdout) - seconds) > 4:
             raise RuntimeError("guest clock did not reach requested time")
     try:
