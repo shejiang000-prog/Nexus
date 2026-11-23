@@ -150,6 +150,9 @@ func (h host) rules(ctx context.Context, d deployment) (ruleset, error) {
 				if v.Type != "filter" || v.Hook != "input" || v.Name != "input" || v.Policy != "accept" && v.Policy != "drop" {
 					return r, errors.New("unsupported nftables base chain")
 				}
+				if owned && v.Policy != "accept" {
+					return r, errors.New("managed firewall policy changed")
+				}
 				if !owned {
 					r.native = true
 				}
@@ -174,10 +177,10 @@ func (h host) rules(ctx context.Context, d deployment) (ruleset, error) {
 	}
 	return r, nil
 }
-func (h host) firewall(ctx context.Context, d deployment, add bool) error {
+func (h host) firewallPlan(ctx context.Context, d deployment, add bool) (string, error) {
 	r, err := h.rules(ctx, d)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var script strings.Builder
 	table := "filter"
@@ -200,7 +203,7 @@ func (h host) firewall(ctx context.Context, d deployment, add bool) error {
 				continue
 			}
 			if v.Table != table || v.Handle <= 0 {
-				return errors.New("managed firewall rule identity changed")
+				return "", errors.New("managed firewall rule identity changed")
 			}
 			found = true
 			if !add && !r.managed {
@@ -214,7 +217,15 @@ func (h host) firewall(ctx context.Context, d deployment, add bool) error {
 	if !add && r.managed {
 		script.WriteString("delete table inet nexus_v2\n")
 	}
-	if script.Len() == 0 {
+	return script.String(), nil
+}
+
+func (h host) firewall(ctx context.Context, d deployment, add bool) error {
+	script, err := h.firewallPlan(ctx, d, add)
+	if err != nil {
+		return err
+	}
+	if script == "" {
 		return nil
 	}
 	f, e := os.CreateTemp("", "nexus-firewall-*")
@@ -222,7 +233,7 @@ func (h host) firewall(ctx context.Context, d deployment, add bool) error {
 		return e
 	}
 	defer os.Remove(f.Name())
-	_, e = f.WriteString(script.String())
+	_, e = f.WriteString(script)
 	if e = errors.Join(e, f.Close()); e != nil {
 		return e
 	}

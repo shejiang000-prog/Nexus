@@ -49,7 +49,12 @@ func Run(ctx context.Context, action string, o Options, render RenderFunc, out i
 		return errors.New("root privileges required")
 	}
 	h := host{root: "/", command: execute, out: out}
-	// The boot oneshot can be invoked by systemd while install owns this lock.
+	lock, e := os.Open("/opt")
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	lockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if action == "firewall-apply" {
 		d, e := h.readManifest()
 		if e != nil {
@@ -58,17 +63,23 @@ func Run(ctx context.Context, action string, o Options, render RenderFunc, out i
 		if !d.Installed {
 			return errors.New("node is uninstalled")
 		}
-		return h.firewall(ctx, d, true)
+		if lockErr == nil {
+			return h.firewall(ctx, d, true)
+		}
+		// An installer starts this unit while holding the lock. It already
+		// published the rules, so the oneshot only needs to verify them.
+		plan, e := h.firewallPlan(ctx, d, true)
+		if e != nil {
+			return e
+		}
+		if plan != "" {
+			return errors.New("another installation transaction is active; firewall update deferred")
+		}
+		return nil
 	}
-	lock, e := os.Open("/opt")
-	if e != nil {
-		return e
-	}
-	defer lock.Close()
-	if e = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+	if lockErr != nil {
 		return errors.New("another installation transaction is active")
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	return h.run(ctx, action, o, render)
 }
 func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) error {
@@ -104,6 +115,15 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 			return fmt.Errorf("insufficient free space at %s", p)
 		}
 	}
+	for _, p := range []string{"/proc/net/ip_tables_names", "/proc/net/ip6_tables_names"} {
+		b, e := os.ReadFile(h.path(p))
+		if e != nil && !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		if strings.TrimSpace(string(b)) != "" {
+			return errors.New("legacy iptables is active; manual firewall review required")
+		}
+	}
 	for _, unit := range []string{"ufw.service", "firewalld.service", "netfilter-persistent.service"} {
 		b, e := h.command(ctx, "systemctl", "show", "--property=ActiveState", "--value", unit)
 		if e != nil {
@@ -114,7 +134,7 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 		}
 	}
 	if _, e := h.rules(ctx, d); e != nil {
-		return e
+		return fmt.Errorf("needed inbound ports %v: %w", sockets(d), e)
 	}
 	if checkPorts {
 		b, e := h.command(ctx, "ss", "-H", "-lntu")
