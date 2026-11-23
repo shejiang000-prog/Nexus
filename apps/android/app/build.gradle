@@ -96,7 +96,10 @@ def buildEngine = tasks.register('buildV2Engine', Exec) {
     outputs.file(engineAar)
     def source = providers.environmentVariable('NEXUS_LIBXRAY_SOURCE').getOrElse(new File(repoRoot, 'target/libXray').absolutePath)
     environment 'ANDROID_NDK_HOME', android.ndkDirectory.absolutePath
-    if (gradle.startParameter.offline) environment 'GOPROXY', 'off'
+    if (gradle.startParameter.offline) {
+        environment 'GOPROXY', 'off'
+        environment 'GOSUMDB', 'off'
+    }
     commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), script, source, engineAar.get().asFile
 }
 dependencies {
