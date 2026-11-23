@@ -22,8 +22,11 @@ def advanced_clock(shell):
     if confirm is None:
         raise RuntimeError("unknown guest time confidence")
     def set_time(seconds):
-        uptime = float(shell("cat","/proc/uptime",check=True).stdout.split()[0])
-        shell("cmd","time_detector","set_time_state_for_tests","--elapsed_realtime",str(int(uptime*1000)),
+        current = shell("cmd","time_detector","get_time_state",check=True).stdout
+        elapsed = re.search(rb"mElapsedRealtimeMillis=(\d+)",current)
+        if elapsed is None:
+            raise RuntimeError("unknown guest elapsed realtime")
+        shell("cmd","time_detector","set_time_state_for_tests","--elapsed_realtime",elapsed[1].decode(),
               "--unix_epoch_time",str(int(seconds*1000)),"--user_should_confirm_time",confirm[1].decode(),check=True)
         if abs(int(shell("date","+%s",check=True).stdout) - seconds) > 4:
             raise RuntimeError("guest clock did not reach requested time")

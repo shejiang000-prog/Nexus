@@ -22,7 +22,8 @@ internal fun Instrumentation.m32ExpiryCheck(result: Bundle) {
     val expires=requireNotNull(node.expiresAt)
     val choice=ctx.getSharedPreferences("local",0)
     val prior=choice.getString("simple-node",null)
-    choice.edit().putString("simple-node",node.key).commit()
+    val oldSplit=choice.all[SplitRouting.KEY] as? Boolean
+    choice.edit().putString("simple-node",node.key).putBoolean(SplitRouting.KEY,false).commit()
     val activity=startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     fun echo(): Boolean = runCatching {
         val vpn=requireNotNull(network.activeNetwork)
@@ -37,6 +38,8 @@ internal fun Instrumentation.m32ExpiryCheck(result: Bundle) {
     fun until(condition: () -> Boolean) {
         val deadline=SystemClock.elapsedRealtime()+12000
         do { if(condition()) return; Thread.sleep(100) } while(SystemClock.elapsedRealtime()<deadline)
+        val state=TunnelService.state.value
+        result.putString("timeout","vpn=${state.vpn}, starting=${state.starting}, bearer=${state.bearer}, error=${state.error}")
         error("account check timed out")
     }
     fun start() { ctx.startForegroundService(v2Request(ctx,node.key)); until(::echo) }
@@ -64,7 +67,9 @@ internal fun Instrumentation.m32ExpiryCheck(result: Bundle) {
     } finally {
         stop()
         V2Devices.remove(ctx,node.key)
-        choice.edit().putString("simple-node",prior).commit()
+        choice.edit().putString("simple-node",prior).apply {
+            if (oldSplit==null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY,oldSplit)
+        }.commit()
         runOnMainSync { activity.finish() }
     }
 }
