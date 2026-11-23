@@ -230,7 +230,11 @@ func (l *Ledger) refresh(ctx context.Context) error {
 	for id, next := range devices {
 		if prev, ok := l.devices[id]; ok && prev.quota != next.quota {
 			if a := l.meters[next.user]; a != nil {
-				l.retireQuotaLocked(a)
+				if !next.quota.Valid || prev.quota.Valid && next.quota.Int64 > prev.quota.Int64 {
+					a.setLimit(next.quota)
+				} else {
+					l.retireQuotaLocked(a)
+				}
 			}
 		}
 	}
@@ -451,6 +455,7 @@ func (l *Ledger) register(id proof.ID, stop func()) (*quotaAccount, func(), bool
 	a := l.meters[user]
 	if a == nil {
 		a = &quotaAccount{ledger: l, user: user}
+		a.setLimit(l.devices[id].quota)
 		l.meters[user] = a
 	}
 	a.refs.Add(1)

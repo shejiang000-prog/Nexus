@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -23,12 +24,26 @@ type quotaAccount struct {
 	mu            sync.RWMutex
 	id            proof.ID
 	reserved      int64
-	last          bool
+	lastLimit     int64
+	limit         atomic.Int64
 	left, written atomic.Int64
 	refs          atomic.Int64
 	retired       atomic.Bool
 	settleMu      sync.Mutex
 	saved         int64
+}
+
+func (a *quotaAccount) setLimit(q sql.NullInt64) {
+	limit := int64(-1)
+	if q.Valid {
+		limit = q.Int64
+	}
+	a.limit.Store(limit)
+}
+
+func (a *quotaAccount) isLast() bool {
+	limit := a.limit.Load()
+	return a.lastLimit > 0 && limit >= 0 && limit <= a.lastLimit
 }
 
 func (a *quotaAccount) settle(ctx context.Context, final bool) error {
@@ -61,7 +76,7 @@ func (a *quotaAccount) ensure(ctx context.Context, need int64) error {
 	if a.left.Load() >= need {
 		return nil
 	}
-	if a.last && a.left.Load() > 0 {
+	if a.isLast() && a.left.Load() > 0 {
 		return errQuota
 	}
 	if err := a.settle(ctx, true); err != nil {
@@ -71,7 +86,7 @@ func (a *quotaAccount) ensure(ctx context.Context, need int64) error {
 	if err != nil {
 		return err
 	}
-	a.id, a.reserved, a.last, a.saved = id, reserved, last, 0
+	a.id, a.reserved, a.lastLimit, a.saved = id, reserved, last, 0
 	a.written.Store(0)
 	a.left.Store(reserved)
 	if reserved < need {
@@ -123,7 +138,7 @@ func (a *quotaAccount) write(ctx context.Context, p []byte, packet bool, write f
 		n, err := write(p[:count])
 		a.left.Add(count - int64(n))
 		full := a.written.Add(int64(n)) == a.reserved
-		id, last := a.id, a.last
+		id, last := a.id, a.isLast()
 		if full && last {
 			a.retired.Store(true)
 		}

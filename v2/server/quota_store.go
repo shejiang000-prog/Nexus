@@ -81,10 +81,10 @@ func (l *Ledger) stopQuotaNode() error {
 	return l.owner.Close()
 }
 
-func (l *Ledger) reserveQuota(ctx context.Context, user proof.ID) (id proof.ID, reserved int64, last bool, err error) {
+func (l *Ledger) reserveQuota(ctx context.Context, user proof.ID) (id proof.ID, reserved, lastLimit int64, err error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return id, 0, false, err
+		return id, 0, 0, err
 	}
 	defer tx.Rollback()
 	var quota sql.NullInt64
@@ -93,28 +93,31 @@ func (l *Ledger) reserveQuota(ctx context.Context, user proof.ID) (id proof.ID, 
 		SELECT sum(reserved_bytes) FROM quota_leases WHERE user_id=u.id AND state IN ('active','frozen')),0)
 		FROM users u WHERE id=? AND (expires_at IS NULL OR expires_at>unixepoch())`, user[:]).Scan(&quota, &used, &outstanding)
 	if err != nil {
-		return id, 0, false, err
+		return id, 0, 0, err
 	}
 	limit := int64(math.MaxInt64)
 	if quota.Valid {
 		limit = quota.Int64
 	}
 	if used >= limit || outstanding >= limit-used {
-		return id, 0, false, nil
+		return id, 0, 0, nil
 	}
 	remaining := limit - used - outstanding
 	reserved = min(remaining, 8<<20)
 	rand.Read(id[:])
 	if _, err = tx.ExecContext(ctx, "INSERT INTO quota_leases(lease_id,user_id,reserved_bytes,state) VALUES(?,?,?,'active')", id[:], user[:], reserved); err != nil {
-		return id, 0, false, err
+		return id, 0, 0, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,user_id,lease_id,bytes) VALUES(unixepoch(),'reserve',?,?,?)", user[:], id[:], reserved); err != nil {
-		return id, 0, false, err
+		return id, 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return proof.ID{}, 0, false, err
+		return proof.ID{}, 0, 0, err
 	}
-	return id, reserved, quota.Valid && reserved == remaining, nil
+	if quota.Valid && reserved == remaining {
+		lastLimit = quota.Int64
+	}
+	return id, reserved, lastLimit, nil
 }
 
 func (l *Ledger) settleQuota(ctx context.Context, id proof.ID, committed int64, final bool) error {
