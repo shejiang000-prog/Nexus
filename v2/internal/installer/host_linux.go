@@ -249,13 +249,17 @@ func (h host) protocolHealth(ctx context.Context, d deployment, p string) error 
 	return nil
 }
 func (h host) healthy(ctx context.Context, d deployment) error {
+	timeout := 8 * time.Second
+	if d.CertMode == "acme" {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if d.CertMode == "acme" {
 		if err := h.waitForCertificate(ctx, d); err != nil {
 			return err
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
 	var last error
 	for {
 		last = nil

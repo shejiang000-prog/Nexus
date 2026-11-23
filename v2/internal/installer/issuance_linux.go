@@ -16,8 +16,6 @@ import (
 // Caddy acquires its first certificate asynchronously after systemd starts it.
 // A trusted handshake proves that the requested name is actually being served.
 func (h host) waitForCertificate(ctx context.Context, d deployment) error {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
 	var nextJournal time.Time
 	var reason string
 	for {
