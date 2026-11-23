@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +34,7 @@ func execute(ctx context.Context, name string, args ...string) ([]byte, error) {
 		}
 	}
 	if cmdPath == "" {
-		return nil, fmt.Errorf("required system tool %s missing", name)
+		return nil, fmt.Errorf("required system tool %s missing: %w", name, os.ErrNotExist)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -69,11 +70,11 @@ func Run(ctx context.Context, action string, o Options, render RenderFunc, out i
 		}
 		// An installer starts this unit while holding the lock. It already
 		// published the rules, so the oneshot only needs to verify them.
-		plan, e := h.firewallPlan(ctx, d, true)
+		pending, e := h.firewallPending(ctx, d, true)
 		if e != nil {
 			return e
 		}
-		if plan != "" {
+		if pending {
 			return errors.New("another installation transaction is active; firewall update deferred")
 		}
 		return nil
@@ -116,26 +117,17 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 			return fmt.Errorf("insufficient free space at %s", p)
 		}
 	}
-	for _, p := range []string{"/proc/net/ip_tables_names", "/proc/net/ip6_tables_names"} {
-		b, e := os.ReadFile(h.path(p))
-		if e != nil && !errors.Is(e, os.ErrNotExist) {
-			return e
+	if d.CertMode == "acme" {
+		check := h.dnsCheck
+		if check == nil {
+			check = localDNS
 		}
-		if strings.TrimSpace(string(b)) != "" {
-			return errors.New("legacy iptables is active; manual firewall review required")
-		}
-	}
-	for _, unit := range []string{"ufw.service", "firewalld.service", "netfilter-persistent.service"} {
-		b, e := h.command(ctx, "systemctl", "show", "--property=ActiveState", "--value", unit)
-		if e != nil {
-			return e
-		}
-		if st := strings.TrimSpace(string(b)); st != "inactive" && st != "failed" {
-			return fmt.Errorf("unsupported firewall manager %s (%s)", unit, st)
+		if e := check(ctx, d.Domain); e != nil {
+			return fmt.Errorf("ACME DNS preflight for %s: %w", d.Domain, e)
 		}
 	}
-	if _, e := h.rules(ctx, d); e != nil {
-		return fmt.Errorf("needed inbound ports %v: %w", sockets(d), e)
+	if _, e := h.firewallPending(ctx, d, true); e != nil {
+		return e
 	}
 	if checkPorts {
 		b, e := h.command(ctx, "ss", "-H", "-lntu")
@@ -150,6 +142,34 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 	}
 	return nil
 }
+func localDNS(ctx context.Context, domain string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	records, err := net.DefaultResolver.LookupNetIP(ctx, "ip", domain)
+	if err != nil {
+		return err
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return err
+	}
+	local := make(map[netip.Addr]bool)
+	for _, a := range addrs {
+		if prefix, e := netip.ParsePrefix(a.String()); e == nil {
+			local[prefix.Addr().Unmap()] = true
+		}
+	}
+	if len(records) == 0 {
+		return errors.New("no A or AAAA records")
+	}
+	for _, ip := range records {
+		if !local[ip.Unmap()] {
+			return fmt.Errorf("DNS address %s is not assigned to a local interface", ip)
+		}
+	}
+	return nil
+}
+
 func listening(output string, s socket) bool {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
@@ -197,29 +217,51 @@ func (h host) protocolHealth(ctx context.Context, d deployment, p string) error 
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	if p == "v2" {
-		pem, e := os.ReadFile(h.path(cfg + "/cert.pem"))
-		if e != nil {
-			return e
+		if d.Ports[p] != 0 || d.CertMode == "acme" {
+			port := d.Ports[p]
+			if port == 0 {
+				port = 443
+			}
+			var roots *x509.CertPool
+			var cert string
+			if d.CertMode != "acme" {
+				cert = "cert.pem"
+			} else if d.ACMERoot != "" {
+				cert = "acme-root.pem"
+			}
+			if cert != "" {
+				pem, e := os.ReadFile(h.path(cfg + "/" + cert))
+				if e != nil {
+					return e
+				}
+				roots = x509.NewCertPool()
+				if !roots.AppendCertsFromPEM(pem) {
+					return errors.New("invalid installed TLS trust bundle")
+				}
+			}
+			dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
+			c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+			if e != nil {
+				return e
+			}
+			defer c.Close()
+			if c.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
+				return errors.New("Caddy TLS listener did not negotiate H2")
+			}
 		}
-		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(pem) {
-			return errors.New("invalid installed V2 certificate chain")
+		if d.Layout == 0 || d.Ports["hysteria2"] == 0 {
+			return nil
 		}
-		dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
-		c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(d.Ports[p])))
-		if e != nil {
-			return e
-		}
-		defer c.Close()
-		if c.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
-			return errors.New("V2 TLS listener did not negotiate H2")
-		}
-		return nil
+	}
+	socketPath := state + "/compat-" + p + "/control.sock"
+	path, want := "/ready", http.StatusNoContent
+	if p == "v2" {
+		socketPath, path, want = state+"/site.sock", "/", http.StatusOK
 	}
 	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return new(net.Dialer).DialContext(ctx, "unix", h.path(state+"/compat-"+p+"/control.sock"))
+		return new(net.Dialer).DialContext(ctx, "unix", h.path(socketPath))
 	}}
-	req, e := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/ready", nil)
+	req, e := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+path, nil)
 	if e != nil {
 		return e
 	}
@@ -228,13 +270,18 @@ func (h host) protocolHealth(ctx context.Context, d deployment, p string) error 
 		return e
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != want {
 		return fmt.Errorf("%s health returned %d", p, resp.StatusCode)
 	}
 	return nil
 }
 func (h host) healthy(ctx context.Context, d deployment) error {
-	deadline := time.Now().Add(8 * time.Second)
+	timeout := 8 * time.Second
+	if d.CertMode == "acme" {
+		timeout = 180 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var last error
 	for {
 		last = nil
@@ -250,17 +297,16 @@ func (h host) healthy(ctx context.Context, d deployment) error {
 				return e
 			}
 			for _, p := range protocols {
-				port, ok := d.Ports[p]
-				if !ok {
+				if !d.uses(p) {
 					continue
 				}
 				group, e := h.command(ctx, "systemctl", "show", "--property=ControlGroup", "--value", unitName(p))
 				if e != nil {
 					return e
 				}
-				for _, s := range sockets(deployment{Ports: map[string]int{p: port}}) {
+				for _, s := range serviceSockets(d, p) {
 					if !h.ownsSocket(string(b), s, strings.TrimSpace(string(group))) {
-						last = fmt.Errorf("%s does not own %d/%s", unitName(p), port, s.net)
+						last = fmt.Errorf("%s does not own %d/%s", unitName(p), s.port, s.net)
 						break
 					}
 				}
@@ -279,12 +325,9 @@ func (h host) healthy(ctx context.Context, d deployment) error {
 		if last == nil {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("health check failed: %w", last)
-		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("health check failed: %w", errors.Join(ctx.Err(), last))
 		case <-time.After(80 * time.Millisecond):
 		}
 	}

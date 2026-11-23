@@ -75,8 +75,23 @@ func (h host) readManifest() (deployment, error) {
 	if e != nil || len(token) != 16 || d.UID <= 0 || d.GID <= 0 {
 		return d, errors.New("invalid deployment identity")
 	}
-	if _, e := normalize(Options{Domain: d.Domain, Ports: d.Ports}); e != nil {
+	o := Options{Domain: d.Domain, Ports: d.Ports, PublicHost: d.PublicHost, CertFile: d.CertFile, KeyFile: d.KeyFile, ACMECA: d.ACMECA, ACMERoot: d.ACMERoot}
+	// Old manifests supplied manual certificates for both TLS protocols.
+	if d.Layout == 0 && (d.Ports["v2"] != 0 || d.Ports["hysteria2"] != 0) {
+		o.CertFile, o.KeyFile = "legacy", "legacy"
+	}
+	if d.Layout != 0 && d.Layout != 2 {
+		return d, errors.New("unknown installation manifest layout")
+	}
+	if d.Layout == 2 && (d.CertMode != o.deployment().CertMode || d.Firewall != "ufw" && d.Firewall != "nft") {
+		return d, errors.New("invalid installation manifest")
+	}
+	n, e := normalize(o)
+	if e != nil {
 		return d, e
+	}
+	if !maps.Equal(n.Ports, d.Ports) {
+		return d, errors.New("invalid manifest ports")
 	}
 	return d, nil
 }
@@ -132,13 +147,18 @@ func (h host) run(ctx context.Context, action string, o Options, render RenderFu
 	if e != nil && !missing {
 		return e
 	}
+	if !missing && d.Layout == 0 && (action == "install" || action == "upgrade") {
+		return errors.New("legacy experimental deployment: back up using the previous version and rebuild before installing this release")
+	}
 	if action == "install" {
 		o, e = normalize(o)
 		if e != nil {
 			return e
 		}
 		if !missing && d.Installed {
-			if d.Domain != o.Domain || d.RealityTarget != o.RealityTarget || !maps.Equal(d.Ports, o.Ports) {
+			if d.Domain != o.Domain || d.RealityTarget != o.RealityTarget || !maps.Equal(d.Ports, o.Ports) ||
+				d.PublicHost != o.PublicHost || !slices.Equal(d.RealityServerNames, o.RealityServerNames) || d.CertMode != o.deployment().CertMode ||
+				d.ACMECA != o.ACMECA || d.ACMERoot != o.ACMERoot || d.CertFile != o.CertFile || d.KeyFile != o.KeyFile {
 				return errors.New("existing deployment options differ")
 			}
 			if e := h.validateOwned(ctx, d); e != nil {
@@ -161,6 +181,11 @@ func (h host) run(ctx context.Context, action string, o Options, render RenderFu
 			return nil
 		}
 		var errs error
+		if d.uses("v2") && d.Ports["v2"] == 0 {
+			b, e := h.command(ctx, "systemctl", "is-active", unitName("v2"))
+			fmt.Fprintf(h.out, "caddy %s %s\n", d.CertMode, strings.TrimSpace(string(b)))
+			errs = errors.Join(errs, e)
+		}
 		for _, p := range protocols {
 			if n, ok := d.Ports[p]; ok {
 				b, e := h.command(ctx, "systemctl", "is-active", unitName(p))
@@ -181,7 +206,12 @@ func (h host) run(ctx context.Context, action string, o Options, render RenderFu
 	}
 }
 func (h host) install(ctx context.Context, o Options, old deployment, retained bool, render RenderFunc) (err error) {
-	d := deployment{Domain: o.Domain, RealityTarget: o.RealityTarget, Ports: o.Ports, Installed: true}
+	d := o.deployment()
+	d.Installed = true
+	d.Firewall, err = h.detectFirewall(ctx, d)
+	if err != nil {
+		return err
+	}
 	b := make([]byte, 16)
 	rand.Read(b)
 	d.Token = hex.EncodeToString(b)
@@ -341,7 +371,7 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 	tx.undo(func() error { _, e := h.command(bg, "systemctl", "daemon-reload"); return e })
 	for _, name := range d.units() {
 		dest := h.path(filepath.Join(unitDir, name))
-		if err = copyFile(dest, strings.NewReader(unitText(name)), 0644); err != nil {
+		if err = copyFile(dest, strings.NewReader(d.unitText(name)), 0644); err != nil {
 			return err
 		}
 		tx.undo(func() error { return os.Remove(dest) })
@@ -425,7 +455,7 @@ func (h host) validateOwned(ctx context.Context, d deployment) error {
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(content, []byte(unitText(name))) {
+		if !bytes.Equal(content, []byte(d.unitText(name))) {
 			return fmt.Errorf("unit was modified: %s", name)
 		}
 	}

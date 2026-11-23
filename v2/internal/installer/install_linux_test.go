@@ -79,6 +79,8 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 			}
 			return text("active")
 		}
+	case "ufw":
+		return nil, os.ErrNotExist
 	case "nft":
 		if args[0] == "-f" {
 			f, e := os.ReadFile(args[1])
@@ -166,7 +168,7 @@ func TestInstallFailureRollback(t *testing.T) {
 	for _, point := range []string{"port", "useradd", "ledger", "daemon-reload", "firewall", "enable", "health"} {
 		t.Run(point, func(t *testing.T) {
 			l := newLab(t)
-			o := Options{Domain: "node.test", NodePath: "/bin/true"}
+			o := Options{Domain: "node.test", CertFile: "/cert", KeyFile: "/key", NodePath: "/bin/true"}
 			switch point {
 			case "port":
 				l.busy = "udp UNCONN 0 0 *:443 *:*"
@@ -202,7 +204,7 @@ func TestInstallRepeatUpgradeRollbackAndPurge(t *testing.T) {
 	oldMask := syscall.Umask(0077)
 	defer syscall.Umask(oldMask)
 	l := newLab(t)
-	o := Options{Domain: "node.test", NodePath: "/bin/true"}
+	o := Options{Domain: "node.test", CertFile: "/cert", KeyFile: "/key", NodePath: "/bin/true"}
 	run := func(action string, o Options) {
 		t.Helper()
 		if e := l.run(t.Context(), action, o, sampleRender); e != nil {

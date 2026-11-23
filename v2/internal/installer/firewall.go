@@ -16,19 +16,31 @@ type socket struct {
 	port int
 }
 
-func sockets(d deployment) []socket {
+func serviceSockets(d deployment, p string) []socket {
 	var out []socket
-	for _, p := range protocols {
-		port, ok := d.Ports[p]
-		if !ok {
-			continue
-		}
+	if port := d.Ports[p]; port != 0 {
 		if p != "hysteria2" {
 			out = append(out, socket{"tcp", port})
 		}
 		if p != "reality" {
 			out = append(out, socket{"udp", port})
 		}
+	}
+	if p == "v2" && d.CertMode == "acme" {
+		for _, port := range []int{80, 443} {
+			s := socket{"tcp", port}
+			if !slices.Contains(out, s) {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func sockets(d deployment) []socket {
+	var out []socket
+	for _, p := range protocols {
+		out = append(out, serviceSockets(d, p)...)
 	}
 	return out
 }
@@ -221,6 +233,12 @@ func (h host) firewallPlan(ctx context.Context, d deployment, add bool) (string,
 }
 
 func (h host) firewall(ctx context.Context, d deployment, add bool) error {
+	if e := h.checkFirewall(ctx, d); e != nil {
+		return e
+	}
+	if d.Firewall == "ufw" {
+		return h.applyUFW(ctx, d, add)
+	}
 	script, err := h.firewallPlan(ctx, d, add)
 	if err != nil {
 		return err
