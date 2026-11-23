@@ -17,7 +17,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import org.json.JSONObject
 
-internal fun Instrumentation.m3Check(result: Bundle) {
+internal fun Instrumentation.m3Check(result: Bundle, phase: String) {
+    require(phase in setOf("all", "switch", "recovery", "regression"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
     val dir = ctx.noBackupFilesDir
@@ -96,59 +97,82 @@ internal fun Instrumentation.m3Check(result: Bundle) {
     val cold=mutableListOf<Long>();val hot=mutableListOf<Long>()
     try {
         prefs.edit().putBoolean(SplitRouting.KEY,false).commit()
-        stage.writeText("startup")
-        control("clear");startV2();usable("h3",12000);udp()
-        connect().use { healthy ->
-            val since = clock()
-            while (clock()-since < 5000) {
-                echo(healthy); check(TunnelService.state.value.bearer.equals("h3",true))
-                Thread.sleep(150)
+        control("clear")
+        if (phase == "all") {
+            stage.writeText("startup")
+            startV2();usable("h3",12000);udp()
+            connect().use { healthy ->
+                val since = clock()
+                while (clock()-since < 5000) {
+                    echo(healthy); check(TunnelService.state.value.bearer.equals("h3",true))
+                    Thread.sleep(150)
+                }
             }
+            result.putString("healthy-H3","5 s continuous TCP activity on open UDP; H3 retained")
+            result.putString("4MiB-H3-Mbps",download());external("probe-v2")
+            stop()
         }
-        result.putString("healthy-H3","5 s continuous TCP activity on open UDP; H3 retained")
-        result.putString("4MiB-H3-Mbps",download());external("probe-v2")
-        stop()
-        repeat(10){ n ->
-            stage.writeText("cold-" + (n+1));control("drop")
-            var begin=clock()
-            startV2()
-            val c=runCatching { usable("h2",10000);clock()-begin }.getOrDefault(-1L)
-            cold.add(c)
-            if(n==0 && c>=0){ result.putString("4MiB-H2-Mbps",download());udp() }
-            stop();control("clear")
-            stage.writeText("hot-" + (n+1));startV2();usable("h3",12000)
-            connect().use { initial ->
-                echo(initial);begin=clock();control("drop")
-                val h=runCatching { usable("h2",10000);clock()-begin }.getOrDefault(-1L)
-                hot.add(h)
+        if (phase == "all" || phase == "switch") {
+            repeat(if (phase == "all") 10 else 1){ n ->
+                stage.writeText("cold-" + (n+1));control("drop")
+                var begin=clock()
+                startV2()
+                val c=runCatching { usable("h2",10000);clock()-begin }.getOrDefault(-1L)
+                cold.add(c)
+                if(n==0 && c>=0){ result.putString("4MiB-H2-Mbps",download());udp() }
+                stop();control("clear")
+                stage.writeText("hot-" + (n+1));startV2();usable("h3",12000)
+                connect().use { initial ->
+                    echo(initial);begin=clock();control("drop")
+                    val h=runCatching { usable("h2",10000);clock()-begin }.getOrDefault(-1L)
+                    hot.add(h)
+                }
+                stop();control("clear")
             }
-            stop();control("clear")
+            result.putString("cold-ms", cold.joinToString(","));result.putString("hot-ms", hot.joinToString(","))
         }
-        result.putString("cold-ms", cold.joinToString(","));result.putString("hot-ms", hot.joinToString(","))
-        stage.writeText("recovery");control("drop");startV2();usable("h2",12000)
-        connect().use { held ->
-            echo(held);control("clear")
-            waitFor(135000){echo(held);Thread.sleep(300);TunnelService.state.value.bearer.equals("h3",true)}
-            echo(held);usable("h3",5000)
+        if (phase == "all" || phase == "recovery") {
+            stage.writeText("recovery");control("drop");startV2();usable("h2",12000)
+            val resumed = runCatching {
+                connect().use { held ->
+                    echo(held)
+                    control("clear")
+                    stage.writeText("recovery-open")
+                    val began = clock()
+                    waitFor(135000) {
+                        echo(held)
+                        Thread.sleep(300)
+                        TunnelService.state.value.bearer.equals("h3",true)
+                    }
+                    echo(held)
+                    usable("h3",5000)
+                    result.putLong("recovery-ms",clock()-began)
+                }
+            }.isSuccess
+            result.putString("recovery", if (resumed) "H3 restored, existing H2 TCP echoed before/during/after" else "failed")
+            if (phase == "recovery") check(resumed) { "H3 recovery" }
         }
-        result.putString("recovery","H3 restored, existing H2 TCP echoed before/during/after")
-        stage.writeText("revoke");control("revoke " + node.deviceId)
-        waitFor(25000) {
-            runCatching { connect().use(::echo) }
-            val s=TunnelService.state.value
-            !s.vpn && s.error.contains("撤销")
+        if (phase == "all" || phase == "regression") {
+            if (phase == "regression") { startV2(); usable("h3",12000) }
+            stage.writeText("revoke");control("revoke " + node.deviceId)
+            waitFor(25000) {
+                runCatching { connect().use(::echo) }
+                val s=TunnelService.state.value
+                !s.vpn && s.error.contains("撤销")
+            }
+            Thread.sleep(2500)
+            check(!TunnelService.state.value.vpn && !prefs.contains(TunnelService.RESUME))
+            result.putString("revoked","terminal Chinese error, no resume")
+            stage.writeText("xray")
+            val sub=store.import("Nexus-QA-M3",cfg.getString("subscription"))
+            source=sub.id
+            val row=NodeRow(sub,0,sub.nodes.getJSONObject(0))
+            ctx.startForegroundService(subscriptionRequest(ctx,row,listOf(row),addr.address.hostAddress!!,false))
+            waitFor(12000){runCatching {connect().use(::echo)}.isSuccess}
+            udp();external("probe-xray")
+            result.putString("subscription","TCP/UDP through Xray")
         }
-        Thread.sleep(2500)
-        check(!TunnelService.state.value.vpn && !prefs.contains(TunnelService.RESUME))
-        result.putString("revoked","terminal Chinese error, no resume")
-        stage.writeText("xray")
-        val sub=store.import("Nexus-QA-M3",cfg.getString("subscription"))
-        source=sub.id
-        val row=NodeRow(sub,0,sub.nodes.getJSONObject(0))
-        ctx.startForegroundService(subscriptionRequest(ctx,row,listOf(row),addr.address.hostAddress!!,false))
-        waitFor(12000){runCatching {connect().use(::echo)}.isSuccess}
-        udp();external("probe-xray")
-        result.putString("subscription","TCP/UDP through Xray")
+        check(result.getString("recovery") != "failed") { "H3 recovery" }
         check(cold.all { it in 0..3000 } && hot.all { it in 0..5000 }) { "latency threshold failed" }
     } finally {
         result.putString("cold-ms",cold.joinToString(","));result.putString("hot-ms",hot.joinToString(","))

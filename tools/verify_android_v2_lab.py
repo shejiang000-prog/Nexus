@@ -7,7 +7,7 @@ import tempfile
 import time
 
 
-def run(adb, package, fixture, runner, probe):
+def run(adb, package, fixture, runner, probe, phase):
     a = [str(adb), "-s", "emulator-5554"]
     def shell(*args, **kw):
         return subprocess.run([*a, "shell", *args], stdout=subprocess.PIPE,
@@ -32,7 +32,7 @@ def run(adb, package, fixture, runner, probe):
         raise RuntimeError("incomplete private instrumentation configuration")
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
     with tempfile.TemporaryFile() as log:
-        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3",runner], stdout=log,stderr=subprocess.STDOUT)
+        proc=subprocess.Popen([*a,"shell","am","instrument","-w","-e","mode","m3","-e","phase",phase,runner], stdout=log,stderr=subprocess.STDOUT)
         stage=""
         deadline=time.monotonic()+720
         try:
@@ -64,5 +64,6 @@ if __name__=="__main__":
     p.add_argument("fixture",type=Path)
     p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
     p.add_argument("--probe",default="dev.nexus.vpnprobe/.Probe",choices=["dev.nexus.vpnprobe/.Probe","dev.nexus.lab.m31.probe/dev.nexus.vpnprobe.Probe"])
+    p.add_argument("--phase",choices=["all","switch","recovery","regression"],default="all")
     opt=p.parse_args()
-    run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe)
+    run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe,opt.phase)
