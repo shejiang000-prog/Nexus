@@ -22,6 +22,7 @@ import (
 	"github.com/shejiang000-prog/Nexus/v2/compat"
 	"github.com/shejiang000-prog/Nexus/v2/internal/installer"
 	"github.com/shejiang000-prog/Nexus/v2/proof"
+	"github.com/shejiang000-prog/Nexus/v2/server"
 )
 
 func platformCommand(args []string, input io.Reader, output io.Writer) (bool, error) {
@@ -40,7 +41,19 @@ func platformCommand(args []string, input io.Reader, output io.Writer) (bool, er
 		if len(args) != 2 || (args[1] != "reality" && args[1] != "hysteria2") {
 			return true, errors.New("usage: compat-serve reality|hysteria2")
 		}
-		return true, compat.Serve(ctx, "/", args[1])
+		protocol := args[1]
+		return true, compat.Serve(ctx, "/", protocol, func(ctx context.Context) (compat.Snapshot, error) {
+			const path = "/var/lib/nexus-v2/ledger.db"
+			if _, err := os.Stat(path); err != nil {
+				return compat.Snapshot{}, err
+			}
+			l, err := server.OpenLedger(path)
+			if err != nil {
+				return compat.Snapshot{}, err
+			}
+			defer l.Close()
+			return l.CompatSnapshot(ctx, protocol)
+		})
 	}
 	opts, err := deploymentOptions(action, args[1:], input, output)
 	if err != nil {
