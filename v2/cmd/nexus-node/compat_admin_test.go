@@ -139,6 +139,43 @@ func TestLocalCompatDelivery(t *testing.T) {
 	if err := run("export", user, "links"); err == nil {
 		t.Fatal("export after revoke")
 	}
+	// A was gracefully disabled, then B requested a reset that was never
+	// delivered. A's strict revoke must send the covered reset to the service.
+	if err := run("enable", user, "reality"); err != nil {
+		t.Fatal(err)
+	}
+	<-reality
+	if err := run("disable", user, "reality", "--keep-connections"); err != nil {
+		t.Fatal(err)
+	}
+	soft := <-reality
+	l, err = server.OpenLedger(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := proof.ID{1}
+	if err := l.CreateUser(t.Context(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ChangeCompat(t.Context(), b, "reality", "enable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ChangeCompat(t.Context(), b, "reality", "rotate"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if _, err = compatAdmin([]string{db, "revoke-user", user, "--root", root}, buf); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case received := <-reality:
+		if received.ResetRevision <= soft.Revision || len(received.Credentials) != 1 {
+			t.Fatal("failed to send outstanding reset")
+		}
+	default:
+		t.Fatal("acknowledged user row hid undelivered reset")
+	}
+
 }
 
 func TestRealityDeliveryWithoutDomain(t *testing.T) {

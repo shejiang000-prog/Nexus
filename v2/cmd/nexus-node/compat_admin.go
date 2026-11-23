@@ -140,7 +140,9 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 		var failed error
 		// Apply Reality first so its reset does not wait for Hysteria2 control.
 		for _, s := range slices.Backward(status) {
-			if !s.Enabled && s.Result != "applied" {
+			// Another user's pending reset can cover this already-disabled
+			// UUID in the ledger without having reached the live worker.
+			if !s.Enabled && (s.Result != "applied" || installed && s.Protocol == "reality" && !keep) {
 				if !installed {
 					return true, errors.New("local revocation recorded; service application requires the installed ledger")
 				}
