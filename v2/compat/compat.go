@@ -91,13 +91,21 @@ func (s *service) applyLocked(req Snapshot) error {
 	if req.Protocol != s.protocol || req.Revision < 0 || req.Revision < s.live.Revision {
 		return errors.New("outdated protocol snapshot")
 	}
+	if req.ResetRevision < s.live.ResetRevision || req.ResetRevision > req.Revision || req.Protocol != "reality" && req.ResetRevision != 0 {
+		return errors.New("invalid session reset revision")
+	}
 	users, err := req.usersByID()
 	if err != nil {
 		return err
 	}
 	slices.SortFunc(req.Credentials, func(a, b Credential) int { return strings.Compare(a.UserID, b.UserID) })
-	if req.Revision == s.live.Revision && s.live.Protocol != "" && (!slices.Equal(req.Credentials, s.live.Credentials) || !reflect.DeepEqual(req.RealityKey, s.live.RealityKey)) {
+	if req.Revision == s.live.Revision && s.live.Protocol != "" && (req.ResetRevision != s.live.ResetRevision || !slices.Equal(req.Credentials, s.live.Credentials) || !reflect.DeepEqual(req.RealityKey, s.live.RealityKey)) {
 		return errors.New("revision content mismatch")
+	}
+	// Replaying a snapshot after a lost reply must not disconnect users twice.
+	if s.xray != nil && req.ResetRevision > s.live.ResetRevision {
+		s.xray.stop()
+		s.xray = nil
 	}
 	s.mu.Lock()
 	s.users = users

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/shejiang000-prog/Nexus/v2/server"
 )
 
-var compatUsage = errors.New("usage: ledger DB compat {enable|disable|rotate} USER_HEX PROTOCOL | rotate-node-key reality | apply PROTOCOL | status USER_HEX | export USER_HEX {links|mihomo} [--root ABSOLUTE_ROOT]")
+var compatUsage = errors.New("usage: ledger DB compat {enable|disable|rotate} USER_HEX PROTOCOL [--keep-connections on Reality disable/rotate] | rotate-node-key reality | apply PROTOCOL | status USER_HEX | export USER_HEX {links|mihomo} | ledger DB revoke-user USER_HEX [--keep-connections] (optional test root: --root ABSOLUTE_ROOT)")
 
 type compatDeployment struct {
 	Domain             string         `json:"domain"`
@@ -64,6 +65,10 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	default:
 		return true, compatUsage
 	}
+	keep := len(tail) > 0 && tail[len(tail)-1] == "--keep-connections"
+	if keep {
+		tail = tail[:len(tail)-1]
+	}
 	if len(tail) != want {
 		return true, compatUsage
 	}
@@ -80,6 +85,10 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 		if protocol != "reality" && protocol != "hysteria2" {
 			return true, compatUsage
 		}
+	}
+	changesRealitySessions := revoke || protocol == "reality" && (action == "disable" || action == "rotate")
+	if keep && !changesRealitySessions {
+		return true, compatUsage
 	}
 	if action == "rotate-node-key" && protocol != "reality" {
 		return true, compatUsage
@@ -112,9 +121,16 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	apply := func(p string, force bool) error {
 		return l.ApplyCompat(ctx, p, force, func(s compat.Snapshot) error { return compat.Apply(ctx, root, s) })
 	}
+	explain := func() {
+		if keep {
+			fmt.Fprintln(out, "Reality --keep-connections: existing authenticated sessions can continue. Old UUIDs will be denied for new connections.")
+		} else {
+			fmt.Fprintln(out, "Applying a Reality session reset disconnects ALL Reality users. Other users can reconnect with their existing credentials.")
+		}
+	}
 	switch action {
 	case "revoke-user":
-		if err := l.RevokeUser(ctx, user); err != nil {
+		if err := l.RevokeUserWithPolicy(ctx, user, keep); err != nil {
 			return true, err
 		}
 		status, err := l.CompatStatus(ctx, user)
@@ -122,10 +138,14 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 			return true, err
 		}
 		var failed error
-		for _, s := range status {
+		// Apply Reality first so its reset does not wait for Hysteria2 control.
+		for _, s := range slices.Backward(status) {
 			if !s.Enabled && s.Result != "applied" {
 				if !installed {
 					return true, errors.New("local revocation recorded; service application requires the installed ledger")
+				}
+				if s.Protocol == "reality" {
+					explain()
 				}
 				failed = errors.Join(failed, apply(s.Protocol, false))
 			}
@@ -164,7 +184,10 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 		}
 		return true, apply(protocol, false)
 	}
-	if err := l.ChangeCompat(ctx, user, protocol, action); err != nil {
+	if changesRealitySessions {
+		explain()
+	}
+	if err := l.ChangeCompatWithPolicy(ctx, user, protocol, action, keep); err != nil {
 		return true, err
 	}
 	return true, apply(protocol, false)

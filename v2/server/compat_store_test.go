@@ -331,3 +331,63 @@ func TestRejectExperimentalV5Ledger(t *testing.T) {
 		t.Fatal("rejected ledger was modified", err)
 	}
 }
+
+func TestRealityResetSurvivesCoalescingAndPolicyRetry(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := OpenLedger(path)
+	check(err)
+	a, b := proof.ID{1}, proof.ID{2}
+	check(l.CreateUser(ctx, a))
+	check(l.CreateUser(ctx, b))
+	check(l.ChangeCompat(ctx, a, "reality", "enable"))
+	// Emulate the preceding deployed v5 layout. Open the same database again.
+	initial, err := l.CompatSnapshot(ctx, "reality")
+	check(err)
+	_, err = l.db.Exec("ALTER TABLE compat_reality_key DROP COLUMN reset_revision")
+	check(err)
+	check(l.Close())
+	l, err = OpenLedger(path)
+	check(err)
+	defer l.Close()
+	snapshot := func() compat.Snapshot { t.Helper(); s, err := l.CompatSnapshot(ctx, "reality"); check(err); return s }
+	if !reflect.DeepEqual(initial, snapshot()) {
+		t.Fatal("v5 extension changed existing identity")
+	}
+	check(l.ChangeCompatWithPolicy(ctx, a, "reality", "rotate", true))
+	soft := snapshot()
+	if soft.ResetRevision != 0 {
+		t.Fatal("graceful rotation requested disconnect")
+	}
+	// Simulate an offline rotation followed by an explicit policy escalation.
+	check(l.ChangeCompat(ctx, a, "reality", "rotate"))
+	hard := snapshot()
+	if hard.ResetRevision != hard.Revision || hard.ResetRevision <= soft.Revision || !reflect.DeepEqual(soft.Credentials, hard.Credentials) {
+		t.Fatal("pending rotation lost its identity or its reset")
+	}
+	check(l.ChangeCompat(ctx, a, "reality", "rotate"))
+	if !reflect.DeepEqual(hard, snapshot()) {
+		t.Fatal("retry generated another reset")
+	}
+	check(l.ChangeCompat(ctx, b, "reality", "enable"))
+	check(l.ChangeCompatWithPolicy(ctx, a, "reality", "disable", true))
+	merged := snapshot()
+	if merged.ResetRevision != hard.ResetRevision || merged.Revision <= hard.Revision {
+		t.Fatal("later graceful update lost a pending reset")
+	}
+	check(l.RevokeUser(ctx, a))
+	strict := snapshot()
+	if strict.ResetRevision != strict.Revision || strict.ResetRevision <= merged.Revision {
+		t.Fatal("revocation failed to close retained sessions")
+	}
+	check(l.ChangeCompat(ctx, a, "reality", "disable"))
+	if !reflect.DeepEqual(strict, snapshot()) {
+		t.Fatal("strict disable retry requested another reset")
+	}
+}

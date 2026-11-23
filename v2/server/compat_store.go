@@ -23,7 +23,7 @@ INSERT INTO compat_protocols(protocol,applied_revision) VALUES('reality',-1),('h
 CREATE TABLE compat_reality_key (
 	id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL, applied_generation INTEGER NOT NULL DEFAULT 0,
 	revision INTEGER NOT NULL, result TEXT NOT NULL CHECK(result IN ('pending','failed','applied')),
-	private_key TEXT NOT NULL, public_key TEXT NOT NULL, short_id TEXT NOT NULL);
+	private_key TEXT NOT NULL, public_key TEXT NOT NULL, short_id TEXT NOT NULL, reset_revision INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE compat_credentials(user_id BLOB NOT NULL REFERENCES users(id), protocol TEXT NOT NULL REFERENCES compat_protocols(protocol),
 	generation INTEGER NOT NULL, applied_generation INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
 	action TEXT NOT NULL, result TEXT NOT NULL CHECK(result IN ('pending','failed','applied')),
@@ -106,8 +106,8 @@ func (l *Ledger) RotateRealityKey(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "UPDATE compat_protocols SET revision=revision+1 WHERE protocol='reality' RETURNING revision").Scan(&rev); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE compat_reality_key SET generation=generation+1,revision=?,result='pending',private_key=?,public_key=?,short_id=? WHERE id=1`,
-		rev, key.PrivateKey, key.PublicKey, key.ShortID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE compat_reality_key SET generation=generation+1,revision=?,reset_revision=?,result='pending',private_key=?,public_key=?,short_id=? WHERE id=1`,
+		rev, rev, key.PrivateKey, key.PublicKey, key.ShortID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit(occurred_at,action,protocol,generation,result)
@@ -119,7 +119,7 @@ func (l *Ledger) RotateRealityKey(ctx context.Context) error {
 
 // A failed rotation retries the same unacknowledged generation. A fresh
 // rotation after an acknowledgement creates a new identity.
-func changeCompat(ctx context.Context, tx *sql.Tx, user proof.ID, protocol, action string) error {
+func changeCompat(ctx context.Context, tx *sql.Tx, user proof.ID, protocol, action string, keepConnections bool) error {
 	if !validProtocol(protocol) {
 		return errors.New("unknown compatibility protocol")
 	}
@@ -128,56 +128,87 @@ func changeCompat(ctx context.Context, tx *sql.Tx, user proof.ID, protocol, acti
 		return err
 	}
 	var enabled bool
+	var previousRevision int64
 	var previous, result string
-	err := tx.QueryRowContext(ctx, "SELECT enabled,action,result FROM compat_credentials WHERE user_id=? AND protocol=?", user[:], protocol).Scan(&enabled, &previous, &result)
+	err := tx.QueryRowContext(ctx, "SELECT enabled,action,result,revision FROM compat_credentials WHERE user_id=? AND protocol=?", user[:], protocol).Scan(&enabled, &previous, &result, &previousRevision)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	reset := protocol == "reality" && action != "enable" && !keepConnections
+	var repeat bool
 	switch action {
 	case "enable", "rotate":
 		if expiry.Valid && expiry.Int64 <= time.Now().Unix() {
 			return errors.New("user expired")
 		}
-		if action == "enable" && enabled || action == "rotate" && previous == "rotate" && result != "applied" {
+		if action == "enable" && enabled {
 			return nil
 		}
 		if action == "rotate" && !enabled {
 			return errors.New("protocol is disabled")
 		}
+		repeat = action == "rotate" && previous == "rotate" && result != "applied"
 		enabled = true
 	case "disable", "revoke-user":
-		if !enabled {
-			return nil
-		}
+		repeat = !enabled
 		enabled = false
 	default:
 		return errors.New("unknown credential operation")
 	}
-	var c compat.Credential
-	if enabled {
-		c = newCredential(protocol)
+	if repeat {
+		if !reset || previousRevision == 0 {
+			return nil
+		}
+		var covered int64
+		if err := tx.QueryRowContext(ctx, "SELECT reset_revision FROM compat_reality_key WHERE id=1").Scan(&covered); err != nil || covered >= previousRevision {
+			return err
+		}
 	}
 	var rev, gen int64
 	if err := tx.QueryRowContext(ctx, "UPDATE compat_protocols SET revision=revision+1 WHERE protocol=? RETURNING revision", protocol).Scan(&rev); err != nil {
 		return err
 	}
-	if err := tx.QueryRowContext(ctx, `INSERT INTO compat_credentials(user_id,protocol,revision,generation,enabled,action,result,uuid,password)
+	if reset {
+		if _, err := tx.ExecContext(ctx, "UPDATE compat_reality_key SET reset_revision=? WHERE id=1", rev); err != nil {
+			return err
+		}
+	}
+	// Upgrade an outstanding keep-connections operation to a reset while
+	// preserving its credential generation and UUID.
+	if repeat {
+		if err := tx.QueryRowContext(ctx, `UPDATE compat_credentials SET revision=?,result='pending' WHERE user_id=? AND protocol=? RETURNING generation`, rev, user[:], protocol).Scan(&gen); err != nil {
+			return err
+		}
+	} else {
+		var c compat.Credential
+		if enabled {
+			c = newCredential(protocol)
+		}
+		if err := tx.QueryRowContext(ctx, `INSERT INTO compat_credentials(user_id,protocol,revision,generation,enabled,action,result,uuid,password)
 		VALUES(?,?,?,1,?,?,'pending',?,?) ON CONFLICT(user_id,protocol) DO UPDATE SET revision=excluded.revision,generation=generation+1,
 		enabled=excluded.enabled,action=excluded.action,result='pending',uuid=excluded.uuid,password=excluded.password
 		RETURNING generation`, user[:], protocol, rev, enabled, action, c.UUID, c.Password).Scan(&gen); err != nil {
-		return err
+			return err
+		}
+	}
+	if protocol == "reality" && keepConnections {
+		action += "_keep_connections"
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO audit(occurred_at,action,user_id,protocol,generation,result) VALUES(unixepoch(),?,?,?,?, 'pending')`, "compat_"+action, user[:], protocol, gen)
 	return err
 }
 
 func (l *Ledger) ChangeCompat(ctx context.Context, user proof.ID, protocol, action string) error {
+	return l.ChangeCompatWithPolicy(ctx, user, protocol, action, false)
+}
+
+func (l *Ledger) ChangeCompatWithPolicy(ctx context.Context, user proof.ID, protocol, action string, keepConnections bool) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := changeCompat(ctx, tx, user, protocol, action); err != nil {
+	if err := changeCompat(ctx, tx, user, protocol, action, keepConnections); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -202,7 +233,7 @@ func (l *Ledger) compatSnapshot(ctx context.Context, protocol string) (snap comp
 	}
 	if protocol == "reality" {
 		var key compat.RealityKey
-		if err := tx.QueryRowContext(ctx, "SELECT generation,private_key,public_key,short_id FROM compat_reality_key WHERE id=1").Scan(&key.Generation, &key.PrivateKey, &key.PublicKey, &key.ShortID); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT generation,private_key,public_key,short_id,reset_revision FROM compat_reality_key WHERE id=1").Scan(&key.Generation, &key.PrivateKey, &key.PublicKey, &key.ShortID, &snap.ResetRevision); err != nil {
 			return snap, 0, err
 		}
 		snap.RealityKey = &key

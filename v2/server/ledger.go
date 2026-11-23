@@ -161,6 +161,15 @@ func initSchema(db *sql.DB) error {
 		if !current {
 			return errors.New("unsupported experimental v5 ledger layout; back up the database and rebuild the ledger at a new path")
 		}
+		var hasReset bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('compat_reality_key') WHERE name='reset_revision')").Scan(&hasReset); err != nil {
+			return err
+		}
+		if !hasReset {
+			if _, err := tx.Exec("ALTER TABLE compat_reality_key ADD COLUMN reset_revision INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		}
 	default:
 		return fmt.Errorf("unsupported ledger schema v%d; rebuild the ledger at a new path", version)
 	}
@@ -474,6 +483,10 @@ func (l *Ledger) Revoke(ctx context.Context, id proof.ID) error {
 }
 
 func (l *Ledger) RevokeUser(ctx context.Context, user proof.ID) error {
+	return l.RevokeUserWithPolicy(ctx, user, false)
+}
+
+func (l *Ledger) RevokeUserWithPolicy(ctx context.Context, user proof.ID, keepRealityConnections bool) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -486,7 +499,7 @@ func (l *Ledger) RevokeUser(ctx context.Context, user proof.ID) error {
 		return err
 	}
 	for _, p := range []string{"reality", "hysteria2"} {
-		if err := changeCompat(ctx, tx, user, p, "revoke-user"); err != nil {
+		if err := changeCompat(ctx, tx, user, p, "revoke-user", keepRealityConnections); err != nil {
 			return err
 		}
 	}

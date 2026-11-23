@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
 import socket
 import socketserver
 import ssl
@@ -216,6 +217,26 @@ def main():
             run('mount','--bind',root/dest,'/'+dest)
         def ledger(*args):
             return run(str(opt.node),'ledger',str(db),*args).decode().strip()
+        def reset_reality(args, a_stream, b_stream):
+            # Observe real EOF/reset concurrently with the CLI. A read timeout
+            # would only show a stalled stream, not the required disconnect.
+            start=time.monotonic()
+            sockets={a_stream:'A',b_stream:'B'}
+            with subprocess.Popen([opt.node,'ledger',str(db),*args],stdout=subprocess.PIPE) as cmd:
+                while sockets and time.monotonic()-start<3:
+                    ready,_,_=select.select(list(sockets),[],[],max(0,3-(time.monotonic()-start)))
+                    for sock in ready:
+                        try:
+                            assert sock.recv(1)==b'',"unexpected data while waiting for disconnect"
+                        except ConnectionResetError:
+                            pass
+                        elapsed=time.monotonic()-start
+                        assert elapsed<=3,"Reality session reset exceeded 3 s"
+                        print('Reality',args[1] if args[0]=='compat' else args[0],sockets.pop(sock),
+                              'old TCP closed at %.3fs'%elapsed,flush=True)
+                out,_=cmd.communicate(timeout=15)
+                assert cmd.returncode==0 and b'ALL Reality users' in out
+            assert not sockets,"Reality stream remained open after 3 s"
         a,b=ledger('create-user'),ledger('create-user')
         def exported(user,protocol):
             scheme='vless://' if protocol=='reality' else 'hysteria2://'
@@ -241,11 +262,19 @@ def main():
             time.sleep(.4)
             ast=st.enter_context(ac.tcp());bst=st.enter_context(bc.tcp())
             ac.udp();bc.udp()
-            start=time.monotonic();ledger('compat','rotate',a,proto)
-            live,elapsed=observe_existing(ast,start,bst)
-            print(proto,'A UUID/password rotate: old TCP %s at %.3fs'%('live' if live else 'closed',elapsed),flush=True)
-            if proto=='hysteria2':assert not live
+            def change(action,stream,other):
+                if proto=='reality':
+                    reset_reality(['compat',action,a,proto],stream,other)
+                    # Original B link and client reconnect after the reset.
+                    return st.enter_context(bc.tcp())
+                start=time.monotonic();ledger('compat',action,a,proto)
+                live,elapsed=observe_existing(stream,start,other)
+                print(proto,action,'A old TCP closed at %.3fs'%elapsed,flush=True)
+                assert not live
+                return other
+            bst=change('rotate',ast,bst)
             ledger('compat','apply',proto)
+            echo(bst)  # Idempotent replay must preserve the reconnected B stream.
             newlink=exported(a,proto)
             bad,valid=factory(oldlink),factory(newlink)
             time.sleep(.4)
@@ -256,14 +285,35 @@ def main():
             time.sleep(.4)
             for denied in [private,mixed]:
                 refused(lambda:denied.tcp(4));refused(denied.udp)
-            start=time.monotonic();ledger('compat','disable',a,proto)
-            live,elapsed=observe_existing(current,start,bst)
-            print(proto,'A disabled: old TCP %s at %.3fs'%('live' if live else 'closed',elapsed),flush=True)
-            if proto=='hysteria2':assert not live
+            bst=change('disable',current,bst)
             disabled=factory(newlink)
             refused(lambda:disabled.tcp(12));refused(disabled.udp)
             echo(bst);bc.udp()
             if proto=='reality':
+                ledger('compat','enable',a,proto)
+                for args in (['compat','rotate',a,proto], ['compat','disable',a,proto], ['revoke-user',a]):
+                    old=exported(a,proto);old_client=factory(old)
+                    stream=st.enter_context(old_client.tcp())
+                    start=time.monotonic()
+                    assert '--keep-connections' in ledger(*args,'--keep-connections')
+                    live,elapsed=observe_existing(stream,start,bst)
+                    assert live
+                    print('Reality keep',args[1] if args[0]=='compat' else args[0],
+                          'A and B live at %.3fs'%elapsed,flush=True)
+                    refused(lambda:old_client.tcp(4));refused(old_client.udp)
+                    if args[0]=='revoke-user':
+                        # Tighten the policy after a graceful revoke without
+                        # requiring the revoked user to be re-enabled.
+                        reset_reality(['revoke-user',a],stream,bst)
+                        bst=st.enter_context(bc.tcp());bc.udp()
+                        ledger('revoke-user',a);echo(bst)
+                    ledger('compat','enable',a,proto)
+                    factory(exported(a,proto)).tcp().close()
+                # Revoke an enabled user with the default policy as well.
+                active_link=exported(a,proto)
+                reset_reality(['revoke-user',a],st.enter_context(factory(active_link).tcp()),bst)
+                bst=st.enter_context(bc.tcp())
+                invalid=factory(active_link);refused(lambda:invalid.tcp(4));refused(invalid.udp)
                 ledger('compat','enable',a,proto)
                 first_a=exported(a,proto);first_b=exported(b,proto)
                 active_a=st.enter_context(factory(first_a).tcp())

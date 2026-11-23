@@ -27,10 +27,11 @@ type RealityKey struct {
 	ShortID    string `json:"short_id"`
 }
 type Snapshot struct {
-	Protocol    string       `json:"protocol"`
-	Revision    int64        `json:"revision"`
-	Credentials []Credential `json:"credentials"`
-	RealityKey  *RealityKey  `json:"reality_key,omitempty"`
+	Protocol      string       `json:"protocol"`
+	Revision      int64        `json:"revision"`
+	ResetRevision int64        `json:"reset_revision,omitempty"`
+	Credentials   []Credential `json:"credentials"`
+	RealityKey    *RealityKey  `json:"reality_key,omitempty"`
 }
 type deployment struct {
 	Certificate string         `json:"certificate"`
