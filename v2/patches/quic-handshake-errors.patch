@@ -1,0 +1,25 @@
+--- a/internal/qerr/errors.go
++++ b/internal/qerr/errors.go
+@@ -21,6 +21,11 @@
+ }
+ 
+ var _ error = &TransportError{}
++
++// NewLocalInternalError preserves the local cause for errors.Is and errors.As.
++func NewLocalInternalError(err error) *TransportError {
++	return &TransportError{ErrorCode: InternalError, ErrorMessage: err.Error(), error: err}
++}
+ 
+ // NewLocalCryptoError create a new TransportError instance for a crypto error
+ func NewLocalCryptoError(tlsAlert uint8, err error) *TransportError {
+--- a/internal/handshake/crypto_setup.go
++++ b/internal/handshake/crypto_setup.go
+@@ -692,7 +692,7 @@
+ 	if alertErr, ok := errors.AsType[tls.AlertError](err); ok {
+ 		return qerr.NewLocalCryptoError(uint8(alertErr), err)
+ 	}
+-	return &qerr.TransportError{ErrorCode: qerr.InternalError, ErrorMessage: err.Error()}
++	return qerr.NewLocalInternalError(err)
+ }
+ 
+ func encLevelToKeyType(encLevel protocol.EncryptionLevel, pers protocol.Perspective) qlog.KeyType {

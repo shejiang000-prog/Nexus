@@ -30,6 +30,28 @@ func TestAutoColdStart(t *testing.T) {
 	}
 }
 
+func TestCertificateFailureStopsColdRace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var h2 atomic.Int32
+		s := selector{ctx: t.Context(), mode: "auto", dial: func(_ context.Context, kind string) (*transportLane, error) {
+			if kind == "h2" {
+				h2.Add(1)
+				return &transportLane{kind: kind, close: func() {}}, nil
+			}
+			return nil, &Error{Certificate, errors.New("pin mismatch")}
+		}}
+		lane, err := s.initial()
+		var typed *Error
+		if lane != nil || !errors.As(err, &typed) || typed.Code != Certificate {
+			t.Fatalf("wrong result: %v", err)
+		}
+		time.Sleep(time.Second)
+		if h2.Load() != 0 {
+			t.Fatal("started H2 after H3 certificate failure")
+		}
+	})
+}
+
 func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())

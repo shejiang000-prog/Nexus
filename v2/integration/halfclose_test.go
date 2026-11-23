@@ -81,3 +81,50 @@ func TestMobileTCPHalfClose(t *testing.T) {
 		}
 	})
 }
+
+func TestMobileTargetFirstFIN(t *testing.T) {
+	testNodeTCP(t, true, false, func(c net.Conn) {
+		c.Write([]byte("banner"))
+		c.(*net.TCPConn).CloseWrite()
+		io.Copy(io.Discard, c)
+	}, func(t *testing.T, l *nodeLab) {
+		ca, err := os.ReadFile(filepath.Join(l.dir, "server.pem"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, mode := range []string{"h2", "h3"} {
+			t.Run(mode, func(t *testing.T) {
+				_, id, key := l.enroll(t, mode)
+				c, err := mobile.Start(l.authority, l.endpoint, mode, ca, id[:], nil, deviceSigner{key}, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.Stop()
+				timer := time.AfterFunc(5*time.Second, c.Stop)
+				defer timer.Stop()
+				s, e := c.DialTCP(l.tcp, nil)
+				if e != nil {
+					t.Fatal(e)
+				}
+				defer s.Close()
+				var got bytes.Buffer
+				for {
+					p, e := s.Read(64)
+					got.Write(p)
+					if errors.Is(e, io.EOF) {
+						break
+					}
+					if e != nil {
+						t.Fatal(e)
+					}
+				}
+				if got.String() != "banner" {
+					t.Fatal("incomplete banner")
+				}
+				if n, e := s.Write([]byte("late")); n != 0 || e == nil {
+					t.Fatalf("write after peer EOF: %d, %v", n, e)
+				}
+			})
+		}
+	})
+}

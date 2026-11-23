@@ -20,7 +20,7 @@ func TestProtectBeforeAttempts(t *testing.T) {
 		calls.Add(1)
 		return false
 	}}
-	s := selector{ctx: t.Context(), dial: func(ctx context.Context, mode string) (*transportLane, error) { return dialLane(ctx, cfg, mode) }}
+	s := selector{ctx: t.Context(), dial: func(ctx context.Context, mode string) (*transportLane, error) { return dialLane(ctx, cfg, mode, nil) }}
 	for _, mode := range []string{"h2", "h3"} {
 		s.mode = mode
 		_, err := s.initial()
@@ -66,7 +66,7 @@ func TestEndpointResolver(t *testing.T) {
 	for _, mode := range []string{"h2", "h3"} {
 		cfg.Authority = "example.test:443"
 		cfg.Protect = func(int) bool { return false }
-		_, err := dialLane(t.Context(), cfg, mode)
+		_, err := dialLane(t.Context(), cfg, mode, nil)
 		var e *Error
 		if !errors.As(err, &e) || e.Code != Configuration {
 			t.Fatalf("%s failed before protected socket: %v", mode, err)
@@ -74,7 +74,7 @@ func TestEndpointResolver(t *testing.T) {
 		for _, failure := range []error{nil, errors.New("DNS unavailable")} {
 			invalid := cfg
 			invalid.Resolve = func(context.Context, string) ([]netip.Addr, error) { return nil, failure }
-			_, err := dialLane(t.Context(), invalid, mode)
+			_, err := dialLane(t.Context(), invalid, mode, nil)
 			if !errors.As(err, &e) || e.Code != Interrupted {
 				t.Fatalf("%s resolve: %v", mode, err)
 			}

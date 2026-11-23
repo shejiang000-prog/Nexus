@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/elliptic"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
@@ -17,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/shejiang000-prog/Nexus/v2/proof"
+	"github.com/shejiang000-prog/Nexus/v2/transport"
 	"golang.org/x/net/http2"
 )
 
@@ -34,9 +35,10 @@ var b64 = base64.RawURLEncoding.Strict()
 
 type Invitation struct {
 	host, authority, name string
-	token                 []byte
+	token, pin            []byte
 }
 
+func (i *Invitation) Pin() []byte       { return append([]byte(nil), i.pin...) }
 func (i *Invitation) Host() string      { return i.host }
 func (i *Invitation) Authority() string { return i.authority }
 func (i *Invitation) Name() string      { return i.name }
@@ -72,7 +74,7 @@ func Parse(link string) (*Invitation, error) {
 	i := new(Invitation)
 	seen := map[string]bool{}
 	var port, version int
-	var token string
+	var token, pin string
 	for dec.More() {
 		k, err := dec.Token()
 		if err != nil {
@@ -95,7 +97,7 @@ func Parse(link string) (*Invitation, error) {
 		case "name":
 			err = dec.Decode(&i.name)
 		case "pin":
-			return nil, errors.New("此版本尚不支持带证书固定值的邀请")
+			err = dec.Decode(&pin)
 		default:
 			return nil, invalidInvite
 		}
@@ -106,10 +108,24 @@ func Parse(link string) (*Invitation, error) {
 	if end, err := dec.Token(); err != nil || end != json.Delim('}') {
 		return nil, invalidInvite
 	}
-	if _, err = dec.Token(); err != io.EOF || version != 2 || port < 1 || port > 65535 || i.host != strings.ToLower(i.host) || net.ParseIP(i.host) != nil || strings.ContainsAny(i.host, "[]:%") {
+	if _, err = dec.Token(); err != io.EOF || version != 2 || port < 1 || port > 65535 {
 		return nil, invalidInvite
 	}
 	if len(i.name) > 128 || strings.IndexFunc(i.name, func(r rune) bool { return unicode.IsControl(r) || unicode.In(r, unicode.Cf) }) >= 0 {
+		return nil, invalidInvite
+	}
+	if seen["pin"] {
+		i.pin, err = from64(pin)
+		if err != nil || len(i.pin) != 32 {
+			return nil, invalidInvite
+		}
+	}
+	if ip, err := netip.ParseAddr(i.host); err == nil {
+		if ip.Zone() != "" || i.pin == nil {
+			return nil, invalidInvite
+		}
+		i.host = ip.Unmap().String()
+	} else if i.host != strings.ToLower(i.host) || strings.ContainsAny(i.host, "[]:%") || strings.Trim(i.host, ".0123456789") == "" {
 		return nil, invalidInvite
 	}
 	i.authority, err = proof.Authority(net.JoinHostPort(i.host, strconv.Itoa(port)))
@@ -137,10 +153,10 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 	if i == nil || len(i.token) != 32 || len(request) != 16 || len(public) != 33 || signer == nil {
 		return nil, configErr
 	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: i.host, NextProtos: []string{"h2"}}
+	var roots *x509.CertPool
 	if len(ca) > 0 {
-		cfg.RootCAs = x509.NewCertPool()
-		if !cfg.RootCAs.AppendCertsFromPEM(ca) {
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
 			return nil, configErr
 		}
 	}
@@ -149,9 +165,12 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	d := tls.Dialer{Config: cfg}
-	conn, err := d.DialContext(ctx, "tcp", endpoint)
+	conn, export, err := transport.DialEnrollment(ctx, endpoint, i.host, roots, i.pin)
 	if err != nil {
+		var typed *transport.Error
+		if errors.As(err, &typed) && typed.Code == transport.Certificate {
+			return nil, &transport.Error{Code: transport.Certificate, Cause: errors.New("节点证书验证失败")}
+		}
 		return nil, errors.New("无法建立受信的节点连接，请检查网络和证书")
 	}
 	defer conn.Close()
@@ -159,11 +178,7 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 	if err = conn.SetDeadline(deadline); err != nil {
 		return nil, errors.New("无法连接节点")
 	}
-	state := conn.(*tls.Conn).ConnectionState()
-	if state.NegotiatedProtocol != "h2" {
-		return nil, errors.New("节点不支持注册所需的 HTTP/2")
-	}
-	secret, err := proof.Secret(i.authority, state.ExportKeyingMaterial)
+	secret, err := proof.Secret(i.authority, export)
 	if err != nil {
 		return nil, errors.New("建立设备注册证明失败")
 	}

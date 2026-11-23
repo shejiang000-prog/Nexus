@@ -536,7 +536,7 @@ func terminalDialError(e error) bool {
 	var h x509.HostnameError
 	var v x509.CertificateInvalidError
 	var typed *Error
-	return errors.As(e, &a) || errors.As(e, &h) || errors.As(e, &v) || (errors.As(e, &typed) && (typed.Code == Authentication || typed.Code == Configuration))
+	return errors.As(e, &a) || errors.As(e, &h) || errors.As(e, &v) || (errors.As(e, &typed) && (typed.Code == Certificate || typed.Code == Authentication || typed.Code == Configuration))
 }
 func (s *selector) drainH3(old, backup *transportLane) {
 	prev, since := old.stats(), time.Now()

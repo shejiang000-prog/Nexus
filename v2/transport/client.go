@@ -57,16 +57,27 @@ func (e *Error) Unwrap() error { return e.Cause }
 
 type Client struct {
 	s      *selector
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	expiry *atomic.Int64
 }
 
-func Start(parent context.Context, c Config) (*Client, error) {
+func Start(parent context.Context, c Config) (*Client, error) { return StartPinned(parent, c, nil) }
+
+// StartPinned enforces a SHA-256 leaf SPKI pin on initial, replacement and recovery connections.
+func StartPinned(parent context.Context, c Config, pin []byte) (*Client, error) {
+	if len(pin) != 0 && len(pin) != 32 {
+		return nil, &Error{Certificate, errors.New("invalid certificate pin")}
+	}
+	pin = append([]byte(nil), pin...)
 	a, e := proof.Authority(c.Authority)
 	if e != nil || c.Sign == nil {
 		return nil, &Error{Configuration, errors.New("authority and signer required")}
 	}
 	c.Authority = a
+	host, _, _ := net.SplitHostPort(a)
+	if net.ParseIP(host) != nil && len(pin) != 32 {
+		return nil, &Error{Certificate, errors.New("IP authority requires a certificate pin")}
+	}
 	if c.Endpoint == "" {
 		c.Endpoint = a
 	}
@@ -86,7 +97,7 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	if e != nil || !strings.HasPrefix(c.HealthPath, "/") || strings.HasPrefix(c.HealthPath, "//") || u.IsAbs() {
 		return nil, &Error{Configuration, errors.New("invalid health path")}
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	s := &selector{ctx: ctx, mode: c.Mode, androidVPN: runtime.GOOS == "android" && c.Protect != nil, events: make(chan string, 2)}
 	if s.androidVPN {
 		s.wake = make(chan struct{}, 1)
@@ -94,16 +105,28 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	expiry := new(atomic.Int64)
 	expiry.Store(-1)
 	s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
-		l, err := dialLane(ctx, c, kind)
-		if err == nil {
+		l, err := dialLane(ctx, c, kind, pin)
+		if err != nil {
+			var typed *Error
+			if errors.As(networkError(err), &typed) && typed.Code == Certificate {
+				cancel(typed)
+			}
+		} else {
 			l.wake = s.wake
 			l.expiry = expiry
 		}
 		return l, err
 	}
 	l, e := s.initial()
+	if cause := context.Cause(ctx); cause != nil {
+		cancel(cause)
+		if l != nil {
+			l.close()
+		}
+		return nil, networkError(cause)
+	}
 	if e != nil {
-		cancel()
+		cancel(e)
 		return nil, networkError(e)
 	}
 	s.lane = l
@@ -126,7 +149,7 @@ func Start(parent context.Context, c Config) (*Client, error) {
 	}
 	return &Client{s: s, cancel: cancel, expiry: expiry}, nil
 }
-func (c *Client) Stop() { c.cancel(); c.s.current().close() }
+func (c *Client) Stop() { c.cancel(nil); c.s.current().close() }
 
 // SetRecoveryAllowed controls background H3 recovery for this client.
 func (c *Client) SetRecoveryAllowed(allowed bool) { c.s.setRecoveryAllowed(allowed) }
@@ -141,7 +164,7 @@ func (c *Client) acquire(business bool) (*transportLane, error) {
 	s.mu.Lock()
 	if s.ctx.Err() != nil {
 		s.mu.Unlock()
-		return nil, &Error{Interrupted, s.ctx.Err()}
+		return nil, networkError(context.Cause(s.ctx))
 	}
 	l := s.lane
 	changed := false
@@ -158,6 +181,9 @@ func (c *Client) acquire(business bool) (*transportLane, error) {
 		}
 		if err != nil {
 			s.mu.Unlock()
+			if cause := context.Cause(s.ctx); cause != nil {
+				return nil, networkError(cause)
+			}
 			return nil, networkError(err)
 		}
 		// A peer can send GOAWAY while earlier streams are still draining.
@@ -180,7 +206,7 @@ func (c *Client) acquire(business bool) (*transportLane, error) {
 				l.active.Add(-1)
 				l.opening.Add(-1)
 			}
-			return nil, &Error{Interrupted, s.ctx.Err()}
+			return nil, networkError(context.Cause(s.ctx))
 		}
 	}
 	return l, nil
@@ -198,12 +224,12 @@ func networkError(e error) error {
 	}
 	return &Error{Interrupted, e}
 }
-func dialLane(ctx context.Context, c Config, kind string) (*transportLane, error) {
+func dialLane(ctx context.Context, c Config, kind string, pin []byte) (*transportLane, error) {
 	return dialEndpoint(ctx, c, func(ctx context.Context, peer netip.AddrPort) (*transportLane, error) {
-		return dialAddress(ctx, c, kind, peer)
+		return dialAddress(ctx, c, kind, peer, pin)
 	})
 }
-func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort) (_ *transportLane, err error) {
+func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort, pin []byte) (_ *transportLane, err error) {
 	name, _, _ := net.SplitHostPort(c.Authority)
 	l := &transportLane{authority: c.Authority, kind: kind, health: "https://" + c.Authority + c.HealthPath}
 	var export proof.Exporter
@@ -213,7 +239,7 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		}
 	}()
 	if kind == "h2" {
-		sock, e := dialTCP(ctx, peer.String(), name, c.ClientHello, c.Roots, c.Protect)
+		sock, e := dialTCP(ctx, peer.String(), name, c.ClientHello, c.Roots, c.Protect, pin)
 		if e != nil {
 			return nil, e
 		}
@@ -231,7 +257,7 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		l.usable = h.CanTakeNewRequest
 		l.round = h.RoundTrip
 	} else {
-		q, closeAll, packets, e := dialQUIC(ctx, net.UDPAddrFromAddrPort(peer), name, c.Roots, c.Protect)
+		q, closeAll, packets, e := dialQUIC(ctx, net.UDPAddrFromAddrPort(peer), name, c.Roots, c.Protect, pin)
 		if e != nil {
 			return nil, e
 		}
@@ -340,6 +366,9 @@ func (s *stream) Read(p []byte) (int, error) {
 		start = time.Now()
 	}
 	n, e := s.in.Read(p)
+	if e != nil {
+		s.out.CloseWithError(io.ErrClosedPipe)
+	}
 	if n > 0 {
 		if !start.IsZero() && time.Since(start) >= 10*time.Millisecond {
 			s.l.stalledReads.Add(1)

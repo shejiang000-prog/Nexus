@@ -25,14 +25,20 @@ func TestInvitation(t *testing.T) {
 	if err != nil || i.Authority() != "example.test:443" || i.Host() != "example.test" || i.Name() != "Home" {
 		t.Fatal("valid invite rejected")
 	}
-	pinned := link(strings.Replace(payload, `"v":2`, `"v":2,"pin":"fixture"`, 1))
-	if _, err := Parse(pinned); err == nil || err.Error() != "此版本尚不支持带证书固定值的邀请" {
-		t.Fatal("pin must be refused explicitly before enrollment")
+	pin := b64.EncodeToString(make([]byte, 32))
+	for name, want := range map[string]string{"node.test": "node.test", "127.0.0.1": "127.0.0.1", "2001:0DB8:0:0:0:0:0:1": "2001:db8::1"} {
+		withPin := strings.Replace(strings.Replace(payload, "example.test", name, 1), `"v":2`, `"v":2,"pin":"`+pin+`"`, 1)
+		got, err := Parse(link(withPin))
+		if err != nil || got.Host() != want || b64.EncodeToString(got.Pin()) != pin {
+			t.Fatalf("pinned %s: %v", name, err)
+		}
 	}
 	for _, bad := range []string{
 		link(strings.Replace(payload, `"v":2`, `"v":2,"v":2`, 1)), link(strings.Replace(payload, `"v":2`, `"v":3`, 1)),
 		link(strings.Replace(payload, "443", "0", 1)), link(strings.Replace(payload, "443", "65536", 1)), link(strings.Replace(payload, "example.test", "example.test/path", 1)),
 		link(strings.Replace(payload, "example.test", "127.0.0.1", 1)), link(strings.Replace(payload, `"invite":"`, `"invite":"X`, 1)), link(strings.Replace(payload, "Home", "\xff", 1)),
+		link(strings.Replace(payload, `"v":2`, `"v":2,"pin":"fixture"`, 1)),
+		link(strings.Replace(payload, "example.test", "2001:db8::1", 1)), link(strings.Replace(payload, "example.test", "127.000.0.1", 1)),
 		link(payload + payload), link(strings.Repeat(" ", 4097)), link(payload) + "=", strings.Replace(link(payload), "#", "?", 1),
 		link(strings.Replace(payload, `"v":2`, `"v":2,"transport":"unknown"`, 1)),
 	} {

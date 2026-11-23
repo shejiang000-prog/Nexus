@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -16,6 +18,7 @@ import (
 	quic "github.com/apernet/quic-go"
 	utls "github.com/refraction-networking/utls"
 	"github.com/shejiang000-prog/Nexus/v2/internal/congestion/bbr"
+	"github.com/shejiang000-prog/Nexus/v2/proof"
 )
 
 // Control runs while the descriptor is owned by the dialer, before connect or bind.
@@ -34,7 +37,51 @@ func socketControl(protect func(int) bool) func(string, string, syscall.RawConn)
 		return nil
 	}
 }
-func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.CertPool, protect func(int) bool) (*utls.UConn, error) {
+
+// For DNS names normal PKI runs first. For an invited IP the exact SPKI is the
+// trust anchor. Still require a matching IP SAN, current validity and server usage.
+func pinVerifier(name string, pin []byte) (bool, func([][]byte, [][]*x509.Certificate) error) {
+	if len(pin) == 0 {
+		return false, nil
+	}
+	ip := net.ParseIP(name) != nil
+	return ip, func(raw [][]byte, _ [][]*x509.Certificate) error {
+		if len(raw) == 0 {
+			return &Error{Certificate, errors.New("missing peer certificate")}
+		}
+		leaf, err := x509.ParseCertificate(raw[0])
+		if err != nil {
+			return &Error{Certificate, err}
+		}
+		digest := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+		if !bytes.Equal(pin, digest[:]) {
+			return &Error{Certificate, errors.New("certificate pin mismatch")}
+		}
+		if ip {
+			roots := x509.NewCertPool()
+			roots.AddCert(leaf)
+			if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: name}); err != nil {
+				return &Error{Certificate, err}
+			}
+		}
+		return nil
+	}
+}
+
+// DialEnrollment opens the same H2/TLS carrier as a business connection and
+// returns the exporter of that particular handshake for the invitation proof.
+func DialEnrollment(ctx context.Context, addr, name string, roots *x509.CertPool, pin []byte) (net.Conn, proof.Exporter, error) {
+	if (len(pin) != 0 && len(pin) != sha256.Size) || (net.ParseIP(name) != nil && len(pin) != sha256.Size) {
+		return nil, nil, &Error{Certificate, errors.New("invalid certificate pin")}
+	}
+	conn, err := dialTCP(ctx, addr, name, nil, roots, nil, pin)
+	if err != nil {
+		return nil, nil, networkError(err)
+	}
+	state := conn.ConnectionState()
+	return conn, state.ExportKeyingMaterial, nil
+}
+func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.CertPool, protect func(int) bool, pin []byte) (*utls.UConn, error) {
 	var spec *utls.ClientHelloSpec
 	var e error
 	if len(raw) == 0 {
@@ -74,7 +121,8 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	if e != nil {
 		return nil, e
 	}
-	c := utls.UClient(sock, &utls.Config{ServerName: name, RootCAs: roots}, utls.HelloCustom)
+	pinnedIP, verify := pinVerifier(name, pin)
+	c := utls.UClient(sock, &utls.Config{ServerName: name, RootCAs: roots, InsecureSkipVerify: pinnedIP, VerifyPeerCertificate: verify}, utls.HelloCustom)
 	if e = c.ApplyPreset(spec); e == nil {
 		e = c.HandshakeContext(ctx)
 	}
@@ -89,7 +137,7 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 	return c, nil
 }
 
-func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.CertPool, protect func(int) bool) (*quic.Conn, func(), func() packetCounters, error) {
+func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.CertPool, protect func(int) bool, pin []byte) (*quic.Conn, func(), func() packetCounters, error) {
 	family, bind := "udp4", "0.0.0.0:0"
 	if peer.IP.To4() == nil {
 		family, bind = "udp6", "[::]:0"
@@ -100,7 +148,8 @@ func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.C
 	}
 	tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
 	closeAll := func() { tr.Close(); sock.Close() }
-	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
+	pinnedIP, verify := pinVerifier(name, pin)
+	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, InsecureSkipVerify: pinnedIP, VerifyPeerCertificate: verify, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
 	if e != nil {
 		closeAll()
 		return nil, nil, nil, e

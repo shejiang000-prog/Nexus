@@ -66,7 +66,7 @@ def prepare(out, android):
     try:
         aper, canonical, caddy = (out / s for s in ("aper", "canonical", "caddy"))
         unpack(QUIC, aper)
-        patch(aper, "quic-exporter", "quic-context")
+        patch(aper, "quic-exporter", "quic-context", "quic-handshake-errors")
         shutil.copytree(aper, canonical)
         for f in canonical.rglob("*"):
             if f.is_file() and (f.suffix == ".go" or f.name == "go.mod"):

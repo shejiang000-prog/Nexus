@@ -35,7 +35,7 @@ func TestDefaultH2ClientHello(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := dialTCP(ctx, ln.Addr().String(), "node.test", nil, nil, nil); done <- err }()
+	go func() { _, err := dialTCP(ctx, ln.Addr().String(), "node.test", nil, nil, nil, nil); done <- err }()
 	conn, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
