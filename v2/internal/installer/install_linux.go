@@ -221,6 +221,11 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 	if err = h.preflight(ctx, d, true); err != nil {
 		return err
 	}
+	if d.CertMode == "acme" {
+		if err = h.checkCallback(ctx, o); err != nil {
+			return err
+		}
+	}
 	if retained {
 		if err = h.validateIdentity(ctx, d); err != nil {
 			return err

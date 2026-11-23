@@ -84,6 +84,30 @@ func TestDeploymentInputAndPEM(t *testing.T) {
 	}
 }
 
+func TestACMECallbackConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		answer       string
+		want, failed bool
+	}{{"yes\n", true, false}, {"\n", false, false}, {"no\n", false, false}, {"", false, true}} {
+		var output strings.Builder
+		o, err := deploymentOptions("install", []string{"--interactive"}, strings.NewReader("v2\nnexus.test\n0\n\n"+tc.answer), &output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.ConfirmDNSFailure == nil {
+			t.Fatal("missing confirmation")
+		}
+		got, err := o.ConfirmDNSFailure()
+		if tc.failed != (err != nil) || got != tc.want || !strings.Contains(output.String(), "Continue with ACME") {
+			t.Fatal(got, err)
+		}
+	}
+	o, err := deploymentOptions("install", []string{"--non-interactive", "--domain", "nexus.test", "--skip-dns-check"}, strings.NewReader(""), io.Discard)
+	if err != nil || !o.SkipDNSCheck || o.ConfirmDNSFailure != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRealityTargetHandshake(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

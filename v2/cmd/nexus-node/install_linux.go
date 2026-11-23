@@ -81,6 +81,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	if action == "install" {
 		f.BoolVar(&interactive, "interactive", false, "prompt for installation settings")
 		f.BoolVar(&unattended, "non-interactive", false, "use flags only")
+		f.BoolVar(&o.SkipDNSCheck, "skip-dns-check", false, "continue if the domain HTTP callback fails; ACME issuance is still required")
 		f.StringVar(&protocols, "protocols", "v2", "comma-separated v2,reality,hysteria2")
 		f.StringVar(&o.Domain, "domain", "", "node DNS name (required for V2 and Hysteria2)")
 		f.StringVar(&o.PublicHost, "public-host", "", "node IP for a domainless Reality installation")
@@ -89,7 +90,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		f.StringVar(&o.ACMERoot, "acme-root", "", "absolute PEM trust bundle for a private ACME authority")
 		f.StringVar(&o.CertFile, "cert", "", "absolute PEM certificate-chain file")
 		f.StringVar(&o.KeyFile, "key", "", "absolute PEM private-key file")
-		f.StringVar(&o.RealityTarget, "reality-target", "", "TLS target host:port (default: www.microsoft.com:443)")
+		f.StringVar(&o.RealityTarget, "reality-target", "", realityTargetHint+" (default: www.microsoft.com:443)")
 		for _, name := range []string{"v2", "reality", "hysteria2"} {
 			ports[name] = f.Int(name+"-port", 0, "public port (0 for automatic assignment)")
 		}
@@ -127,6 +128,13 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			}
 			return nil
 		}
+		o.ConfirmDNSFailure = func() (bool, error) {
+			answer := "no"
+			if err := ask("Continue with ACME despite the failed callback? (yes/no)", &answer); err != nil {
+				return false, err
+			}
+			return strings.EqualFold(answer, "yes") || strings.EqualFold(answer, "y"), nil
+		}
 		if err := ask("Protocols (v2,reality,hysteria2)", &protocols); err != nil {
 			return o, err
 		}
@@ -163,7 +171,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			if o.RealityTarget == "" {
 				o.RealityTarget = defaultRealityTarget
 			}
-			if err := ask("Reality TLS target", &o.RealityTarget); err != nil {
+			if err := ask(realityTargetHint, &o.RealityTarget); err != nil {
 				return o, err
 			}
 			if err := ask("Reality server names (default: target hostname)", &names); err != nil {
@@ -237,6 +245,9 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		return o, errors.New("--acme-root requires an absolute PEM path and a custom ACME directory")
 	}
 	if _, ok := o.Ports["reality"]; ok {
+		if ask == nil {
+			fmt.Fprintln(out, realityTargetHint)
+		}
 		if o.RealityTarget == "" {
 			o.RealityTarget = defaultRealityTarget
 		}
@@ -263,6 +274,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	return o, nil
 }
 
+const realityTargetHint = "Reality TLS target (host:port): prefer a site on the same network or in the same region as the VPS, supporting TLS 1.3 and X25519"
 const defaultRealityTarget = "www.microsoft.com:443"
 
 func dnsName(name string) bool {

@@ -3,7 +3,11 @@ package installer
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -54,19 +58,13 @@ func TestCertificateModesAndPorts(t *testing.T) {
 }
 
 func TestACMEPreflight(t *testing.T) {
-	if e := localDNS(t.Context(), "127.0.0.1"); e != nil {
-		t.Fatal("loopback", e)
-	}
-	if e := localDNS(t.Context(), "192.0.2.73"); e == nil {
-		t.Fatal("accepted nonlocal address")
-	}
 	l := newLab(t)
-	l.dnsCheck = func(context.Context, string) error { return errors.New("unrelated A record") }
+	l.dnsCheck = func(context.Context, string) error { return errCallbackFailed }
 	input := Options{Domain: "node.test", NodePath: "/bin/true"}
-	if err := l.run(t.Context(), "install", input, sampleRender); err == nil || !strings.Contains(err.Error(), "DNS preflight") || l.user {
+	if err := l.run(t.Context(), "install", input, sampleRender); err == nil || !strings.Contains(err.Error(), "--skip-dns-check") || l.user {
 		t.Fatal(err)
 	}
-	l.dnsCheck = func(context.Context, string) error { return nil }
+	input.SkipDNSCheck = true
 	l.busy = "tcp LISTEN 0 100 *:80 *:*"
 	if err := l.run(t.Context(), "install", input, sampleRender); err == nil || !strings.Contains(err.Error(), "80/tcp") || l.user {
 		t.Fatal(err)
@@ -109,5 +107,91 @@ func TestLegacyLayoutManagement(t *testing.T) {
 	}
 	if e = l.run(t.Context(), "uninstall", Options{Purge: true}, nil); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestACMEHairpinNAT(t *testing.T) {
+	const env = "NEXUS_TEST_ACME_HAIRPIN"
+	if os.Getenv(env) != "namespace" {
+		if os.Geteuid() != 0 || exec.Command("unshare", "-nm", "true").Run() != nil {
+			t.Skip("requires private network and mount namespaces")
+		}
+		cmd := exec.CommandContext(t.Context(), "unshare", "-nm", "--propagation", "private", os.Args[0], "-test.run=^TestACMEHairpinNAT$", "-test.v")
+		cmd.Env = append(os.Environ(), env+"=namespace")
+		if b, e := cmd.CombinedOutput(); e != nil {
+			t.Fatalf("%v: %s", e, b)
+		}
+		return
+	}
+	for _, ns := range []string{"net", "mnt"} {
+		self, e := os.Readlink("/proc/self/ns/" + ns)
+		if e != nil {
+			t.Fatal(e)
+		}
+		init, e := os.Readlink("/proc/1/ns/" + ns)
+		if e != nil || init == self {
+			t.Fatal("missing test namespace isolation")
+		}
+	}
+	run := func(name string, args ...string) string {
+		t.Helper()
+		b, err := exec.CommandContext(t.Context(), name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v: %s", name, err, b)
+		}
+		return string(b)
+	}
+	run("mount", "--make-rprivate", "/")
+	hosts := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n192.0.2.87 node.test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("mount", "--bind", hosts, "/etc/hosts")
+	run("ip", "link", "set", "lo", "up")
+	run("ip", "addr", "add", "10.78.0.2/32", "dev", "lo")
+	run("ip", "route", "add", "192.0.2.87/32", "dev", "lo", "src", "10.78.0.2")
+	if strings.Contains(run("ip", "-br", "addr"), "192.0.2.87") {
+		t.Fatal("public IP is assigned to an interface")
+	}
+	run("nft", "add", "table", "ip", "lab")
+	run("nft", "add", "chain", "ip", "lab", "callback", "{ type nat hook output priority dstnat; }")
+	run("nft", "add", "rule", "ip", "lab", "callback", "ip", "daddr", "192.0.2.87", "tcp", "dport", "80", "counter", "dnat", "to", "10.78.0.2")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+	h := host{out: io.Discard}
+	o := Options{Domain: "node.test"}
+	if err := h.checkCallback(t.Context(), o); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(run("nft", "list", "chain", "ip", "lab", "callback"), "counter packets 0 ") {
+		t.Fatal("callback did not cross DNAT")
+	}
+	run("nft", "delete", "table", "ip", "lab")
+	run("ip", "route", "replace", "unreachable", "192.0.2.87/32")
+	if err := h.checkCallback(t.Context(), o); !errors.Is(err, errCallbackFailed) || !strings.Contains(err.Error(), "--skip-dns-check") {
+		t.Fatal("unattended", err)
+	}
+	// An interactive run must still confirm, even with the unattended override.
+	o.SkipDNSCheck = true
+	var prompts int
+	for _, yes := range []bool{false, true} {
+		o.ConfirmDNSFailure = func() (bool, error) { prompts++; return yes, nil }
+		if err := h.checkCallback(t.Context(), o); (err == nil) != yes {
+			t.Fatal("interactive", yes, err)
+		}
+	}
+	if prompts != 2 {
+		t.Fatal("failed callback did not prompt")
+	}
+	o.ConfirmDNSFailure = nil
+	if err := h.checkCallback(t.Context(), o); err != nil {
+		t.Fatal("explicit override", err)
+	}
+	ln, err := net.Listen("tcp", ":80")
+	if err != nil {
+		t.Fatal("probe left its listener open", err)
+	}
+	defer ln.Close()
+	if err = h.checkCallback(t.Context(), o); err == nil || errors.Is(err, errCallbackFailed) {
+		t.Fatal("waived local listener conflict", err)
 	}
 }

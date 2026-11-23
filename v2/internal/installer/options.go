@@ -15,7 +15,8 @@ type Options struct {
 	PublicHost, ACMECA, ACMERoot                                 string
 	RealityServerNames                                           []string
 	Ports                                                        map[string]int
-	Purge                                                        bool
+	Purge, SkipDNSCheck                                          bool
+	ConfirmDNSFailure                                            func() (bool, error)
 }
 type RenderFunc func(context.Context, Options, string) error
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,15 +116,6 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 			return fmt.Errorf("insufficient free space at %s", p)
 		}
 	}
-	if d.CertMode == "acme" {
-		check := h.dnsCheck
-		if check == nil {
-			check = localDNS
-		}
-		if e := check(ctx, d.Domain); e != nil {
-			return fmt.Errorf("ACME DNS preflight for %s: %w", d.Domain, e)
-		}
-	}
 	if _, e := h.firewallPending(ctx, d, true); e != nil {
 		return e
 	}
@@ -142,34 +132,6 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 	}
 	return nil
 }
-func localDNS(ctx context.Context, domain string) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	records, err := net.DefaultResolver.LookupNetIP(ctx, "ip", domain)
-	if err != nil {
-		return err
-	}
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return err
-	}
-	local := make(map[netip.Addr]bool)
-	for _, a := range addrs {
-		if prefix, e := netip.ParsePrefix(a.String()); e == nil {
-			local[prefix.Addr().Unmap()] = true
-		}
-	}
-	if len(records) == 0 {
-		return errors.New("no A or AAAA records")
-	}
-	for _, ip := range records {
-		if !local[ip.Unmap()] {
-			return fmt.Errorf("DNS address %s is not assigned to a local interface", ip)
-		}
-	}
-	return nil
-}
-
 func listening(output string, s socket) bool {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
