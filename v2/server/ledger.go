@@ -149,10 +149,18 @@ func initSchema(db *sql.DB) error {
 		}
 		fallthrough
 	case 4:
-		if _, err = tx.Exec(compatSchema); err != nil {
+		if err = initCompatSchema(tx); err != nil {
 			return err
 		}
 	case 5:
+		var current bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='compat_reality_key')
+			AND NOT EXISTS(SELECT 1 FROM pragma_table_info('compat_credentials') WHERE name='private_key')`).Scan(&current); err != nil {
+			return err
+		}
+		if !current {
+			return errors.New("unsupported experimental v5 ledger layout; back up the database and rebuild the ledger at a new path")
+		}
 	default:
 		return fmt.Errorf("unsupported ledger schema v%d; rebuild the ledger at a new path", version)
 	}

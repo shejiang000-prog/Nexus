@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,12 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	if _, err := l.CompatExport(ctx, user); err == nil {
 		t.Fatal("exported pending state")
 	}
+	empty, err := l.CompatSnapshot(ctx, "reality")
+	check(err)
+	node := empty.RealityKey
+	if node == nil || node.Generation != 1 || node.PrivateKey == "" || node.PublicKey == "" || len(node.ShortID) != 16 {
+		t.Fatal("missing initial Reality identity")
+	}
 	var first, second compat.Credential
 	apply := func(p string, capture *compat.Credential, fail bool) error {
 		return l.ApplyCompat(ctx, p, false, func(s compat.Snapshot) error {
@@ -75,7 +82,7 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "sensitive") {
 		t.Fatal("wrong failure handling")
 	}
-	if first.UUID == second.UUID || first.PrivateKey == second.PrivateKey || first.PublicKey == second.PublicKey || first.ShortID == second.ShortID {
+	if first.UUID == second.UUID {
 		t.Fatal("rotation retained old material")
 	}
 	check(l.ChangeCompat(ctx, user, "reality", "rotate"))
@@ -86,7 +93,7 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	}
 	exported, err := l.CompatExport(ctx, user)
 	check(err)
-	if len(exported) != 2 || exported["reality"].PrivateKey != "" || exported["reality"].PublicKey != second.PublicKey {
+	if len(exported) != 2 || exported["reality"].PublicKey != node.PublicKey || exported["reality"].ShortID != node.ShortID {
 		t.Fatal("wrong public credential projection")
 	}
 	status, err := l.CompatStatus(ctx, user)
@@ -130,7 +137,7 @@ func TestCompatSchemaFourAndLifecycle(t *testing.T) {
 	}
 	var audit bytes.Buffer
 	check(l.List(ctx, "audit", &audit))
-	for _, secret := range []string{first.UUID, second.PrivateKey, second.ShortID, exported["hysteria2"].Password} {
+	for _, secret := range []string{first.UUID, second.UUID, node.PrivateKey, node.ShortID, exported["hysteria2"].Password} {
 		if strings.Contains(audit.String(), secret) {
 			t.Fatal("audit exposed credentials")
 		}
@@ -212,5 +219,115 @@ func TestCompatConcurrentApply(t *testing.T) {
 	status, err := l.CompatStatus(ctx, user)
 	if err != nil || len(status) != 1 || status[0].Enabled || status[0].AppliedGeneration != 2 {
 		t.Fatal("stale application acknowledgement", err)
+	}
+}
+
+func TestRealityNodeRotation(t *testing.T) {
+	ctx := t.Context()
+	l, err := OpenLedger(filepath.Join(t.TempDir(), "ledger.db"))
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(err)
+	defer l.Close()
+	original, err := l.CompatSnapshot(ctx, "reality")
+	check(err)
+	if original.RealityKey == nil || len(original.Credentials) != 0 {
+		t.Fatal("empty Reality service lacks a node identity")
+	}
+	hy, err := l.CompatSnapshot(ctx, "hysteria2")
+	check(err)
+	if hy.RealityKey != nil {
+		t.Fatal("Hysteria2 received a Reality key")
+	}
+	users := []proof.ID{{1}, {2}}
+	for _, user := range users {
+		check(l.CreateUser(ctx, user))
+		check(l.ChangeCompat(ctx, user, "reality", "enable"))
+	}
+	var snap compat.Snapshot
+	apply := func(s compat.Snapshot) error { snap = s; return nil }
+	check(l.ApplyCompat(ctx, "reality", false, apply))
+	old := snap
+	if !reflect.DeepEqual(original.RealityKey, old.RealityKey) || len(old.Credentials) != 2 || old.Credentials[0].UUID == old.Credentials[1].UUID {
+		t.Fatal("invalid shared identity or per-user UUIDs")
+	}
+	// A node rotation may arrive while an older snapshot is in flight.
+	check(l.ApplyCompat(ctx, "reality", true, func(compat.Snapshot) error { return l.RotateRealityKey(ctx) }))
+	for _, user := range users {
+		if _, err := l.CompatExport(ctx, user); err == nil {
+			t.Fatal("stale acknowledgement enabled export")
+		}
+	}
+	if err := l.ApplyCompat(ctx, "reality", false, func(s compat.Snapshot) error { snap = s; return errors.New("upstream unavailable") }); err == nil {
+		t.Fatal("missing application failure")
+	}
+	rotated := snap
+	if rotated.RealityKey.Generation != old.RealityKey.Generation+1 || rotated.RealityKey.PrivateKey == old.RealityKey.PrivateKey || rotated.RealityKey.PublicKey == old.RealityKey.PublicKey || rotated.RealityKey.ShortID == old.RealityKey.ShortID || !reflect.DeepEqual(rotated.Credentials, old.Credentials) {
+		t.Fatal("wrong node rotation scope")
+	}
+	check(l.RotateRealityKey(ctx))
+	check(l.ApplyCompat(ctx, "reality", false, apply))
+	if !reflect.DeepEqual(snap, rotated) {
+		t.Fatal("node rotation retry changed the pending generation")
+	}
+	for _, user := range users {
+		c, err := l.CompatExport(ctx, user)
+		check(err)
+		if c["reality"].PublicKey != rotated.RealityKey.PublicKey || c["reality"].ShortID != rotated.RealityKey.ShortID {
+			t.Fatal("exported wrong node generation")
+		}
+		st, err := l.CompatStatus(ctx, user)
+		check(err)
+		if len(st) != 1 || st[0].NodeKeyGeneration != 2 || st[0].NodeKeyAppliedGeneration != 2 || st[0].Generation != 1 || st[0].NodeKeyResult != "applied" {
+			t.Fatal("missing node status")
+		}
+	}
+	var audit bytes.Buffer
+	check(l.List(ctx, "audit", &audit))
+	if strings.Count(audit.String(), `"action":"compat_rotate_node_key"`) != 1 || strings.Contains(audit.String(), rotated.RealityKey.PrivateKey) || strings.Contains(audit.String(), rotated.RealityKey.ShortID) {
+		t.Fatal("invalid node rotation audit")
+	}
+	backup := filepath.Join(t.TempDir(), "snapshot.db")
+	check(l.Backup(ctx, backup))
+	restored, err := OpenLedger(backup)
+	check(err)
+	defer restored.Close()
+	restoredSnapshot, err := restored.CompatSnapshot(ctx, "reality")
+	check(err)
+	if !reflect.DeepEqual(restoredSnapshot, rotated) {
+		t.Fatal("backup lost identity or credentials")
+	}
+}
+
+func TestRejectExperimentalV5Ledger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err = old.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Exec(`CREATE TABLE compat_credentials(user_id BLOB,private_key TEXT); INSERT INTO users VALUES(zeroblob(16),NULL); PRAGMA user_version=5`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ledger, err := OpenLedger(path); err == nil {
+		ledger.Close()
+		t.Fatal("experimental v5 was accepted")
+	} else if !strings.Contains(err.Error(), "back up") || !strings.Contains(err.Error(), "rebuild") {
+		t.Fatal("missing recovery instructions", err)
+	}
+	var intact bool
+	if err := old.QueryRow(`SELECT (SELECT COUNT(*) FROM users)=1 AND (SELECT user_version FROM pragma_user_version)=5 AND NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='compat_reality_key')`).Scan(&intact); err != nil || !intact {
+		t.Fatal("rejected ledger was modified", err)
 	}
 }

@@ -19,11 +19,13 @@ import (
 	"github.com/shejiang000-prog/Nexus/v2/server"
 )
 
-var compatUsage = errors.New("usage: ledger DB compat {enable|disable|rotate} USER_HEX PROTOCOL | apply PROTOCOL | status USER_HEX | export USER_HEX {links|mihomo} [--root ABSOLUTE_ROOT]")
+var compatUsage = errors.New("usage: ledger DB compat {enable|disable|rotate} USER_HEX PROTOCOL | rotate-node-key reality | apply PROTOCOL | status USER_HEX | export USER_HEX {links|mihomo} [--root ABSOLUTE_ROOT]")
 
 type compatDeployment struct {
-	Domain string         `json:"domain"`
-	Ports  map[string]int `json:"ports"`
+	Domain             string         `json:"domain"`
+	PublicHost         string         `json:"public_host"`
+	RealityServerNames []string       `json:"reality_server_names"`
+	Ports              map[string]int `json:"ports"`
 }
 
 func compatAdmin(args []string, out io.Writer) (bool, error) {
@@ -56,7 +58,7 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 			return true, compatUsage
 		}
 		want = 1
-	case "status", "apply":
+	case "status", "apply", "rotate-node-key":
 		want = 1
 	case "enable", "disable", "rotate", "export":
 	default:
@@ -65,7 +67,7 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	if len(tail) != want {
 		return true, compatUsage
 	}
-	if action != "apply" {
+	if action != "apply" && action != "rotate-node-key" {
 		if len(tail[0]) != 32 {
 			return true, compatUsage
 		}
@@ -78,6 +80,9 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 		if protocol != "reality" && protocol != "hysteria2" {
 			return true, compatUsage
 		}
+	}
+	if action == "rotate-node-key" && protocol != "reality" {
+		return true, compatUsage
 	}
 	if action == "export" && protocol != "links" && protocol != "mihomo" {
 		return true, compatUsage
@@ -140,7 +145,7 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	if err := json.Unmarshal(deployment, &cfg); err != nil || cfg.Domain == "" {
+	if err := json.Unmarshal(deployment, &cfg); err != nil {
 		return true, errors.New("invalid compatibility deployment")
 	}
 	if action == "export" {
@@ -153,13 +158,19 @@ func compatAdmin(args []string, out io.Writer) (bool, error) {
 	if port := cfg.Ports[protocol]; port < 1 || port > 65535 {
 		return true, errors.New("protocol is not installed")
 	}
+	if action == "rotate-node-key" {
+		if err := l.RotateRealityKey(ctx); err != nil {
+			return true, err
+		}
+		return true, apply(protocol, false)
+	}
 	if err := l.ChangeCompat(ctx, user, protocol, action); err != nil {
 		return true, err
 	}
 	return true, apply(protocol, false)
 }
 
-func exportCompat(out io.Writer, cfg compatDeployment, creds map[string]compat.Credential, format string) error {
+func exportCompat(out io.Writer, cfg compatDeployment, creds map[string]server.CompatShare, format string) error {
 	var doc strings.Builder
 	if format == "mihomo" {
 		doc.WriteString("proxies:\n")
@@ -173,13 +184,23 @@ func exportCompat(out io.Writer, cfg compatDeployment, creds map[string]compat.C
 		if port < 1 || port > 65535 {
 			return errors.New("protocol is not installed")
 		}
-		host := net.JoinHostPort(cfg.Domain, strconv.Itoa(port))
+		endpoint := cfg.Domain
+		if endpoint == "" {
+			if p != "reality" || net.ParseIP(cfg.PublicHost) == nil {
+				return errors.New("missing deployment endpoint")
+			}
+			endpoint = cfg.PublicHost
+		}
+		host := net.JoinHostPort(endpoint, strconv.Itoa(port))
 		name := "Nexus " + p
 		u := url.URL{Scheme: p, Host: host, Fragment: name}
 		sni := cfg.Domain
 		q := url.Values{}
 		if p == "reality" {
-			sni = c.UserID + "." + cfg.Domain
+			if len(cfg.RealityServerNames) == 0 || cfg.RealityServerNames[0] == "" {
+				return errors.New("missing Reality server name")
+			}
+			sni = cfg.RealityServerNames[0]
 			u.Scheme = "vless"
 			u.User = url.User(c.UUID)
 			q = url.Values{"encryption": {"none"}, "flow": {"xtls-rprx-vision"}, "security": {"reality"}, "type": {"tcp"}, "fp": {"chrome"}, "pbk": {c.PublicKey}, "sid": {c.ShortID}}
@@ -192,7 +213,7 @@ func exportCompat(out io.Writer, cfg compatDeployment, creds map[string]compat.C
 			fmt.Fprintln(&doc, u.String())
 			continue
 		}
-		fmt.Fprintf(&doc, "  - name: %q\n    type: %s\n    server: %q\n    port: %d\n    udp: true\n", name, u.Scheme, cfg.Domain, port)
+		fmt.Fprintf(&doc, "  - name: %q\n    type: %s\n    server: %q\n    port: %d\n    udp: true\n", name, u.Scheme, endpoint, port)
 		if p == "reality" {
 			fmt.Fprintf(&doc, "    network: tcp\n    tls: true\n    uuid: %q\n    flow: xtls-rprx-vision\n    servername: %q\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: %q\n      short-id: %q\n", c.UUID, sni, c.PublicKey, c.ShortID)
 		} else {

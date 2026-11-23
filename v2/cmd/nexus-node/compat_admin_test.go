@@ -39,7 +39,7 @@ func TestLocalCompatDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.Close()
-	if err := os.WriteFile(filepath.Join(etc, "deployment.json"), []byte(`{"domain":"test.invalid","ports":{"reality":2443,"hysteria2":3443}}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(etc, "deployment.json"), []byte(`{"domain":"test.invalid","reality_server_names":["primary.invalid","other.invalid"],"ports":{"reality":2443,"hysteria2":3443}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	buf := new(bytes.Buffer)
@@ -82,13 +82,15 @@ func TestLocalCompatDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rc := (<-reality).Credentials[0]
+	rs := <-reality
+	rc := rs.Credentials[0]
+	key := rs.RealityKey
 	hc := (<-hy).Credentials[0]
 	if err := run("export", user, "links"); err != nil {
 		t.Fatal(err)
 	}
 	raw := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(raw) != 2 || strings.Contains(buf.String(), rc.PrivateKey) {
+	if len(raw) != 2 || strings.Contains(buf.String(), key.PrivateKey) {
 		t.Fatal("invalid link projection")
 	}
 	v, e1 := url.Parse(raw[0])
@@ -97,7 +99,7 @@ func TestLocalCompatDelivery(t *testing.T) {
 		t.Fatal("invalid link syntax")
 	}
 	pw, _ := h.User.Password()
-	if v.Scheme != "vless" || v.User.Username() != rc.UUID || v.Query().Get("pbk") != rc.PublicKey || v.Query().Get("sid") != rc.ShortID || v.Query().Get("sni") != user+".test.invalid" || v.Port() != "2443" || h.Scheme != "hysteria2" || h.Port() != "3443" || h.User.Username() != user || pw != hc.Password {
+	if v.Scheme != "vless" || v.User.Username() != rc.UUID || v.Query().Get("pbk") != key.PublicKey || v.Query().Get("sid") != key.ShortID || v.Query().Get("sni") != "primary.invalid" || v.Port() != "2443" || h.Scheme != "hysteria2" || h.Port() != "3443" || h.User.Username() != user || pw != hc.Password {
 		t.Fatal("wrong link fields")
 	}
 	if err := run("export", user, "mihomo"); err != nil {
@@ -116,8 +118,15 @@ func TestLocalCompatDelivery(t *testing.T) {
 		t.Fatal("invalid mihomo YAML")
 	}
 	vp, hp := doc.Proxies[0], doc.Proxies[1]
-	if vp.Type != "vless" || vp.UUID != rc.UUID || !vp.TLS || vp.Reality["public-key"] != rc.PublicKey || hp.Type != "hysteria2" || hp.Password != user+":"+hc.Password || hp.VerifyOff {
+	if vp.Type != "vless" || vp.UUID != rc.UUID || !vp.TLS || vp.Reality["public-key"] != key.PublicKey || hp.Type != "hysteria2" || hp.Password != user+":"+hc.Password || hp.VerifyOff {
 		t.Fatal("wrong mihomo fields")
+	}
+	if err := run("rotate-node-key", "reality"); err != nil {
+		t.Fatal(err)
+	}
+	rotated := <-reality
+	if rotated.RealityKey.Generation != key.Generation+1 || rotated.RealityKey.PublicKey == key.PublicKey || rotated.Credentials[0] != rc {
+		t.Fatal("wrong node key rotation scope")
 	}
 	buf.Reset()
 	_, err = compatAdmin([]string{db, "revoke-user", user, "--root", root}, buf)
@@ -129,5 +138,28 @@ func TestLocalCompatDelivery(t *testing.T) {
 	}
 	if err := run("export", user, "links"); err == nil {
 		t.Fatal("export after revoke")
+	}
+}
+
+func TestRealityDeliveryWithoutDomain(t *testing.T) {
+	cfg := compatDeployment{PublicHost: "2001:db8::2", RealityServerNames: []string{"target.invalid"}, Ports: map[string]int{"reality": 443}}
+	creds := map[string]server.CompatShare{"reality": {UUID: "test-uuid", PublicKey: "test-key", ShortID: "1234"}}
+	var out bytes.Buffer
+	if err := exportCompat(&out, cfg, creds, "links"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(strings.TrimSpace(out.String()))
+	if err != nil || u.Hostname() != cfg.PublicHost || u.Port() != "443" || u.Query().Get("sni") != "target.invalid" {
+		t.Fatal("invalid IP delivery")
+	}
+	out.Reset()
+	if err := exportCompat(&out, cfg, creds, "mihomo"); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Proxies []struct{ Server, Servername string }
+	}
+	if err := yaml.Unmarshal(out.Bytes(), &doc); err != nil || len(doc.Proxies) != 1 || doc.Proxies[0].Server != cfg.PublicHost || doc.Proxies[0].Servername != "target.invalid" {
+		t.Fatal("invalid mihomo IP delivery")
 	}
 }
