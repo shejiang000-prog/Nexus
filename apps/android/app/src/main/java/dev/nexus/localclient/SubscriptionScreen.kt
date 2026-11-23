@@ -6,6 +6,11 @@ import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.rememberScrollState
@@ -150,6 +155,10 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     var detail by remember { mutableStateOf<NodeRow?>(null) }
     var probeJob by remember { mutableStateOf<Job?>(null) }
     var tested by remember { mutableIntStateOf(0) }
+    // Nodes in the running batch that have not reported yet; their rows show "测试中".
+    var probing by remember { mutableStateOf(emptySet<String>()) }
+    var measuring by remember { mutableStateOf(false) }
+    val local = remember { context.getSharedPreferences("local",0) }
     var total by remember { mutableIntStateOf(0) }
     var chosen by remember { mutableStateOf<NodeRow?>(null) }
     var dns by remember { mutableStateOf("1.1.1.1") }
@@ -166,11 +175,13 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
     val physical=rememberDefaultPhysical(connectivity)
     val quality = remember(tunnel.physical,physical) { NodeQuality(context, tunnel.physical ?: physical) }
-    // Stored results load once per list and network; a running batch adds only the node that just
-    // finished, so large subscriptions do not reread every node on the main thread per result.
-    val stored = remember(allRows,quality) { allRows.mapNotNull { row ->
-        quality.lastProbe(row.favorite)?.let { row.favorite to it }
-    }.toMap() }
+    // Stored results load once per list and network, off the main thread; a running batch adds only
+    // the node that just finished, so large subscriptions do not reread every node per result.
+    val stored by produceState(emptyMap<String,ProbeResult>(),allRows,quality) {
+        value = withContext(Dispatchers.IO) { allRows.mapNotNull { row ->
+            quality.lastProbe(row.favorite)?.let { row.favorite to it }
+        }.toMap() }
+    }
     var live by remember(quality) { mutableStateOf(emptyMap<String,ProbeResult>()) }
     val metrics = remember(stored,live) { if (live.isEmpty()) stored else stored + live }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -272,32 +283,48 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
         tested = 0
         total = batch.size
         errorMessage = ""
+        probing = batch.mapTo(HashSet()) { it.favorite }
         probeJob = scope.launch {
             try {
                 NodeProbe.run(context,batch) { row,value ->
-                    scope.launch(Dispatchers.Main.immediate) { tested++; live = live + (row.favorite to value) }
+                    scope.launch(Dispatchers.Main.immediate) { tested++; live = live + (row.favorite to value); probing = probing - row.favorite }
                 }
                 message = "已测 $tested / $total"
             } catch (e: kotlinx.coroutines.CancellationException) { message = "测试已停止"; throw e }
             catch (_: Exception) { errorMessage = "测试引擎未就绪，请检查网络后重试" }
-            finally { busy = false; probeJob = null }
+            finally { busy = false; probeJob = null; probing = emptySet() }
         }
     }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
-        state = scroll, contentPadding = PaddingValues(vertical = 16.dp)) {
-        item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val theme = MaterialTheme.colorScheme
+    val motion = LocalMotion.current
+    // One read per composition instead of one per row.
+    val chosenNode = local.getString("simple-node",null)
+    val pinned = local.contains("pinned")
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = Space.page),
+        state = scroll, contentPadding = PaddingValues(top = Space.xs, bottom = Space.lg)) {
+        item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text(if(sources.isEmpty()) "暂无订阅" else "${allRows.size} 个节点 · ${sources.size} 个订阅",Modifier.weight(1f),
-                    color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    color=theme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                 CompactAction(enabled = !busy, onClick = { input = ""; label = ""; adding = true }) { Text("添加节点") }
             }
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (errorMessage.isNotEmpty()) Text(errorMessage, color = MaterialTheme.colorScheme.error)
+            // A running batch shows how far it has got; other work shows an indeterminate bar.
+            AnimatedVisibility(busy,enter=fadeIn(motionTween(Motion.standard))+expandVertically(motionTween(Motion.standard)),
+                exit=fadeOut(motionTween(Motion.standard))+shrinkVertically(motionTween(Motion.standard))) {
+                if (probeJob != null && total > 0) {
+                    val fraction by animateFloatAsState(tested.toFloat()/total,motionTween(Motion.standard),label="测试进度")
+                    LinearProgressIndicator({ fraction },Modifier.fillMaxWidth().height(6.dp),color=signal,trackColor=theme.surfaceVariant,
+                        strokeCap=StrokeCap.Round,gapSize=0.dp,drawStopIndicator={})
+                } else LinearProgressIndicator(Modifier.fillMaxWidth().height(6.dp),color=signal,trackColor=theme.surfaceVariant,
+                    strokeCap=StrokeCap.Round,gapSize=0.dp)
+            }
+            if (message.isNotEmpty()) Text(message, color = theme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+            if (errorMessage.isNotEmpty()) Text(errorMessage, color = theme.error, style = MaterialTheme.typography.bodyMedium)
             val current = tunnel
             current.node?.let { node ->
                 SecondaryAction(enabled = !busy, onClick = {
                     busy = true
+                    measuring = true
                     scope.launch {
                         try {
                             speedResult = withContext(Dispatchers.IO) {
@@ -306,78 +333,96 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                                 quality.measure(vpn,node) { TunnelService.state.value.connectedAt == current.connectedAt }
                             }
                         } catch (_: Exception) { speedResult = "测速中断，请检查连接后重试" }
-                        finally { busy = false }
+                        finally { busy = false; measuring = false }
                     }
-                }) { Text("测量当前连接速度") }
-                if (speedResult.isNotEmpty()) Text(speedResult)
+                }) {
+                    if (measuring) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = theme.onSurfaceVariant); Spacer(Modifier.width(Space.sm)) }
+                    Text(if (measuring) "正在测量…" else "测量当前连接速度")
+                }
+                AnimatedContent(speedResult,transitionSpec={ fadeThrough(motion) },label="测速结果") { text ->
+                    if (text.isNotEmpty()) Text(text,style=numberStyle.copy(fontSize=15.sp)) else Spacer(Modifier.fillMaxWidth())
+                }
             }
             if (sources.isEmpty() && !busy) {
-                Spacer(Modifier.height(12.dp))
-                Text("添加机场订阅后，会自动测试并选择最快节点。",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(Space.md))
+                Text("添加机场订阅后，会自动测试并选择最快节点。",color=theme.onSurfaceVariant)
             }
         }}
-        if(sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if(sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             Segment(listOf("节点列表","订阅管理"),if(showSources)1 else 0){showSources=it==1}
         }}
-        if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val pinned=context.getSharedPreferences("local",0).contains("pinned")
+        if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             AutoSelection(automatic,enabled=!pinned,onChange={value->onAutomatic(value,allRows)})
-            if(pinned)Text("请先在设置中解除固定出口")
+            if(pinned)Text("请先在设置中解除固定出口",style=MaterialTheme.typography.bodyMedium)
         }}
-        if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { home(allRows) } }
-        if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) { home(allRows) } }
+        if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L),onSource={editSource=it})
         }}
         if(showSources) items(sources, key = { it.id }) { source ->
-            val theme = MaterialTheme.colorScheme
             var folded by remember { mutableStateOf(store.appearance.getBoolean("fold/"+source.id,false)) }
             val color = store.appearance.getInt("color/"+source.id,0)
             val palette = listOf(theme.primary,theme.tertiary,theme.secondary)
-            Surface(Modifier.padding(bottom = 10.dp), shape = signalCard, color = theme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, theme.outlineVariant)) {
-                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            NexusCard(Modifier.padding(bottom = Space.sm).animateItem()) {
+                Column(Modifier.fillMaxWidth().padding(start = Space.lg, end = Space.sm, top = 6.dp, bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Text(listOf(store.appearance.getString("mark/"+source.id,"").orEmpty(),source.label)
                             .filter(String::isNotEmpty).joinToString(" "), color = palette[color.coerceIn(0,2)],
-                            style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f).pointerInput(source.id,sources) {
                                 var distance = 0f
                                 detectDragGesturesAfterLongPress(onDragStart = { distance=0f },onDragEnd = {
                                     if (!busy && kotlin.math.abs(distance)>32.dp.toPx()) update { store.move(sources,source.id,if(distance>0) 1 else -1) }
                                 }) { change,delta -> change.consume(); distance+=delta.y }
                             })
+                        val turn by animateFloatAsState(if (folded) 0f else 90f,motionSpring(),label="展开箭头")
                         TextButton(onClick = { folded=!folded; store.appearance.edit().putBoolean("fold/"+source.id,folded).apply() }) {
-                            Text(if (folded) "展开" else "收起", color = theme.onSurfaceVariant) }
+                            Text(if (folded) "展开" else "收起", color = theme.onSurfaceVariant)
+                            GlyphIcon(Glyph.Chevron,Modifier.padding(start=Space.xxs).graphicsLayer{ rotationZ=turn },size=14.dp,tint=theme.onSurfaceVariant)
+                        }
                         TextButton(onClick = { editSource=source }) { Text("管理", color = theme.primary) }
                     }
-                    if (!folded) {
-                        val blocked = problems?.let { map -> (0 until source.nodes.length()).count { nodeKey(source.id,source.nodes.getJSONObject(it)) in map } } ?: 0
-                        Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
-                            " · 更新于 ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(source.updated))}",
-                            color = theme.onSurfaceVariant, fontSize = 14.sp)
-                        Row(Modifier.padding(top = 6.dp, end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (source.url.isNotEmpty()) SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy && synchronized(SubscriptionRefresh) { source.id !in SubscriptionRefresh.protectedSources },
-                                onClick = { update { SubscriptionRefresh.refresh(store, source, force = true) } }) { Text("更新") }
-                            SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy, onClick = { exporting = source; exportConsent = true }) { Text("导出") }
-                            SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy, onClick = { deleting = source }) { Text("删除", color = theme.error) }
+                    AnimatedVisibility(!folded,
+                        enter=fadeIn(motionTween(Motion.standard))+expandVertically(motionTween(Motion.standard)),
+                        exit=fadeOut(motionTween(Motion.quick,Motion.leave))+shrinkVertically(motionTween(Motion.standard,Motion.slide))) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                            val blocked = problems?.let { map -> (0 until source.nodes.length()).count { nodeKey(source.id,source.nodes.getJSONObject(it)) in map } } ?: 0
+                            Text("${source.nodes.length()} 个节点" + (if (blocked > 0) "（$blocked 个暂不支持）" else "") +
+                                " · 更新于 ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(source.updated))}",
+                                color = theme.onSurfaceVariant, style = MaterialTheme.typography.detail)
+                            Row(Modifier.padding(top = 6.dp, end = Space.sm), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                                if (source.url.isNotEmpty()) SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy && synchronized(SubscriptionRefresh) { source.id !in SubscriptionRefresh.protectedSources },
+                                    onClick = { update { SubscriptionRefresh.refresh(store, source, force = true) } }) { Text("更新") }
+                                SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy, onClick = { exporting = source; exportConsent = true }) { Text("导出") }
+                                SecondaryAction(modifier = Modifier.weight(1f), enabled = !busy, onClick = { deleting = source }) { Text("删除", color = theme.error) }
+                            }
                         }
                     }
                 }
             }
         }
-        if(!showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryAction(onClick={tools=!tools}) {Text(if(tools) "收起筛选与测速" else "筛选与测速")}
+        if(!showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+            SecondaryAction(onClick={tools=!tools}) {
+                Text(if(tools) "收起筛选与测速" else "筛选与测速")
+                val turn by animateFloatAsState(if (tools) -90f else 90f,motionSpring(),label="筛选箭头")
+                GlyphIcon(Glyph.Chevron,Modifier.padding(start=6.dp).graphicsLayer{ rotationZ=turn },size=14.dp)
+            }
         }}
-        if(!showSources && tools && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-            val theme = MaterialTheme.colorScheme
-            Surface(shape = signalCard, color = theme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, theme.outlineVariant)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if(!showSources && sources.isNotEmpty()) item { AnimatedVisibility(tools,
+            enter=fadeIn(motionTween(Motion.standard))+expandVertically(motionTween(Motion.emphasized),expandFrom=androidx.compose.ui.Alignment.Top),
+            exit=fadeOut(motionTween(Motion.quick,Motion.leave))+shrinkVertically(motionTween(Motion.standard,Motion.slide),shrinkTowards=androidx.compose.ui.Alignment.Top)) {
+          Column(Modifier.fillMaxWidth().padding(bottom = Space.sm)) {
+            NexusCard {
+                Column(Modifier.fillMaxWidth().padding(Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
                     OutlinedTextField(search, { search = it.take(96) }, Modifier.fillMaxWidth(), label = { Text("搜索名称或协议") }, singleLine = true,
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        shape = Shapes.control,
                         colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = theme.outlineVariant, unfocusedContainerColor = theme.background, focusedContainerColor = theme.background))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                        val chipColors = FilterChipDefaults.filterChipColors(selectedContainerColor = signalSoft, selectedLabelColor = theme.primary)
                         Box {
-                            FilterChip(selected = selected != null, onClick = { menu = true }, label = { Text(sources.find { it.id == selected }?.label ?: "全部来源") })
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            FilterChip(selected = selected != null, onClick = { menu = true }, label = { Text(sources.find { it.id == selected }?.label ?: "全部来源") },
+                                shape = Shapes.chip, colors = chipColors)
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, shape = Shapes.control) {
                                 DropdownMenuItem(text = { Text("全部来源") }, onClick = { selected = null; menu = false })
                                 sources.forEach { s -> DropdownMenuItem(text = { Text(s.label) }, onClick = { selected = s.id; menu = false }) }
                             }
@@ -386,8 +431,8 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                             Box {
                                 val value = when(tag) { "协议" -> protocol; "地区" -> region; else -> sort.takeUnless { it == "默认" }.orEmpty() }
                                 FilterChip(selected = value.isNotEmpty(), onClick = { filterMenu = tag },
-                                    label = { Text(if (value.isEmpty()) tag else if (tag == "排序") value else "$tag · $value") })
-                                DropdownMenu(expanded = filterMenu==tag,onDismissRequest = { filterMenu="" }) {
+                                    label = { Text(if (value.isEmpty()) tag else if (tag == "排序") value else "$tag · $value") }, shape = Shapes.chip, colors = chipColors)
+                                DropdownMenu(expanded = filterMenu==tag,onDismissRequest = { filterMenu="" }, shape = Shapes.control) {
                                     val choices = when(tag) { "协议" -> listOf("") + allRows.map { it.type }.distinct().sorted()
                                         "地区" -> listOf("") + allRows.map { it.region }.distinct().sorted()
                                         else -> listOf("默认","真连延迟","网络质量","最近选择","收藏优先") }
@@ -398,11 +443,11 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                                 }
                             }
                         }
-                        FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") })
+                        FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("仅收藏") }, shape = Shapes.chip, colors = chipColors)
                     }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
                         SecondaryAction(enabled=!tunnel.active && !busy && visible.isNotEmpty(),modifier=Modifier.weight(1f),onClick={
-                            if (context.getSharedPreferences("local",0).contains("pinned")) message="请先解除固定出口"
+                            if (local.contains("pinned")) message="请先解除固定出口"
                             else {
                                 val best=rankedNodes(context,visible).firstOrNull()
                                 if (best==null) message="请在可用订阅的管理页启用「参与自动选择」"
@@ -413,37 +458,39 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                         else PrimaryAction(enabled = !tunnel.active && physical != null && !busy && eligible.isNotEmpty(), modifier=Modifier.weight(1f),
                             onClick = { measure() }) { Text("测试真实连通", maxLines = 1) }
                     }
-                    if (probeJob != null) Text("已测 $tested / $total", color = theme.onSurfaceVariant, fontSize = 14.sp)
-                    else Text("测试筛选结果的真实连通：逐个经节点访问网页，结果用于自动选择。", color = theme.onSurfaceVariant, fontSize = 13.sp)
+                    if (probeJob != null) Text("已测 $tested / $total", color = theme.onSurfaceVariant, style = numberStyle.copy(fontSize = 14.sp))
+                    else Text("测试筛选结果的真实连通：逐个经节点访问网页，结果用于自动选择。", color = theme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                     if (tunnel.vpn || connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true)
-                        Text("请先断开 VPN", color = signalAmber, fontSize = 14.sp)
+                        Text("请先断开 VPN", color = signalAmber, style = MaterialTheme.typography.detail)
                 }
             }
+          }
         }}
         if(!showSources) itemsIndexed(visible,key={_,row->row.favorite}) { index,row ->
             val type=row.type
             val problem=problems?.get(row.favorite)
             val metric=metrics[row.favorite]
             val usable=type in CompatEngine.types && problems!=null && problem==null
-            val local=context.getSharedPreferences("local",0)
             val info=listOfNotNull(metric?.takeUnless { it.ok }?.label,problem?.let { if(it=="信息") it else "无法使用：$it" },
                 SplitRouting.SHOES.takeIf {bypass && type in ShoesEngine.types && usable}).joinToString(" · ")
             val grouped=sort=="默认"
             val starts=grouped && (index==0 || visible[index-1].source.id!=row.source.id)
             val ends=grouped && (index==visible.lastIndex || visible[index+1].source.id!=row.source.id)
-            ListEntrance(index) { Column {
-                if(starts) Row(Modifier.fillMaxWidth().padding(start=4.dp,end=4.dp,top=if(index==0) 0.dp else 14.dp,bottom=8.dp),
+            // Sorting, filtering and refreshes move rows to their new place instead of jumping.
+            Box(Modifier.animateItem(fadeInSpec=motionTween(Motion.standard),placementSpec=motionSpring(Spring.StiffnessMediumLow,1f),
+                fadeOutSpec=motionTween(Motion.quick))) { ListEntrance(index) { Column {
+                if(starts) Row(Modifier.fillMaxWidth().padding(start=Space.xs,end=Space.xs,top=if(index==0) 0.dp else Space.md,bottom=6.dp),
                     verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-                    Text(row.source.label,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
-                    Text("${visible.count { it.source.id==row.source.id }} 个",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(row.source.label,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                    Text("${visible.count { it.source.id==row.source.id }} 个",color=theme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                 }
                 SignalNode(row.region,row.title,if(grouped) type.uppercase() else type.uppercase()+" · "+row.source.label,
-                    metric?.takeIf {it.ok}?.ms,local.getString("simple-node",null)==row.favorite,info,{detail=row},
+                    metric?.takeIf {it.ok}?.ms,chosenNode==row.favorite,info,{detail=row},
                     if(!busy && usable) ({
                         if(local.contains("pinned"))message="请先在设置中解除固定出口" else onPick(row,allRows)
                     }) else null,
-                    groupPlace(index,visible.lastIndex,starts,ends))
-            } }
+                    groupPlace(index,visible.lastIndex,starts,ends),testing=row.favorite in probing)
+            } } }
         }
     }
     detail?.let { row -> AlertDialog(onDismissRequest = { detail = null },

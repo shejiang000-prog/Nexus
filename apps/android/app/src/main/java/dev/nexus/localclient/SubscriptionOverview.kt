@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -39,7 +41,7 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
         val recent=nodes.mapNotNull { results[it.favorite] }.filter { it.recent(86400000,now) }
         return if(recent.isEmpty()) "未测试" else "真连通过 "+recent.count { it.ok }
     }
-    Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(Space.sm)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("订阅总览",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
             if(onAdd!=null) CompactAction(onAdd,filled=false) { Text("添加订阅") }
@@ -53,36 +55,38 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
                 if(left<=0) "已过期" else "剩余 ${(left+86399999)/86400000} 天"
             val reason=store.appearance.getString("error/"+source.id,null)
             val updated=if(source.updated>0) time.format(Date(source.updated)) else "未提供"
-            Surface(shape=signalCard,color=theme.surface,border=androidx.compose.foundation.BorderStroke(1.dp,theme.outlineVariant)) {
-                Column(Modifier.fillMaxWidth().clickable(role=Role.Button,onClickLabel="管理"+source.label) { onSource(source) }
-                    .padding(16.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                        Text(source.label,style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f),maxLines=1)
-                        Text("›",color=theme.onSurfaceVariant,fontSize=22.sp)
+            NexusCard(onClick={ onSource(source) },onClickLabel="管理"+source.label) {
+                Column(Modifier.fillMaxWidth().padding(horizontal=Space.lg,vertical=Space.md),verticalArrangement=Arrangement.spacedBy(Space.xxs)) {
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
+                        Text(source.label,style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f),maxLines=1)
+                        GlyphIcon(Glyph.Chevron,size=18.dp,tint=theme.outline)
                     }
                     if(usage.remaining!=null) Row(verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                        Text(amount(usage.remaining),style=numberStyle.copy(fontSize=28.sp,lineHeight=34.sp),fontWeight=FontWeight.SemiBold,
+                        Text(amount(usage.remaining),style=numberStyle.copy(fontSize=24.sp,lineHeight=30.sp),fontWeight=FontWeight.SemiBold,
                             color=if(low) theme.error else theme.onSurface)
-                        Text("剩余",Modifier.padding(bottom=4.dp),color=theme.onSurfaceVariant,fontSize=14.sp)
+                        Text("剩余",Modifier.padding(bottom=4.dp),color=theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
                     } else Text("余量未提供",color=theme.onSurfaceVariant)
-                    if(fraction!=null) Box(Modifier.fillMaxWidth().padding(vertical=6.dp).height(6.dp).background(theme.surfaceVariant,CircleShape)) {
-                        Box(Modifier.fillMaxWidth((1-fraction).toFloat().coerceIn(0.02f,1f)).fillMaxHeight().background(if(low) theme.error else signal,CircleShape))
+                    if(fraction!=null) {
+                        val used by animateFloatAsState((1-fraction).toFloat().coerceIn(0.02f,1f),motionTween(Motion.emphasized),label="用量")
+                        Box(Modifier.fillMaxWidth().padding(vertical=Space.xs).height(6.dp).background(theme.surfaceVariant,CircleShape)) {
+                            Box(Modifier.fillMaxWidth(used).fillMaxHeight().background(if(low) theme.error else signal,CircleShape))
+                        }
                     }
                     Text(if(usage.used==null && usage.total==null) "用量和总量未提供" else "已用 ${amount(usage.used)} / 总量 ${amount(usage.total)}",
-                        color=theme.onSurfaceVariant,fontSize=14.sp)
+                        color=theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
                     Text("支持 ${supported?.getOrDefault(source.id,0) ?: "…"} / ${source.nodes.length()} · "+tested(bySource[source.id].orEmpty()),
-                        color=theme.onSurfaceVariant,fontSize=14.sp)
-                    Text(expiry,color=if(left!=null && left<7L*86400000) theme.error else theme.onSurfaceVariant,fontSize=14.sp)
+                        color=theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
+                    Text(expiry,color=if(left!=null && left<7L*86400000) theme.error else theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
                     Text(if(source.updated==0L) "来源无法读取" else if(reason==null) "更新成功 · "+updated else "上次更新 · "+updated,
-                        color=if(source.updated==0L) theme.error else theme.onSurfaceVariant,fontSize=14.sp)
+                        color=if(source.updated==0L) theme.error else theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
                     if(reason!=null) {
                         val attempt=store.appearance.getLong("attempt/"+source.id,0)
-                        Text("更新失败："+reason+if(attempt>0) " · "+time.format(Date(attempt)) else "",color=theme.error,fontSize=14.sp)
+                        Text("更新失败："+reason+if(attempt>0) " · "+time.format(Date(attempt)) else "",color=theme.error,style=MaterialTheme.typography.detail)
                     }
                 }
             }
         }
-        if(sources.size>1) Surface(shape=signalCard,color=theme.surfaceVariant) { Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+        if(sources.size>1) Surface(shape=Shapes.card,color=theme.surfaceVariant) { Column(Modifier.fillMaxWidth().padding(Space.lg),verticalArrangement=Arrangement.spacedBy(Space.xs)) {
             Text("合计 · ${sources.size} 个来源 · 支持 ${supported?.values?.sum() ?: "…"} / ${rows.size} · "+tested(rows),
                 fontWeight=FontWeight.SemiBold)
             val usedIds=sources.filter { it.allowance.used!=null }.map { it.id }
@@ -97,7 +101,7 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
             }
             if(sameCoverage && usedIds.isEmpty()) Text("流量未提供",color=theme.onSurfaceVariant) else {
                 Text("已用 ${subtotal { it.used }} / 总量 ${subtotal { it.total }} · 剩余 ${subtotal { it.remaining }}",style=numberStyle.copy(fontSize=14.sp),color=theme.onSurfaceVariant)
-                if(sameCoverage && usedIds.size<sources.size) Text("流量合计包含 ${usedIds.size} / ${sources.size} 个来源",color=theme.onSurfaceVariant,fontSize=14.sp)
+                if(sameCoverage && usedIds.size<sources.size) Text("流量合计包含 ${usedIds.size} / ${sources.size} 个来源",color=theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
             }
         } }
     }

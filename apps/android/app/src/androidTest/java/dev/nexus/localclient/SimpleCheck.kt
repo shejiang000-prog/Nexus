@@ -230,7 +230,7 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
                 shot("invite","发送邀请")
                 fun connectionSample(first:Boolean,state:TunnelState=TunnelState()) = runOnMainSync { receiver.setContent { NexusTheme {
                     SimpleShell("连接",{}, {}) {
-                        ConnectionHome(state,first,true,"演示线路",true,"",{},{},{},{},{},receive={},nodeInfo="演示订阅",region="SG")
+                        ConnectionHome(state,first,true,"演示线路",true,state.error,{},{},{},{},{},receive={},nodeInfo="演示订阅",region="SG")
                     }
                 } } }
                 val demo=object:android.content.ContextWrapper(receiver){
@@ -252,8 +252,9 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
                 connectionSample(true);shot("first","添加机场订阅")
                 connectionSample(false,TunnelState(starting=true));shot("connecting","正在连接")
                 connectionSample(false,TunnelState(vpn=true,connectedAt=android.os.SystemClock.elapsedRealtime()-65000));shot("connect","已连接")
+                connectionSample(false,TunnelState(vpn=true,error="演示：节点没有响应，请换一个节点再试"));shot("failed","节点不可用")
             } finally { runOnMainSync { receiver.finish() } }
-            result.putString("screens","6 screens and connecting; synthetic connection state; no VPN requested")
+            result.putString("screens","6 screens, connecting and failed; synthetic connection state; no VPN requested")
         } finally { runOnMainSync { home.finish() } }
         return
     }
