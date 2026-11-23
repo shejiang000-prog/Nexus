@@ -83,10 +83,12 @@ func TestMobileTCPHalfClose(t *testing.T) {
 }
 
 func TestMobileTargetFirstFIN(t *testing.T) {
+	relayed := make(chan struct{}, 1)
 	testNodeTCP(t, true, false, func(c net.Conn) {
 		c.Write([]byte("banner"))
 		c.(*net.TCPConn).CloseWrite()
 		io.Copy(io.Discard, c)
+		relayed <- struct{}{}
 	}, func(t *testing.T, l *nodeLab) {
 		ca, err := os.ReadFile(filepath.Join(l.dir, "server.pem"))
 		if err != nil {
@@ -107,6 +109,21 @@ func TestMobileTargetFirstFIN(t *testing.T) {
 					t.Fatal(e)
 				}
 				defer s.Close()
+				// The node has observed target EOF and closed the target socket.
+				// Let its stream cancellation reach the client before any body read.
+				select {
+				case <-relayed:
+				case <-time.After(3 * time.Second):
+					t.Fatal("target still open")
+				}
+				if err := c.Confirm(); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(50 * time.Millisecond)
+				if n, e := s.Write([]byte("late")); n != 0 || e == nil {
+					t.Fatalf("unread target FIN: %d, %v", n, e)
+				}
+
 				var got bytes.Buffer
 				for {
 					p, e := s.Read(64)

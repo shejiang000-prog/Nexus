@@ -61,23 +61,25 @@ type Client struct {
 	expiry *atomic.Int64
 }
 
-func Start(parent context.Context, c Config) (*Client, error) { return StartPinned(parent, c, nil) }
+func Start(parent context.Context, c Config) (*Client, error) { return start(parent, c, nil) }
 
 // StartPinned enforces a SHA-256 leaf SPKI pin on initial, replacement and recovery connections.
 func StartPinned(parent context.Context, c Config, pin []byte) (*Client, error) {
 	if len(pin) != 0 && len(pin) != 32 {
 		return nil, &Error{Certificate, errors.New("invalid certificate pin")}
 	}
-	pin = append([]byte(nil), pin...)
+	host, _, _ := net.SplitHostPort(c.Authority)
+	if net.ParseIP(host) != nil && len(pin) == 0 {
+		return nil, &Error{Certificate, errors.New("IP authority requires a certificate pin")}
+	}
+	return start(parent, c, append([]byte(nil), pin...))
+}
+func start(parent context.Context, c Config, pin []byte) (*Client, error) {
 	a, e := proof.Authority(c.Authority)
 	if e != nil || c.Sign == nil {
 		return nil, &Error{Configuration, errors.New("authority and signer required")}
 	}
 	c.Authority = a
-	host, _, _ := net.SplitHostPort(a)
-	if net.ParseIP(host) != nil && len(pin) != 32 {
-		return nil, &Error{Certificate, errors.New("IP authority requires a certificate pin")}
-	}
 	if c.Endpoint == "" {
 		c.Endpoint = a
 	}

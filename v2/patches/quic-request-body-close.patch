@@ -1,0 +1,18 @@
+--- a/http3/client.go
++++ b/http3/client.go
+@@ -392,7 +392,14 @@
+ }
+ 
+ func (c *ClientConn) sendRequestBody(str *RequestStream, body io.ReadCloser, contentLength int64) error {
+-	defer body.Close()
++	// A peer STOP_SENDING may arrive while the body copy is blocked reading
++	// its caller's pipe. Close the body before that pipe accepts more data.
++	closeBody := sync.OnceFunc(func() { body.Close() })
++	stop := context.AfterFunc(str.Context(), closeBody)
++	defer func() {
++		stop()
++		closeBody()
++	}()
+ 	buf := make([]byte, bodyCopyBufferSize)
+ 	sr := &cancelingReader{str: str, r: body}
+ 	if contentLength == -1 {

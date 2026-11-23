@@ -457,7 +457,9 @@ func testAndroidSlow(t *testing.T, bytesPerTick uint64, bursty, loss bool) {
 		defer w.Close()
 		if bursty {
 			h3.wake = make(chan struct{}, 1)
-			go io.Copy(io.Discard, &stream{in: r, l: h3})
+			_, out := io.Pipe()
+			defer out.Close()
+			go io.Copy(io.Discard, &stream{in: r, out: out, l: h3})
 		}
 		go func() {
 			for {

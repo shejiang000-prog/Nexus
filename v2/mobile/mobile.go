@@ -57,11 +57,14 @@ func rawSignature(b []byte) ([]byte, error) {
 	return out, nil
 }
 func Start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, resolver Resolver, observer Observer) (*Client, error) {
-	return StartPinned(authority, endpoint, mode, ca, id, hello, signer, protector, resolver, observer, nil)
+	return start(authority, endpoint, mode, ca, id, hello, signer, protector, resolver, observer, nil, false)
 }
 
 // StartPinned checks the optional SHA-256 leaf SPKI pin on every carrier. IP nodes require it.
 func StartPinned(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, resolver Resolver, observer Observer, pin []byte) (*Client, error) {
+	return start(authority, endpoint, mode, ca, id, hello, signer, protector, resolver, observer, pin, true)
+}
+func start(authority, endpoint, mode string, ca, id, hello []byte, signer Signer, protector Protector, resolver Resolver, observer Observer, pin []byte, pinnedAPI bool) (*Client, error) {
 	if len(id) != 16 || signer == nil {
 		return nil, &transport.Error{Code: transport.Configuration, Cause: errors.New("device ID and signer required")}
 	}
@@ -106,7 +109,13 @@ func StartPinned(authority, endpoint, mode string, ca, id, hello []byte, signer 
 		cfg.OnState = observer.StateChanged
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c, e := transport.StartPinned(ctx, cfg, pin)
+	var c *transport.Client
+	var e error
+	if pinnedAPI {
+		c, e = transport.StartPinned(ctx, cfg, pin)
+	} else {
+		c, e = transport.Start(ctx, cfg)
+	}
 	if e != nil {
 		cancel()
 		return nil, e

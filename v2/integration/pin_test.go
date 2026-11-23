@@ -115,6 +115,17 @@ func TestIPInvitationAndCarrierPins(t *testing.T) {
 		l.start(t)
 		for _, mode := range []string{"h2", "h3"} {
 			t.Run(mode, func(t *testing.T) {
+				legacy, e := mobile.Start(l.authority, l.endpoint, mode, ca, id, nil, deviceSigner{key}, nil, nil, nil)
+				if e != nil {
+					t.Fatal("legacy IP CA:", e)
+				}
+				legacy.Stop()
+				if legacy, e = mobile.Start(l.authority, l.endpoint, mode, nil, id, nil, deviceSigner{key}, nil, nil, nil); mobile.ErrorCode(e) != int32(transport.Certificate) {
+					if legacy != nil {
+						legacy.Stop()
+					}
+					t.Fatalf("legacy accepted untrusted IP; error %v", e)
+				}
 				refused(t, l.authority, mode, nil, nil)
 				refused(t, l.authority, mode, nil, wrong)
 				refused(t, net.JoinHostPort("127.0.0.2", port), mode, nil, digest[:])
