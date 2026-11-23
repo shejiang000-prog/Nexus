@@ -144,6 +144,14 @@ func (h host) rules(ctx context.Context, d deployment) (ruleset, error) {
 			if k == "table" {
 				table = v.Name
 			}
+			// iptables-nft can retain empty ACCEPT base chains after UFW is
+			// disabled. Any rule, object or different policy still fails closed.
+			if v.Family == "ip" || v.Family == "ip6" {
+				known := table == "filter" || table == "mangle" || table == "nat"
+				if known && (k == "table" || (k == "chain" && builtinHook(table, v.Name) && v.Hook == strings.ToLower(v.Name) && v.Policy == "accept" && (v.Type == "filter" || v.Type == "route" || v.Type == "nat"))) {
+					continue
+				}
+			}
 			if v.Family != "inet" || table != "filter" && table != "nexus_v2" {
 				return r, errors.New("unsupported firewall topology; manual review required")
 			}

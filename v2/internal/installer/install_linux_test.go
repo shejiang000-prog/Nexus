@@ -346,6 +346,44 @@ func TestScopedNft(t *testing.T) {
 	check(h.firewall(t.Context(), d, true))
 	check(h.firewall(t.Context(), d, true))
 	check(h.firewall(t.Context(), d, false))
+	// UFW with the xtables-nft backend can retain built-in ip and ip6
+	// tables on disable. Leave them byte-identical after an install/remove.
+	for _, family := range []string{"ip", "ip6"} {
+		_, e := execute(t.Context(), "nft", "add", "table", family, "filter")
+		check(e)
+		for _, hook := range []string{"input", "output", "forward"} {
+			_, e = execute(t.Context(), "nft", "add", "chain", family, "filter", strings.ToUpper(hook),
+				"{ type filter hook "+hook+" priority filter; policy accept; }")
+			check(e)
+		}
+	}
+	snapshot := func() []byte {
+		b, e := execute(t.Context(), "nft", "-j", "-a", "list", "ruleset")
+		check(e)
+		return b
+	}
+	empty := snapshot()
+	check(h.firewall(t.Context(), d, true))
+	check(h.firewall(t.Context(), d, false))
+	if !bytes.Equal(empty, snapshot()) {
+		t.Fatal("modified inactive UFW base chains")
+	}
+	_, e = execute(t.Context(), "nft", "add", "rule", "ip", "filter", "INPUT", "drop")
+	check(e)
+	if _, e = h.rules(t.Context(), d); e == nil {
+		t.Fatal("accepted active xtables-nft rule")
+	}
+	_, e = execute(t.Context(), "nft", "flush", "chain", "ip", "filter", "INPUT")
+	check(e)
+	_, e = execute(t.Context(), "nft", "add", "chain", "ip6", "filter", "INPUT", "{ policy drop; }")
+	check(e)
+	if _, e = h.rules(t.Context(), d); e == nil {
+		t.Fatal("accepted nonempty UFW policy")
+	}
+	for _, family := range []string{"ip", "ip6"} {
+		_, e = execute(t.Context(), "nft", "delete", "table", family, "filter")
+		check(e)
+	}
 	for _, line := range [][]string{{"add", "table", "inet", "filter"}, {"add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; policy drop; }"}, {"add", "rule", "inet", "filter", "input", "tcp", "dport", "443", "accept"}} {
 		_, e := execute(t.Context(), "nft", line...)
 		check(e)
