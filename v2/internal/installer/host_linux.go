@@ -213,40 +213,51 @@ func (h host) ownsSocket(output string, s socket, group string) bool {
 	return found
 }
 
+var errTLSBundle = errors.New("invalid installed TLS trust bundle")
+
+func (h host) siteTLS(ctx context.Context, d deployment) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	port := d.Ports["v2"]
+	if port == 0 {
+		port = 443
+	}
+	var roots *x509.CertPool
+	var cert string
+	if d.CertMode != "acme" {
+		cert = "cert.pem"
+	} else if d.ACMERoot != "" {
+		cert = "acme-root.pem"
+	}
+	if cert != "" {
+		pem, e := os.ReadFile(h.path(cfg + "/" + cert))
+		if e != nil {
+			return e
+		}
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return errTLSBundle
+		}
+	}
+	dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
+	c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if e != nil {
+		return e
+	}
+	defer c.Close()
+	if c.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
+		return errors.New("Caddy TLS listener did not negotiate H2")
+	}
+	return nil
+}
+
 func (h host) protocolHealth(ctx context.Context, d deployment, p string) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	if p == "v2" {
-		if d.Ports[p] != 0 || d.CertMode == "acme" {
-			port := d.Ports[p]
-			if port == 0 {
-				port = 443
-			}
-			var roots *x509.CertPool
-			var cert string
-			if d.CertMode != "acme" {
-				cert = "cert.pem"
-			} else if d.ACMERoot != "" {
-				cert = "acme-root.pem"
-			}
-			if cert != "" {
-				pem, e := os.ReadFile(h.path(cfg + "/" + cert))
-				if e != nil {
-					return e
-				}
-				roots = x509.NewCertPool()
-				if !roots.AppendCertsFromPEM(pem) {
-					return errors.New("invalid installed TLS trust bundle")
-				}
-			}
-			dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
-			c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-			if e != nil {
-				return e
-			}
-			defer c.Close()
-			if c.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
-				return errors.New("Caddy TLS listener did not negotiate H2")
+		if d.Ports[p] != 0 && d.CertMode != "acme" {
+			if err := h.siteTLS(ctx, d); err != nil {
+				return err
 			}
 		}
 		if d.Layout == 0 || d.Ports["hysteria2"] == 0 {
@@ -276,11 +287,12 @@ func (h host) protocolHealth(ctx context.Context, d deployment, p string) error 
 	return nil
 }
 func (h host) healthy(ctx context.Context, d deployment) error {
-	timeout := 8 * time.Second
 	if d.CertMode == "acme" {
-		timeout = 180 * time.Second
+		if err := h.waitForCertificate(ctx, d); err != nil {
+			return err
+		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	var last error
 	for {
