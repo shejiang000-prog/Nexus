@@ -17,6 +17,7 @@
 |`c.State() string`、`c.Stop()`|状态为 h3、h2 或 stopped。Stop 可重复调用，取消使用中的通道。调用方仍应 Close 自己的业务句柄。|
 |`c.DialTCP(ctx, target, initial) (io.ReadWriteCloser, error)`|target 为带显式端口的主机名或 IP。最多可附带 16 KiB 乐观数据。收到 2xx 及认证确认头后才返回流。ctx 管理流的整个生命周期。|
 |`c.OpenUDP(ctx, target) (*transport.Association, error)`|在成功响应及 capsule 协商后返回。ReadPacket、WritePacket 各处理一个报文，允许空报文，最大载荷 65,507 字节。调用 Close 结束关联。|
+|`c.SetRecoveryAllowed(allowed bool)`|按 Client 允许或暂停 H2 上的 H3 后台回探，暂停会取消已发起的后台回探。Android 在每次切换底层网络后重新读取屏幕与 Doze 状态。|
 |`c.Confirm() error`|按事件在当前承载发起一次已认证 HEAD。站点公开响应本身不能证明授权。|
 |`c.AccountExpiry() int64`|返回当前 Client 最近一次已认证响应的账户到期 Unix 秒，0 为长期有效，−1 表示尚未获取。客户端只将该值用于展示。|
 
