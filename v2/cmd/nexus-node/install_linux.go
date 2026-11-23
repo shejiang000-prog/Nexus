@@ -46,7 +46,12 @@ func platformCommand(args []string, input io.Reader, output io.Writer) (bool, er
 	if err != nil {
 		return true, err
 	}
-	return true, installer.Run(ctx, action, opts, renderDeployment, output)
+	err = installer.Run(ctx, action, opts, renderDeployment, output)
+	if err == nil && action == "install" {
+		fmt.Fprintln(output, "Manage private users as the service account:")
+		fmt.Fprintln(output, "  runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger /var/lib/nexus-v2/ledger.db create-user")
+	}
+	return true, err
 }
 
 func deploymentOptions(action string, args []string, input io.Reader, out io.Writer) (installer.Options, error) {

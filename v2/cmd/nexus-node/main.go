@@ -40,7 +40,7 @@ func admin(args []string, out io.Writer) error {
 	if handled, err := compatAdmin(args, out); handled {
 		return err
 	}
-	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit}")
+	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit | compat {enable|disable|rotate|apply|status|export} ...}")
 	if len(args) < 2 {
 		return usage
 	}
