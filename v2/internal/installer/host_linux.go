@@ -2,12 +2,16 @@ package installer
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -134,33 +138,117 @@ func listening(output string, s socket) bool {
 	}
 	return false
 }
-func (h host) healthy(ctx context.Context, d deployment) error {
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		ok := true
-		for _, name := range d.units() {
-			if _, e := h.command(ctx, "systemctl", "is-active", "--quiet", name); e != nil {
-				ok = false
-				break
-			}
+
+var socketPID = regexp.MustCompile(`\bpid=([1-9][0-9]*)\b`)
+
+func (h host) ownsSocket(output string, s socket, group string) bool {
+	if !strings.HasPrefix(group, "/") || group == "/" {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		if !listening(line, s) {
+			continue
 		}
-		if ok {
-			b, e := h.command(ctx, "ss", "-H", "-lntu")
-			if e != nil {
-				return e
+		owned := false
+		for _, m := range socketPID.FindAllStringSubmatch(line, -1) {
+			b, err := os.ReadFile(h.path("/proc/" + m[1] + "/cgroup"))
+			if err != nil {
+				continue
 			}
-			for _, s := range sockets(d) {
-				if !listening(string(b), s) {
-					ok = false
+			for _, entry := range strings.Split(string(b), "\n") {
+				parts := strings.SplitN(entry, ":", 3)
+				if len(parts) == 3 && (parts[1] == "" || parts[1] == "name=systemd") && (parts[2] == group || strings.HasPrefix(parts[2], group+"/")) {
+					owned = true
 					break
 				}
 			}
 		}
-		if ok {
+		if !owned {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+func (h host) protocolHealth(ctx context.Context, d deployment, p string) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if p == "v2" {
+		pem, e := os.ReadFile(h.path(cfg + "/cert.pem"))
+		if e != nil {
+			return e
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return errors.New("invalid installed V2 certificate chain")
+		}
+		dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
+		c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(d.Ports[p])))
+		if e != nil {
+			return e
+		}
+		defer c.Close()
+		if c.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
+			return errors.New("V2 TLS listener did not negotiate H2")
+		}
+		return nil
+	}
+	c, e := new(net.Dialer).DialContext(ctx, "unix", h.path(state+"/compat-"+p+"/control.sock"))
+	if e != nil {
+		return e
+	}
+	return c.Close()
+}
+func (h host) healthy(ctx context.Context, d deployment) error {
+	deadline := time.Now().Add(8 * time.Second)
+	var last error
+	for {
+		last = nil
+		for _, name := range d.units() {
+			if _, e := h.command(ctx, "systemctl", "is-active", "--quiet", name); e != nil {
+				last = e
+				break
+			}
+		}
+		if last == nil {
+			b, e := h.command(ctx, "ss", "-H", "-lntup")
+			if e != nil {
+				return e
+			}
+			for _, p := range protocols {
+				port, ok := d.Ports[p]
+				if !ok {
+					continue
+				}
+				group, e := h.command(ctx, "systemctl", "show", "--property=ControlGroup", "--value", unitName(p))
+				if e != nil {
+					return e
+				}
+				for _, s := range sockets(deployment{Ports: map[string]int{p: port}}) {
+					if !h.ownsSocket(string(b), s, strings.TrimSpace(string(group))) {
+						last = fmt.Errorf("%s does not own %d/%s", unitName(p), port, s.net)
+						break
+					}
+				}
+				if last != nil {
+					break
+				}
+				probe := h.probe
+				if probe == nil {
+					probe = h.protocolHealth
+				}
+				if last = probe(ctx, d, p); last != nil {
+					break
+				}
+			}
+		}
+		if last == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("service or listening socket failed health check")
+			return fmt.Errorf("health check failed: %w", last)
 		}
 		select {
 		case <-ctx.Done():

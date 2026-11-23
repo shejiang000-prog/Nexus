@@ -35,11 +35,14 @@ func newLab(t *testing.T) *lab {
 		t.Skip("private-root transaction tests require chown")
 	}
 	l := &lab{t: t, active: map[string]bool{}}
-	l.host = host{root: t.TempDir(), out: io.Discard, command: l.runCmd}
-	for _, p := range []string{"/opt", "/etc", "/var/lib", unitDir} {
+	l.host = host{root: t.TempDir(), out: io.Discard, command: l.runCmd, probe: func(context.Context, deployment, string) error { return nil }}
+	for _, p := range []string{"/opt", "/etc", "/var/lib", unitDir, "/proc/999"} {
 		if e := os.MkdirAll(l.path(p), 0755); e != nil {
 			t.Fatal(e)
 		}
+	}
+	if e := os.WriteFile(l.path("/proc/999/cgroup"), []byte("0::/system.slice/nexus-v2.service"), 0644); e != nil {
+		t.Fatal(e)
 	}
 	if e := os.WriteFile(l.path("/etc/os-release"), []byte("ID=debian\nVERSION_ID=13"), 0644); e != nil {
 		t.Fatal(e)
@@ -58,6 +61,9 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 		unit := args[len(args)-1]
 		switch args[0] {
 		case "show":
+			if args[1] == "--property=ControlGroup" {
+				return text("/system.slice/" + unit)
+			}
 			if args[1] == "--property=LoadState" {
 				return text("not-found")
 			}
@@ -99,7 +105,7 @@ func (l *lab) runCmd(_ context.Context, name string, args ...string) ([]byte, er
 		out := l.busy
 		for p, on := range l.active {
 			if p == unitName("v2") && on {
-				out += "tcp LISTEN 0 100 *:443 *:*\nudp UNCONN 0 0 *:443 *:*\n"
+				out += "tcp LISTEN 0 100 *:443 *:* users:((pid=999,fd=3))\nudp UNCONN 0 0 *:443 *:* users:((pid=999,fd=4))\n"
 			}
 		}
 		return text(out)
@@ -166,7 +172,7 @@ func TestInstallFailureRollback(t *testing.T) {
 			case "enable":
 				l.fail = "systemctl enable --now nexus-v2.service"
 			case "health":
-				l.fail = "ss -H -lntu"
+				l.fail = "ss -H -lntup"
 				o.Ports = map[string]int{"v2": 443}
 			}
 			if e := l.run(t.Context(), "install", o, sampleRender); e == nil {

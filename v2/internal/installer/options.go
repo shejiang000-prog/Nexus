@@ -122,6 +122,7 @@ type runner func(context.Context, string, ...string) ([]byte, error)
 type host struct {
 	root    string
 	command runner
+	probe   func(context.Context, deployment, string) error
 	out     io.Writer
 }
 

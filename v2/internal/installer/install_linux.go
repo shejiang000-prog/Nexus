@@ -233,9 +233,6 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 			return err
 		}
 	}
-	if err = stageBinaries(ctx, o, stagedBin); err != nil {
-		return err
-	}
 	if render == nil {
 		return errors.New("configuration renderer required")
 	}
@@ -254,6 +251,9 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 			return errors.New("unexpected configuration entry")
 		}
 		d.ConfigFiles = append(d.ConfigFiles, f.Name())
+	}
+	if err = stageBinaries(ctx, o, stagedBin); err != nil {
+		return err
 	}
 	var tx transaction
 	defer func() { tx.rollback(&err) }()
