@@ -54,6 +54,12 @@ internal fun Instrumentation.m3UiCheck(result: Bundle) {
         splitLabel("点按圆环即可连接",false)
         ctx.startForegroundService(v2Request(ctx,node.key))
         splitLabel("H3 已连接",false)
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+        val network = requireNotNull(cm.activeNetwork)
+        check(cm.getNetworkCapabilities(network)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true)
+        val routes = requireNotNull(cm.getLinkProperties(network))
+        check(routes.dnsServers.any { it.hostAddress == "1.1.1.1" })
+        check(routes.routes.count { it.isDefaultRoute } >= 2)
         shot("connected")
         ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
         splitLabel("点按圆环即可连接",false)
@@ -65,27 +71,29 @@ internal fun Instrumentation.m3UiCheck(result: Bundle) {
         splitLabel("friend.example:443", false)
         shot("confirm")
         clickSplitLabel("取消")
-        // Supply the same QR result contract as the camera without requiring a physical camera.
-        val scan = Intent().putExtra("SCAN_RESULT", link()).putExtra("SCAN_RESULT_FORMAT", "QR_CODE")
-        val camera = addMonitor("com.journeyapps.barcodescanner.CaptureActivity",
-            Instrumentation.ActivityResult(Activity.RESULT_OK,scan), true)
-        try {
-            clickSplitLabel("扫描邀请", true)
-            splitLabel("确认兑换",false)
-            check(camera.hits == 1)
-            clickSplitLabel("取消")
-        } finally { removeMonitor(camera) }
         splitLabel("粘贴邀请消息",true)
         sample.put("pin","test")
         edit(link())
         splitLabel("SPKI pin",false)
         clickSplitLabel("知道了")
+        sample.remove("pin")
         clickSplitLabel("返回")
-        splitLabel(node.name,false)
         clickSplitLabel(node.name)
+        clickSplitLabel("添加节点")
+        // Supply the same QR result contract as the camera without requiring a physical camera.
+        val scan = Intent().putExtra("SCAN_RESULT", link()).putExtra("SCAN_RESULT_FORMAT", "QR_CODE")
+        val camera = addMonitor("com.journeyapps.barcodescanner.CaptureActivity",
+            Instrumentation.ActivityResult(Activity.RESULT_OK,scan), true)
+        try {
+            clickSplitLabel("用相机扫码", true)
+            splitLabel("确认兑换",false)
+            check(camera.hits == 1)
+            clickSplitLabel("取消")
+        } finally { removeMonitor(camera) }
         splitLabel("添加节点",false)
         clickSplitLabel(node.name)
         clickSplitLabel("在本机移除此节点")
+        splitLabel("在本机移除此节点？",false)
         clickSplitLabel("移除")
         splitLabel("添加节点",false)
         check(V2Devices.get(ctx,node.key) == null)
