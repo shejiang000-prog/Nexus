@@ -176,6 +176,25 @@ func TestSlowDownloadAndIdleRecoveryOutsideAndroidVPN(t *testing.T) {
 	})
 }
 
+func TestHealthWithinOneClockTick(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := selector{ctx: t.Context()}
+		for _, tc := range []struct {
+			status, size int
+			ok           bool
+		}{
+			{200, 32768, true}, {200, 32767, false}, {404, 32768, false},
+		} {
+			lane := &transportLane{health: "https://node.test/health.bin", round: func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(bytes.NewReader(make([]byte, tc.size)))}, nil
+			}}
+			if elapsed := s.capacity(lane); (elapsed > 0) != tc.ok {
+				t.Fatalf("status=%d bytes=%d elapsed=%v", tc.status, tc.size, elapsed)
+			}
+		}
+	})
+}
+
 func TestSelection(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

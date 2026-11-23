@@ -121,7 +121,9 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	if e != nil || resp.StatusCode != 200 || n != 32768 {
 		return 0
 	}
-	return time.Since(start)
+	// Some Android monotonic clocks have a coarser tick than a LAN health GET.
+	// An authenticated TLS response with the exact body length is still success.
+	return max(time.Since(start), time.Nanosecond)
 }
 func (s *selector) probeH3() (*transportLane, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, time.Second)
