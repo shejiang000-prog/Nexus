@@ -6,6 +6,17 @@ Android 可用 Nexus 私人节点连接全设备 VPN，或按配置开放本机 
 
 在「节点 → 添加节点」粘贴或扫描 `nexus://invite/v2#…`；也可从首次启动页进入「收到了邀请」。核对弹窗中的节点域名和端口，点「确认兑换」为本机注册。卡片显示账户到期日和实际承载；老节点省略账户到期信息时显示「到期时间未知」。点卡片进入节点列表，再点设备记录，可查看设备 ID 简写或移除本机密钥。移除后需向邀请人索取新的邀请。节点管理员仍可在账本中撤销设备。
 
+管理员可将账本创建的一次性邀请组装为链接。下面示例使用已安装的 Python 3 标准库。将 `node.example` 和端口换成客户端实际访问的入口，`$DB`、`$USER_ID` 和 `$EXPIRES_AT` 对应账本命令的三个参数。生成的链接是一次性凭据，通过私密渠道交给受邀人。二维码的内容与链接相同。
+
+```sh
+nexus-node ledger "$DB" invite "$USER_ID" "$EXPIRES_AT" |
+  python3 -c 'import base64, json, re, sys
+secret = sys.stdin.read().strip()
+if not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret): sys.exit("未获取到有效的账本邀请")
+payload = {"v": 2, "host": "node.example", "port": 443, "invite": secret}
+print("nexus://invite/v2#" + base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode())'
+```
+
 Android Keystore 优先使用 StrongBox，普通邀请会验证系统信任链和域名。本版会在本地拒绝带 SPKI 固定值的邀请。认证失败、撤销或到期会停止自动重试；网络中断按退避重连。绕过大陆、全局代理、DNS 和「设置 → 按应用代理与出口诊断」沿用现有 VPN 路径。H2 恢复到 H3 时已有 H2 流可继续读写。
 
 节点应在相同域名和端口的 H2 与 H3 上为 `GET /health.bin` 返回 HTTP 200 和恰好 32,768 字节。新安装器会生成此路由；之前部署的节点需要在本地站点配置中补上它并重载 Caddy，才能进行运行中的通道健康比较。
