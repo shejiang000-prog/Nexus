@@ -273,4 +273,3 @@ def main():
         print('mihomo fields checked',flush=True)
 
 if __name__=='__main__': main()
-
