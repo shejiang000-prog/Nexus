@@ -36,3 +36,31 @@
 - 离线 prepare、节点 race 构建和 `go vet ./...` 通过。指定独立节点并启用 `NEXUS_TEST_INSTALLED=1`、`NEXUS_TEST_ACME_RENEWAL=1` 后，`go test -race -count=1 -v ./...` 的 10 个有 Go 测试的包全部通过，零跳过。compat 包由官方客户端互通脚本覆盖。
 - 已执行 `uninstall --purge`。V2 的三个协议服务及防火墙单元、安装目录、数据、服务账户均已清除。清理后的 nftables 规则集与测试前逐字节一致。两项 V1 服务 `nexus-node`、`nexus-claim` 的状态、PID、systemd InvocationID 和重启次数与安装前一致。
 - 实装使用现有 Caddy 的 ACME server 和仓库外已批准的 Xray-core v26.11.9、Hysteria app/v2.14.0 缓存。交接仅保留汇总结果。
+
+## Claude 评审
+
+评审对象：开发分支 `851dd3e`…`205e04b`，规范分支 `e412ed7`、`fe4bfa4`。
+
+结论：**通过，M2 收尾。** 上轮两项问题均已修复，并有回归测试覆盖。
+
+**独立复现（NexusLab，从 `205e04b` 的 git archive 构建，GOPROXY=off）**
+
+- prepare、节点构建、`go vet ./...` 通过。带独立节点的 `go test -race -count=1 -v ./...`：10 个包全部通过。两个实装用例需要预先安装，这次跳过，NAT/DNAT 回访、CA 拒签回滚、首签与续期以 Codex 的记录为准。
+- `tools/verify_v2_compat.py` 独立重跑（82 s，退出码 0），资产 SHA-256 与批准清单一致：
+  - Reality 默认轮换、禁用、revoke-user 后，A、B 两名用户的旧流分别在 1.038、1.029、1.031–1.038 s 断开；
+  - `--keep-connections` 下三种操作 3.1 s 后旧流仍在；
+  - 整节点换钥 2.04 s 断开；
+  - Hysteria2 轮换 0.036 s、禁用 0.065 s 断开；
+  - 两用户 TCP/UDP、离线轮换后重放、mihomo 字段核对，均通过。
+- 评审实装（无域名仅 Reality）：安装时出现目标站选择提示；建用户、开通、导出均正常；同参数重装 PID 不变；purge 后清理干净，nft 规则集逐字一致。V1 实验服务 `nexus-node`、`nexus-claim` 的 PID 与 InvocationID 在全过程前后不变。
+
+**代码要点**
+
+- `callback_linux.go`：
+  - 临时 80/TCP 监听加随机路径与随机响应，只认 GET、Host 必须等于该域名，路径不进诊断日志；
+  - 回访使用不带 Proxy 的独立 Transport，不跟随重定向，不访问任何第三方；
+  - 失败后交互模式需确认，无交互模式需 `--skip-dns-check`。
+  - 最终以 Caddy 实际出示的受信证书为准，180 s 总时限，失败回滚。
+- Reality 断流策略：重建修订号与凭据变更原子提交，离线恢复按账本执行，同一修订号重放时保留已重连的设备。设计合理。
+
+**留给 M4**：公网首签、各云厂商网络、默认 Reality 目标站的实网评估、真实发行版矩阵、三类第三方客户端导入。
