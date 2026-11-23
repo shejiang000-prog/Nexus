@@ -21,6 +21,7 @@ import uuid
 import zipfile
 
 from lab_identity import generate
+from android_v2_netcheck import IdleCapture, UdpShape
 
 TARGET = "192.0.2.85"
 TABLE = "nexus_android_m3_" + secrets.token_hex(6)
@@ -86,10 +87,27 @@ def serve(node, xray_zip, host, work):
         authority = "nexus.test:" + str(port)
         handler = {"handler":"nexus","authority":authority,"ledger_path":str(db),"allow_exact":[target]}
         config = {"admin":{"disabled":True},"apps":{"tls":{"certificates":{"load_files":[{"certificate":str(keys/"server.pem"),"key":str(keys/"server.key")}]}},"http":{"servers":{"node":{"listen":[f"{host}:{port}"],"automatic_https":{"disable":True},"enable_datagrams":True,"tls_connection_policies":[{"protocol_min":"tls1.3"}],"routes":[{"handle":[handler,{"handler":"static_response","status_code":404}]}]}}}}}
+        # Store only method/status lines. Never log the connection proof or raw URL.
+        access = work / "requests.jsonl"
+        config["apps"]["http"]["servers"]["node"]["logs"] = {"default_logger_name":"lab"}
+        config["logging"] = {"logs":{"default":{"exclude":["http.log.access"]},
+            "access":{"include":["http.log.access"],"writer":{"output":"stdout"}}}}
         def process(binary, args, config, name):
             cfg = work/(name+".json");cfg.write_text(json.dumps(config))
             log = stack.enter_context((work/(name+".log")).open("wb"))
-            p = subprocess.Popen([binary,*args,cfg],stdout=log,stderr=log,env=dict(os.environ,HOME=str(work)))
+            p = subprocess.Popen([binary,*args,cfg],stdout=subprocess.PIPE if name=="node" else log,
+                                 stderr=log,env=dict(os.environ,HOME=str(work)))
+            if name == "node":
+                # Only persist the HTTP method. Restricted Caddy builds have no filter or file log module.
+                def redact():
+                    with p.stdout, access.open("w",buffering=1) as out:
+                        for line in p.stdout:
+                            try: method=json.loads(line)["request"]["method"]
+                            except (ValueError,KeyError):continue
+                            out.write(json.dumps({"request":{"method":method}})+"\n")
+                reader=threading.Thread(target=redact,daemon=True)
+                reader.start()
+                stack.callback(reader.join,2)
             def stop():
                 if p.poll() is None:
                     p.terminate()
@@ -111,7 +129,14 @@ def serve(node, xray_zip, host, work):
         xr=process(binary,["run","-config"],xc,"xray-server")
         lock = threading.Lock()
         ctl = secrets.token_urlsafe(32)
+        nic = next(row["ifname"] for row in json.loads(subprocess.check_output(["ip","-j","-4","addr"]))
+                   if any(a["local"] == host for a in row["addr_info"]))
+        shape = UdpShape(nic, host, port)
+        stack.callback(shape.close)
+        capture = IdleCapture(nic, host, port, access, work)
+        stack.callback(capture.close)
         def switch(op):
+            shape.change(op)
             batch = [f"flush chain inet {TABLE} {c}" for c in ("input","output")]
             if op == "drop":
                 batch += [f"add rule inet {TABLE} input ip daddr {host} udp dport {port} counter drop",
@@ -124,7 +149,9 @@ def serve(node, xray_zip, host, work):
                     words=self.rfile.readline(128).decode("ascii").strip().split(" ")
                     if len(words)<2 or not hmac.compare_digest(ctl,words[0]):return
                     with lock:
-                        if len(words)==2 and words[1] in ("clear","drop"):switch(words[1])
+                        if len(words)==2 and words[1] in ("clear","drop","rate","loss"):switch(words[1])
+                        elif len(words)==2 and words[1] in ("capture-h2","capture-h3"):capture.start(words[1][-2:])
+                        elif words[1:] == ["capture-stop"]:capture.finish()
                         elif len(words)==3 and words[1]=="revoke" and re.fullmatch("[0-9a-f]{32}",words[2]):ledger("revoke",words[2])
                         elif len(words)==3 and words[1]=="extend" and re.fullmatch("[0-9a-f]{32}",words[2]):
                             with contextlib.closing(sqlite3.connect(db)) as conn, conn:

@@ -38,6 +38,10 @@ def run(adb, package, fixture, runner, probe, phase):
         try:
             while proc.poll() is None:
                 if time.monotonic()>deadline:raise TimeoutError("M3 instrumentation watchdog")
+                if phase in ("blackhole","rate","loss","healthy-download","idle-h2","idle-h3"):
+                    # Let Android sleep without host polling the device. Only all/regression require coordination.
+                    time.sleep(2)
+                    continue
                 marker=shell("run-as",package,"cat","no_backup/m3-stage").stdout.decode().strip()
                 if marker !=stage and marker != "" and len(marker)<64:
                     stage=marker

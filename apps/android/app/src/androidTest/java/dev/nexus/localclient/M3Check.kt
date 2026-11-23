@@ -18,7 +18,7 @@ import java.net.Socket
 import org.json.JSONObject
 
 internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage: String) {
-    require(phase in setOf("all", "switch", "recovery", "regression"))
+    require(phase in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
     val dir = ctx.noBackupFilesDir
@@ -112,8 +112,72 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
             result.putString("4MiB-H3-Mbps",download());external("probe-v2")
             stop()
         }
-        if (phase == "all" || phase == "switch") {
-            repeat(if (phase == "all") 10 else 1){ n ->
+        if (phase in setOf("rate","loss","healthy-download","idle-h2","idle-h3")) {
+            val times = mutableListOf<Long>()
+            repeat(if(phase=="rate" || phase=="loss") 10 else 1) { n ->
+                stage.writeText("$phase-${n+1}")
+                val bearer = if(phase=="idle-h2") "h2" else "h3"
+                control(if(bearer=="h2") "drop" else "clear")
+                startV2();usable(bearer,12000)
+                if(phase.startsWith("idle-")) {
+                    // Exclude setup exchanges and the recent-business window. No polling or open business flows.
+                    Thread.sleep(35000)
+                    control("capture-$bearer")
+                    try { idleBearer(bearer,result) } finally { control("capture-stop") }
+                    usable(bearer,5000)
+                } else if(phase=="healthy-download") {
+                    val began=clock()
+                    var received=0L
+                    connect().use { s ->
+                        s.soTimeout=8000
+                        val buf=ByteArray(65536)
+                        val input=DataInputStream(s.getInputStream())
+                        while(clock()-began<600000) {
+                            s.getOutputStream().write(68)
+                            repeat(64) {
+                                input.readFully(buf)
+                                check(buf.first()==42.toByte() && buf.last()==42.toByte())
+                                received+=buf.size
+                                check(TunnelService.state.value.bearer.equals("h3",true))
+                            }
+                        }
+                    }
+                    result.putLong("normal-download-ms",clock()-began)
+                    result.putLong("normal-download-bytes",received)
+                } else {
+                    connect().use { demand ->
+                        demand.soTimeout=15000
+                        val finished=java.util.concurrent.atomic.AtomicBoolean()
+                        val worker=kotlin.concurrent.thread(name="Lab download") {
+                            try {
+                                val input=DataInputStream(demand.getInputStream());val buf=ByteArray(65536)
+                                while(!finished.get()) {
+                                    demand.getOutputStream().write(68)
+                                    repeat(64){input.readFully(buf)}
+                                }
+                            } catch(_:java.io.IOException){}
+                        }
+                        try {
+                            val begin=clock()
+                            control(phase)
+                            val measured=runCatching {
+                                waitFor(12000){TunnelService.state.value.bearer.equals("h2",true)}
+                                usable("h2",3000);clock()-begin
+                            }.getOrDefault(-1L)
+                            times.add(measured)
+                            result.putString("$phase-ms",times.joinToString(","))
+                            sendStatus(1,Bundle().apply{putString("$phase-try","${n+1}: $measured")})
+                        } finally {
+                            finished.set(true);demand.close();worker.join(2000)
+                        }
+                    }
+                }
+                stop();control("clear")
+            }
+            check(times.all{it in 0..10000}){"UDP impairment switch threshold failed"}
+        }
+        if (phase == "all" || phase == "switch" || phase == "blackhole") {
+            repeat(if (phase == "switch") 1 else 10){ n ->
                 stage.writeText("cold-" + (n+1));control("drop")
                 var begin=clock()
                 startV2()
