@@ -33,6 +33,7 @@ var schema string
 var errDenied = errors.New("redemption denied")
 
 type Ledger struct {
+	owner     *sql.DB
 	db        *sql.DB
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -129,9 +130,14 @@ func initSchema(db *sql.DB) error {
 		PRAGMA user_version=2;`); err != nil {
 			return err
 		}
-	case 2:
+	case 2, 3:
 	default:
 		return errors.New("unsupported ledger schema")
+	}
+	if version < 3 {
+		if _, err := tx.Exec(quotaSchema); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -270,6 +276,9 @@ func (l *Ledger) CreateUser(ctx context.Context, id proof.ID) error {
 func (l *Ledger) CreateUserUntil(ctx context.Context, id proof.ID, until time.Time) error {
 	var expires any
 	if !until.IsZero() {
+		if until.Unix() <= time.Now().Unix() {
+			return errors.New("expiry must be in the future")
+		}
 		expires = until.Unix()
 	}
 	return l.userWrite(ctx, id, "create_user", "INSERT INTO users(id,expires_at) VALUES(?,?)", id[:], expires)
@@ -319,7 +328,7 @@ func (l *Ledger) redeem(ctx context.Context, secret, token, public, sig []byte, 
 	var valid int
 	now := time.Now().Unix()
 	err = l.db.QueryRowContext(ctx, `SELECT 1 FROM invites i JOIN users u ON u.id=i.user_id
-	WHERE digest=? AND i.expires_at>? AND u.quota_bytes IS NULL AND (u.expires_at IS NULL OR u.expires_at>?)
+	WHERE digest=? AND i.expires_at>? AND (u.expires_at IS NULL OR u.expires_at>?)
 	AND (remaining>0 OR EXISTS(SELECT 1 FROM devices WHERE request_id=? AND public_key=? AND invite_digest=i.digest AND revoked_at IS NULL))`, digest[:], now, now, request[:], public).Scan(&valid)
 	if err != nil {
 		return id, err
@@ -332,7 +341,7 @@ func (l *Ledger) redeem(ctx context.Context, secret, token, public, sig []byte, 
 	now = time.Now().Unix()
 	var remaining int
 	err = tx.QueryRowContext(ctx, `SELECT remaining FROM invites i JOIN users u ON u.id=i.user_id
-        WHERE digest=? AND i.expires_at>? AND u.quota_bytes IS NULL AND (u.expires_at IS NULL OR u.expires_at>?)`, digest[:], now, now).Scan(&remaining)
+        WHERE digest=? AND i.expires_at>? AND (u.expires_at IS NULL OR u.expires_at>?)`, digest[:], now, now).Scan(&remaining)
 	if err != nil {
 		return id, err
 	}
@@ -403,27 +412,37 @@ func (l *Ledger) register(id proof.ID, stop func()) (func(), bool) {
 		}
 	}, true
 }
+
+var ErrAlreadyRevoked = errors.New("device already revoked")
+
 func (l *Ledger) Revoke(ctx context.Context, id proof.ID) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var revoked sql.NullInt64
+	err = tx.QueryRowContext(ctx, "SELECT revoked_at FROM devices WHERE id=?", id[:]).Scan(&revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("device not found")
+	}
+	if err != nil {
+		return err
+	}
+	if revoked.Valid {
+		return ErrAlreadyRevoked
+	}
 	now := time.Now().Unix()
-	row, err := tx.ExecContext(ctx, "UPDATE devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL", now, id[:])
-	if err == nil {
-		var n int64
-		if n, err = row.RowsAffected(); err == nil && n == 1 {
-			_, err = tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,device_id) VALUES(?,'revoke',?)", now, id[:])
-		}
+	if _, err := tx.ExecContext(ctx, "UPDATE devices SET revoked_at=? WHERE id=?", now, id[:]); err != nil {
+		return err
 	}
-	if err == nil {
-		err = tx.Commit()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,device_id) VALUES(?,'revoke',?)", now, id[:]); err != nil {
+		return err
 	}
-	if err == nil {
-		err = l.refresh(ctx)
+	if err := tx.Commit(); err != nil {
+		return err
 	}
-	return err
+	return l.refresh(ctx)
 }
 
 // List emits one JSON object per record. Columns are explicitly allowlisted.
@@ -431,11 +450,13 @@ func (l *Ledger) List(ctx context.Context, kind string, out io.Writer) error {
 	var query string
 	switch kind {
 	case "users":
-		query = `SELECT json_object('id',lower(hex(id)),'expires_at',expires_at) FROM users ORDER BY id`
+		query = `SELECT json_object('id',lower(hex(id)),'expires_at',expires_at,'quota_bytes',quota_bytes,
+			'used_bytes',used_bytes+coalesce((SELECT sum(CASE WHEN state='frozen' THEN reserved_bytes ELSE committed_bytes END)
+			FROM quota_leases WHERE user_id=u.id AND state IN ('active','frozen')),0)) FROM users u ORDER BY id`
 	case "devices":
 		query = `SELECT json_object('id',lower(hex(d.id)),'user_id',lower(hex(i.user_id)),'name',d.name,'revoked_at',d.revoked_at) FROM devices d JOIN invites i ON d.invite_digest=i.digest ORDER BY d.id`
 	case "audit":
-		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
+		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END,'lease_id',CASE WHEN a.lease_id IS NOT NULL THEN lower(hex(a.lease_id)) END,'bytes',a.bytes) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
 	default:
 		return errors.New("unknown listing")
 	}

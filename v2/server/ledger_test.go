@@ -376,7 +376,7 @@ func TestV1AuditMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = old.Exec(`DROP TABLE audit;
+	_, err = old.Exec(`DROP TABLE quota_leases; ALTER TABLE users DROP COLUMN used_bytes; DROP TABLE audit;
 	CREATE TABLE audit(seq INTEGER PRIMARY KEY,occurred_at INTEGER NOT NULL,action TEXT NOT NULL,device_id BLOB NOT NULL REFERENCES devices(id));
 	CREATE INDEX audit_revocations ON audit(seq) WHERE action='revoke';
 	INSERT INTO audit(seq,occurred_at,action,device_id) SELECT 42,1,'redeem',id FROM devices;
