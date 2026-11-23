@@ -41,7 +41,7 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
         val recent=nodes.mapNotNull { results[it.favorite] }.filter { it.recent(86400000,now) }
         return if(recent.isEmpty()) "未测试" else "真连通过 "+recent.count { it.ok }
     }
-    Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(Space.sm)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("订阅总览",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
             if(onAdd!=null) CompactAction(onAdd,filled=false) { Text("添加订阅") }
@@ -56,19 +56,19 @@ internal fun SubscriptionOverview(sources: List<Subscription>, rows: List<NodeRo
             val reason=store.appearance.getString("error/"+source.id,null)
             val updated=if(source.updated>0) time.format(Date(source.updated)) else "未提供"
             NexusCard(onClick={ onSource(source) },onClickLabel="管理"+source.label) {
-                Column(Modifier.fillMaxWidth().padding(Space.lg),verticalArrangement=Arrangement.spacedBy(Space.xs)) {
+                Column(Modifier.fillMaxWidth().padding(horizontal=Space.lg,vertical=Space.md),verticalArrangement=Arrangement.spacedBy(Space.xxs)) {
                     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
                         Text(source.label,style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f),maxLines=1)
                         GlyphIcon(Glyph.Chevron,size=18.dp,tint=theme.outline)
                     }
                     if(usage.remaining!=null) Row(verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                        Text(amount(usage.remaining),style=numberStyle.copy(fontSize=28.sp,lineHeight=34.sp),fontWeight=FontWeight.SemiBold,
+                        Text(amount(usage.remaining),style=numberStyle.copy(fontSize=24.sp,lineHeight=30.sp),fontWeight=FontWeight.SemiBold,
                             color=if(low) theme.error else theme.onSurface)
                         Text("剩余",Modifier.padding(bottom=4.dp),color=theme.onSurfaceVariant,style=MaterialTheme.typography.detail)
                     } else Text("余量未提供",color=theme.onSurfaceVariant)
                     if(fraction!=null) {
                         val used by animateFloatAsState((1-fraction).toFloat().coerceIn(0.02f,1f),motionTween(Motion.emphasized),label="用量")
-                        Box(Modifier.fillMaxWidth().padding(vertical=6.dp).height(6.dp).background(theme.surfaceVariant,CircleShape)) {
+                        Box(Modifier.fillMaxWidth().padding(vertical=Space.xs).height(6.dp).background(theme.surfaceVariant,CircleShape)) {
                             Box(Modifier.fillMaxWidth(used).fillMaxHeight().background(if(low) theme.error else signal,CircleShape))
                         }
                     }

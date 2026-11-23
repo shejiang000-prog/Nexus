@@ -72,7 +72,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState==null) readInvitation(intent)
-        enableEdgeToEdge()
+        // The UI is always light, so the bars always use dark icons, whatever the system theme.
+        val bars = androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(bars, bars)
         setContent { Home() }
     }
 
@@ -253,15 +255,14 @@ class MainActivity : ComponentActivity() {
                                 } })
                         }
                     }
-                    else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-                        verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                    else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page,vertical=Space.sm),
+                        verticalArrangement=Arrangement.spacedBy(Space.sm)) {
                         when(displayed) {
                             "设置" -> {
-                                Text("设置",style=MaterialTheme.typography.headlineMedium)
                                 Column {
                                     SectionLabel("分流模式")
                                     ModeSwitch(bypass,::changeMode)
-                                    Text(if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",Modifier.padding(start=Space.xs,top=Space.sm),
+                                    Text(if(bypass)"国内网站直接访问，其余走加密通道" else "所有网站都走当前节点",Modifier.padding(start=Space.xs,top=6.dp),
                                         color=colors.onSurfaceVariant,style=MaterialTheme.typography.detail)
                                     SectionLabel("自动恢复")
                                     val alwaysOn=remember(tunnel.connectedAt) { prefs.getBoolean("always-on",false) }
@@ -284,7 +285,6 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             "高级" -> {
-                                Text("高级",style=MaterialTheme.typography.headlineMedium)
                                 Text("旧版私人节点用公钥和配置文件授权。以下操作需要先断开连接。",color=colors.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                                 Column {
                                     SectionLabel("旧版配置")

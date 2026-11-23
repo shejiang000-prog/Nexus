@@ -69,7 +69,7 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
     val face by animateColorAsState(if(link==Link.Failed) lerp(c.surface,p.danger,.10f) else c.surface,colorSpec,label="按钮底色")
     val lit by animateFloatAsState(if(on) 1f else 0f,motionTween(Motion.emphasized),label="点亮")
     val glow by animateFloatAsState(when(link){Link.On->.34f;Link.Busy,Link.Failed->.18f;Link.Idle->0f},motionTween(Motion.emphasized),label="光晕")
-    val lift by animateDpAsState(if(on) 20.dp else if(p.dark) 0.dp else 6.dp,motionTween(Motion.emphasized),label="按钮高度")
+    val lift by animateDpAsState(if(on) 14.dp else if(p.dark) 0.dp else 4.dp,motionTween(Motion.emphasized),label="按钮高度")
     // A short shake when a connection attempt fails, so the change is felt as well as seen.
     val shake=remember { Animatable(0f) }
     LaunchedEffect(link) {
@@ -88,7 +88,7 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
     val track=p.line
     val verb=if(state.active)"断开" else "连接"
     val signalFill=remember(p) { Brush.linearGradient(listOf(p.signal,p.signalDeep)) }
-    Box(Modifier.size(248.dp).graphicsLayer{scaleX=scale;scaleY=scale;translationX=shake.value.dp.toPx()},contentAlignment=Alignment.Center) {
+    Box(Modifier.size(Sizes.dial).graphicsLayer{scaleX=scale;scaleY=scale;translationX=shake.value.dp.toPx()},contentAlignment=Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val unit=size.minDimension/260f
             val t=ms.longValue
@@ -111,10 +111,10 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
             }
             if(on && motion && active) repeat(2){i->
                 val f=((t+i*1400)%2800)/2800f
-                drawCircle(accent.copy(alpha=.30f*(1-f)),(66.dp.toPx()*(.55f+.95f*f)),style=Stroke(1.dp.toPx()))
+                drawCircle(accent.copy(alpha=.30f*(1-f)),(Sizes.dialCore.toPx()/2*(.55f+.95f*f)),style=Stroke(1.dp.toPx()))
             }
         }
-        Box(Modifier.size(132.dp).graphicsLayer {
+        Box(Modifier.size(Sizes.dialCore).graphicsLayer {
             val breath=if(on && active && motion) 1f+.02f*(1-cos(2*PI*(ms.longValue%3200)/3200)).toFloat() else 1f
             scaleX=breath;scaleY=breath
         }.shadow(lift,CircleShape,ambientColor=accent.copy(alpha=.5f),spotColor=accent)
@@ -126,7 +126,7 @@ internal fun Orbit(state:TunnelState,enabled:Boolean,toggle:()->Unit) {
             .border(1.dp,lerp(track,accent,if(link==Link.Idle) 0f else .55f*(1f-lit)),CircleShape)
             .clickable(interactionSource=interaction,indication=null,enabled=enabled,role=Role.Button,onClick=toggle)
             .semantics {contentDescription=verb},contentAlignment=Alignment.Center) {
-            Mark(Modifier.size(46.dp),mark)
+            Mark(Modifier.size(34.dp),mark)
         }
     }
 }

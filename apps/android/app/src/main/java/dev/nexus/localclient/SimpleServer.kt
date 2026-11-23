@@ -203,7 +203,7 @@ internal fun usageAmount(bytes: Long) = java.lang.String.format(java.util.Locale
 internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
     val c=MaterialTheme.colorScheme
     NexusCard {
-        Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+        Column(Modifier.fillMaxWidth().padding(Space.lg),verticalArrangement=Arrangement.spacedBy(10.dp)){
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
                 Column(Modifier.weight(1f)){
                     Text(name,style=MaterialTheme.typography.titleLarge,fontWeight=androidx.compose.ui.text.font.FontWeight.Bold,maxLines=1)
@@ -225,8 +225,8 @@ internal fun ServerSummary(name:String,devices:JSONArray?,manage:()->Unit){
                         Column(Modifier.padding(horizontal=12.dp,vertical=10.dp)){
                             // One line at any font scale: shrink long amounts instead of wrapping "MB".
                             androidx.compose.foundation.text.BasicText(value?:"—",
-                                style=numberStyle.copy(fontSize=22.sp,lineHeight=28.sp,color=c.onSurface,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold),
-                                maxLines=1,autoSize=androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize=13.sp,maxFontSize=22.sp,stepSize=1.sp))
+                                style=numberStyle.copy(fontSize=20.sp,lineHeight=26.sp,color=c.onSurface,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold),
+                                maxLines=1,autoSize=androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize=13.sp,maxFontSize=20.sp,stepSize=1.sp))
                             Text(label,color=c.onSurfaceVariant,fontSize=13.sp)
                         }
                     }

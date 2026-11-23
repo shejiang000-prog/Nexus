@@ -69,7 +69,7 @@ internal fun RateTiles(read:()->Traffic) {
     val traffic=read()
     val c=MaterialTheme.colorScheme
     val p=palette
-    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)){
+    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(Space.sm)){
         listOf("下载","上传").forEachIndexed { index,label ->
             val samples=traffic.samples
             fun rate(s:RateSample)=if(index==0)s.down else s.up
@@ -77,7 +77,7 @@ internal fun RateTiles(read:()->Traffic) {
             val peak=samples.maxOfOrNull{rate(it)?:0.0}?.coerceAtLeast(1.0)?:1.0
             val tone=if(index==0) p.signal else p.signalDeep
             NexusCard(Modifier.weight(1f)){
-                Column(Modifier.padding(start=Space.md,end=Space.md,top=Space.md)){
+                Column(Modifier.padding(start=Space.md,end=Space.md,top=10.dp)){
                     Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){
                         androidx.compose.foundation.layout.Box(Modifier.size(22.dp).background(tone.copy(alpha=.16f),Shapes.pill),
                             contentAlignment=androidx.compose.ui.Alignment.Center){
@@ -85,9 +85,9 @@ internal fun RateTiles(read:()->Traffic) {
                         Text(label,color=c.onSurfaceVariant,style=MaterialTheme.typography.labelMedium)
                     }
                     Text(if(latest==null)"—" else java.lang.String.format(java.util.Locale.ROOT,if(latest>=1e6)"%.2f MB/s" else "%.1f KB/s",latest/if(latest>=1e6)1e6 else 1e3),
-                        Modifier.padding(top=Space.xs),style=numberStyle.copy(fontSize=20.sp,lineHeight=26.sp),fontWeight=FontWeight.SemiBold)
+                        Modifier.padding(top=Space.xxs),style=numberStyle.copy(fontSize=18.sp,lineHeight=24.sp),fontWeight=FontWeight.SemiBold)
                 }
-                Canvas(Modifier.fillMaxWidth().height(30.dp)){
+                Canvas(Modifier.fillMaxWidth().height(20.dp)){
                     val end=samples.lastOrNull()?.at?:return@Canvas
                     val points=samples.mapNotNull { s -> rate(s)?.let { Offset(size.width*(1f-(end-s.at)/24000f),size.height-2f-(it/peak*(size.height-6f)).toFloat()) } }
                     if(points.size<2) return@Canvas

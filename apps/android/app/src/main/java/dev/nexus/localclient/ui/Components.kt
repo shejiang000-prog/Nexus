@@ -109,17 +109,17 @@ internal fun Mark(modifier:Modifier,ink:Color=LocalContentColor.current) {
 internal fun Segment(labels:List<String>,selected:Int,select:(Int)->Unit) {
     val c=MaterialTheme.colorScheme
     val p=palette
-    BoxWithConstraints(Modifier.fillMaxWidth().background(c.surfaceVariant,Shapes.control).padding(Space.xs)) {
+    BoxWithConstraints(Modifier.fillMaxWidth().background(c.surfaceVariant,Shapes.control).padding(3.dp)) {
         val width=maxWidth/labels.size
         val position by animateDpAsState(width*selected,motionSpring(Spring.StiffnessMediumLow,.82f),label="选中位置")
         val shade=Color.Black.copy(alpha=.12f)
-        Box(Modifier.offset(x=position).width(width).height(44.dp)
+        Box(Modifier.offset(x=position).width(width).height(Sizes.segment)
             .shadow(if(p.dark) 0.dp else 3.dp,Shapes.chip,ambientColor=shade,spotColor=shade)
             .background(if(p.dark) lerp(p.well,p.ink,.14f) else p.surface,Shapes.chip))
         Row { labels.forEachIndexed { i,s ->
             val ink by animateColorAsState(if(i==selected) c.onSurface else c.onSurfaceVariant,motionTween(Motion.standard),label="分段文字")
-            Box(Modifier.weight(1f).height(44.dp).selectable(i==selected,role=Role.Tab){select(i)},
-                contentAlignment=Alignment.Center){Text(s,color=ink,style=MaterialTheme.typography.labelLarge)} } }
+            Box(Modifier.weight(1f).height(Sizes.segment).selectable(i==selected,role=Role.Tab){select(i)},
+                contentAlignment=Alignment.Center){Text(s,color=ink,style=MaterialTheme.typography.labelLarge.copy(fontSize=15.sp))} } }
     }
 }
 
@@ -127,7 +127,7 @@ internal fun Segment(labels:List<String>,selected:Int,select:(Int)->Unit) {
 internal fun Notice(message:String,error:Boolean=false) {
     val c=MaterialTheme.colorScheme
     Surface(shape=Shapes.control,color=if(error) palette.dangerSoft else c.surfaceVariant) {
-        Text(message,Modifier.fillMaxWidth().padding(14.dp),color=if(error)c.error else c.onSurfaceVariant,
+        Text(message,Modifier.fillMaxWidth().padding(horizontal=Space.md,vertical=10.dp),color=if(error)c.error else c.onSurfaceVariant,
             style=MaterialTheme.typography.bodyMedium)
     }
 }
@@ -136,8 +136,8 @@ internal fun Notice(message:String,error:Boolean=false) {
 internal fun ActionRow(title:String,detail:String,index:Int,click:(()->Unit)?) {
     val c=MaterialTheme.colorScheme
     NexusCard(onClick=click) {
-        Row(Modifier.fillMaxWidth().padding(Space.lg),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
-            Box(Modifier.size(44.dp).background(palette.signalSoft,Shapes.chip),contentAlignment=Alignment.Center){
+        Row(Modifier.fillMaxWidth().padding(Space.md),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
+            Box(Modifier.size(40.dp).background(palette.signalSoft,Shapes.chip),contentAlignment=Alignment.Center){
                 CompositionLocalProvider(LocalContentColor provides c.primary){SectionIcon(index)} }
             Column(Modifier.weight(1f)) { Text(title,style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp))
                 if(detail.isNotEmpty())Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium) }
@@ -212,17 +212,17 @@ internal fun SignalNode(region:String,name:String,detail:String,latency:Long?,se
     val p=palette
     val tint by animateColorAsState(if(selected) p.signalSoft.copy(alpha=p.signalSoft.alpha*.55f) else Color.Transparent,motionTween(Motion.standard),label="选中底色")
     Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface).background(tint)) {
-        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=66.dp),color=c.outlineVariant)
-        Row(Modifier.fillMaxWidth().clickable(onClick=onDetails).padding(start=14.dp,end=Space.xs).heightIn(min=64.dp),
+        if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=60.dp),color=c.outlineVariant)
+        Row(Modifier.fillMaxWidth().clickable(onClick=onDetails).padding(start=Space.md,end=Space.xs).heightIn(min=56.dp),
             verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
             RegionBadge(region)
-            Column(Modifier.weight(1f).padding(vertical=10.dp)) {
+            Column(Modifier.weight(1f).padding(vertical=7.dp)) {
                 Text(name,style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp),maxLines=1,overflow=TextOverflow.Ellipsis)
                 Text(detail,color=c.onSurfaceVariant,style=MaterialTheme.typography.detail,maxLines=1)
                 if(info.isNotBlank()) Text(info,color=signalAmber,style=MaterialTheme.typography.bodySmall)
             }
             LatencyMeter(latency,testing)
-            if(onSelect!=null || selected) Box(Modifier.size(Sizes.touch).then(if(onSelect!=null)Modifier.clickable(role=Role.Button,onClick=onSelect)
+            if(onSelect!=null || selected) Box(Modifier.size(44.dp).then(if(onSelect!=null)Modifier.clickable(role=Role.Button,onClick=onSelect)
                 .semantics {contentDescription="使用此节点"} else Modifier),contentAlignment=Alignment.Center){
                 SelectionDot(selected)
             }
@@ -252,7 +252,7 @@ internal fun SelectionDot(selected:Boolean) {
 /** Small grey heading above a grouped list. */
 @Composable
 internal fun SectionLabel(text:String,modifier:Modifier=Modifier) {
-    Text(text,modifier.padding(start=Space.xs,top=14.dp,bottom=6.dp),color=MaterialTheme.colorScheme.onSurfaceVariant,
+    Text(text,modifier.padding(start=Space.xs,top=Space.sm,bottom=Space.xs),color=MaterialTheme.colorScheme.onSurfaceVariant,
         style=MaterialTheme.typography.labelMedium.copy(fontWeight=FontWeight.SemiBold))
 }
 
@@ -267,7 +267,7 @@ internal fun ListRow(title:String,detail:String="",place:GroupPlace=GroupPlace.S
     Column(Modifier.fillMaxWidth().clip(place.shape()).background(c.surface)) {
         if(place==GroupPlace.Middle || place==GroupPlace.Last) HorizontalDivider(Modifier.padding(start=Space.lg),color=c.outlineVariant)
         Row(Modifier.fillMaxWidth().then(if(onClick!=null)Modifier.clickable(enabled=enabled,role=Role.Button,onClick=onClick) else Modifier)
-            .heightIn(min=60.dp).padding(start=Space.lg,end=Space.md,top=10.dp,bottom=10.dp),
+            .heightIn(min=52.dp).padding(start=Space.lg,end=Space.md,top=Space.sm,bottom=Space.sm),
             verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
             Column(Modifier.weight(1f).graphicsLayer{alpha=if(enabled)1f else .5f}) {
                 Text(title,style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp),color=if(titleColor==Color.Unspecified)c.onSurface else titleColor)
@@ -301,7 +301,7 @@ internal fun SimpleDocument(lines:List<String>) {
 internal fun CurrentNode(region:String,name:String,detail:String,latency:Long?,private:Boolean,open:()->Unit) {
     val c=MaterialTheme.colorScheme
     NexusCard(onClick=open,onClickLabel="切换节点") {
-        Row(Modifier.fillMaxWidth().padding(14.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal=Space.md,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.md)) {
             RegionBadge(region,private)
             Column(Modifier.weight(1f)) {
                 Text(name,style=MaterialTheme.typography.titleMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
@@ -326,9 +326,9 @@ internal fun AutoSelection(checked:Boolean,enabled:Boolean,onChange:(Boolean)->U
     val c=MaterialTheme.colorScheme
     val well by animateColorAsState(if(checked) palette.signalSoft else c.surfaceVariant,motionTween(Motion.standard),label="自动选择图标")
     NexusCard {
-        Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,
+        Row(Modifier.fillMaxWidth().padding(horizontal=Space.md,vertical=Space.sm),verticalAlignment=Alignment.CenterVertically,
             horizontalArrangement=Arrangement.spacedBy(Space.md)){
-            Box(Modifier.size(36.dp).background(well,Shapes.chip),contentAlignment=Alignment.Center){
+            Box(Modifier.size(32.dp).background(well,Shapes.chip),contentAlignment=Alignment.Center){
                 GlyphIcon(Glyph.Bolt,size=18.dp,tint=if(checked) c.primary else c.onSurfaceVariant) }
             Column(Modifier.weight(1f)){Text("自动选最快",style=MaterialTheme.typography.titleSmall.copy(fontSize=16.sp))
                 val motion=LocalMotion.current

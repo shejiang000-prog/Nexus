@@ -29,26 +29,18 @@ internal class NexusPalette(
     val danger: Color, val dangerSoft: Color,
 )
 
-private const val SIGNAL_INK = 0xFF03140C
-
+/**
+ * The app is white with a blue brand colour in every system theme: no black surfaces.
+ * Text uses a deep slate rather than pure black.
+ */
 internal val LightPalette = NexusPalette(
     dark = false,
-    canvas = Color(0xFFF3F5F8), surface = Color(0xFFFFFFFF), raised = Color(0xFFFFFFFF), well = Color(0xFFE9EDF1), line = Color(0xFFDCE2E8),
-    ink = Color(0xFF0A0D11), inkSoft = Color(0xFF47525E), inkMuted = Color(0xFF5F6B78),
-    signal = Color(0xFF2BD394), signalDeep = Color(0xFF14B8A6), signalText = Color(0xFF0A7F55), onSignal = Color(SIGNAL_INK),
-    signalSoft = Color(0xFF2BD394).copy(alpha = .16f),
-    warning = Color(0xFF9A5B00), warningSoft = Color(0xFFFFB547).copy(alpha = .20f),
-    danger = Color(0xFFC42B2B), dangerSoft = Color(0xFFC42B2B).copy(alpha = .10f),
-)
-
-internal val DarkPalette = NexusPalette(
-    dark = true,
-    canvas = Color(0xFF0A0D11), surface = Color(0xFF12171D), raised = Color(0xFF181F26), well = Color(0xFF1A2129), line = Color(0xFF263039),
-    ink = Color(0xFFEEF2F6), inkSoft = Color(0xFFA9B4BF), inkMuted = Color(0xFF8592A0),
-    signal = Color(0xFF3EE6A3), signalDeep = Color(0xFF22C7C0), signalText = Color(0xFF3EE6A3), onSignal = Color(SIGNAL_INK),
-    signalSoft = Color(0xFF3EE6A3).copy(alpha = .14f),
-    warning = Color(0xFFFFB547), warningSoft = Color(0xFFFFB547).copy(alpha = .14f),
-    danger = Color(0xFFFF7A7A), dangerSoft = Color(0xFFFF7A7A).copy(alpha = .14f),
+    canvas = Color(0xFFF4F7FC), surface = Color(0xFFFFFFFF), raised = Color(0xFFFFFFFF), well = Color(0xFFEDF2FA), line = Color(0xFFDDE5F0),
+    ink = Color(0xFF0F1B2D), inkSoft = Color(0xFF4A5A70), inkMuted = Color(0xFF6B7A90),
+    signal = Color(0xFF2F6BFF), signalDeep = Color(0xFF1AA7EC), signalText = Color(0xFF1F56E0), onSignal = Color(0xFFFFFFFF),
+    signalSoft = Color(0xFF2F6BFF).copy(alpha = .10f),
+    warning = Color(0xFFB86E00), warningSoft = Color(0xFFFFB547).copy(alpha = .20f),
+    danger = Color(0xFFD13434), dangerSoft = Color(0xFFD13434).copy(alpha = .09f),
 )
 
 internal val LocalPalette = staticCompositionLocalOf { LightPalette }
@@ -70,7 +62,7 @@ internal object Space {
     val xl = 20.dp
     val xxl = 28.dp
     /** Horizontal page margin. */
-    val page = 20.dp
+    val page = 16.dp
 }
 
 /** Corner radii. */
@@ -78,8 +70,8 @@ internal object Radius {
     val xs = 8.dp
     val sm = 12.dp
     val md = 16.dp
-    val lg = 20.dp
-    val xl = 28.dp
+    val lg = 18.dp
+    val xl = 24.dp
 }
 
 /** Shapes built from [Radius]. */
@@ -95,11 +87,16 @@ internal object Shapes {
 internal object Sizes {
     /** Minimum touch target. */
     val touch = 48.dp
-    val buttonHeight = 56.dp
-    val compactHeight = 44.dp
+    val buttonHeight = 50.dp
+    val compactHeight = 40.dp
+    /** The connection dial and its centre button. */
+    val dial = 188.dp
+    val dialCore = 100.dp
+    /** Height of segmented controls. */
+    val segment = 40.dp
     val icon = 22.dp
     val smallIcon = 16.dp
-    val badge = 40.dp
+    val badge = 36.dp
     val hairline = 1.dp
 }
 

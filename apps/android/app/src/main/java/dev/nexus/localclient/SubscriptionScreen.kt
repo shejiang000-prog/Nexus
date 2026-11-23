@@ -301,8 +301,8 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     val chosenNode = local.getString("simple-node",null)
     val pinned = local.contains("pinned")
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = Space.page),
-        state = scroll, contentPadding = PaddingValues(vertical = Space.lg)) {
-        item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        state = scroll, contentPadding = PaddingValues(top = Space.xs, bottom = Space.lg)) {
+        item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text(if(sources.isEmpty()) "暂无订阅" else "${allRows.size} 个节点 · ${sources.size} 个订阅",Modifier.weight(1f),
                     color=theme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
@@ -348,22 +348,22 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 Text("添加机场订阅后，会自动测试并选择最快节点。",color=theme.onSurfaceVariant)
             }
         }}
-        if(sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        if(sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             Segment(listOf("节点列表","订阅管理"),if(showSources)1 else 0){showSources=it==1}
         }}
-        if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             AutoSelection(automatic,enabled=!pinned,onChange={value->onAutomatic(value,allRows)})
             if(pinned)Text("请先在设置中解除固定出口",style=MaterialTheme.typography.bodyMedium)
         }}
-        if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) { home(allRows) } }
-        if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) { home(allRows) } }
+        if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             SubscriptionOverview(sources, allRows, problems, store, metrics, maxOf(now, metrics.values.maxOfOrNull { it.at } ?: 0L),onSource={editSource=it})
         }}
         if(showSources) items(sources, key = { it.id }) { source ->
             var folded by remember { mutableStateOf(store.appearance.getBoolean("fold/"+source.id,false)) }
             val color = store.appearance.getInt("color/"+source.id,0)
             val palette = listOf(theme.primary,theme.tertiary,theme.secondary)
-            NexusCard(Modifier.padding(bottom = 10.dp).animateItem()) {
+            NexusCard(Modifier.padding(bottom = Space.sm).animateItem()) {
                 Column(Modifier.fillMaxWidth().padding(start = Space.lg, end = Space.sm, top = 6.dp, bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.xs)) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Text(listOf(store.appearance.getString("mark/"+source.id,"").orEmpty(),source.label)
@@ -401,7 +401,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 }
             }
         }
-        if(!showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        if(!showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             SecondaryAction(onClick={tools=!tools}) {
                 Text(if(tools) "收起筛选与测速" else "筛选与测速")
                 val turn by animateFloatAsState(if (tools) -90f else 90f,motionSpring(),label="筛选箭头")
@@ -411,9 +411,9 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
         if(!showSources && sources.isNotEmpty()) item { AnimatedVisibility(tools,
             enter=fadeIn(motionTween(Motion.standard))+expandVertically(motionTween(Motion.emphasized),expandFrom=androidx.compose.ui.Alignment.Top),
             exit=fadeOut(motionTween(Motion.quick,Motion.leave))+shrinkVertically(motionTween(Motion.standard,Motion.slide),shrinkTowards=androidx.compose.ui.Alignment.Top)) {
-          Column(Modifier.fillMaxWidth().padding(bottom = Space.md)) {
+          Column(Modifier.fillMaxWidth().padding(bottom = Space.sm)) {
             NexusCard {
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.fillMaxWidth().padding(Space.md), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
                     OutlinedTextField(search, { search = it.take(96) }, Modifier.fillMaxWidth(), label = { Text("搜索名称或协议") }, singleLine = true,
                         shape = Shapes.control,
                         colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = theme.outlineVariant, unfocusedContainerColor = theme.background, focusedContainerColor = theme.background))
@@ -479,7 +479,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
             // Sorting, filtering and refreshes move rows to their new place instead of jumping.
             Box(Modifier.animateItem(fadeInSpec=motionTween(Motion.standard),placementSpec=motionSpring(Spring.StiffnessMediumLow,1f),
                 fadeOutSpec=motionTween(Motion.quick))) { ListEntrance(index) { Column {
-                if(starts) Row(Modifier.fillMaxWidth().padding(start=Space.xs,end=Space.xs,top=if(index==0) 0.dp else 14.dp,bottom=Space.sm),
+                if(starts) Row(Modifier.fillMaxWidth().padding(start=Space.xs,end=Space.xs,top=if(index==0) 0.dp else Space.md,bottom=6.dp),
                     verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
                     Text(row.source.label,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
                     Text("${visible.count { it.source.id==row.source.id }} 个",color=theme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)

@@ -32,6 +32,9 @@ internal fun pageDepth(page:String)=when(page) {
     else -> 2
 }
 
+/** Sub-pages whose name sits in the top bar instead of a heading in the page body. */
+internal fun pageTitle(page:String)=page.takeIf { it=="设置" || it=="高级" }
+
 @Composable
 internal fun SimpleShell(page:String,navigate:(String)->Unit,back:()->Unit,content:@Composable (String)->Unit) {
     val tabs=shellTabs
@@ -50,14 +53,17 @@ internal fun SimpleShell(page:String,navigate:(String)->Unit,back:()->Unit,conte
         frameProgress(if(motion)Motion.emphasized else Motion.reduced){progress=enterCurve.transform(it)}
     }
     Scaffold(containerColor=c.background,topBar={
-        Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min=56.dp).padding(horizontal=Space.page),
+        Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min=52.dp).padding(horizontal=Space.page),
             verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
             if(shown=="连接") Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.sm)){
-                Mark(Modifier.size(26.dp));Text("Nexus",fontSize=21.sp,fontFamily=numberFont,fontWeight=FontWeight.Bold)
+                Mark(Modifier.size(24.dp),palette.signal);Text("Nexus",fontSize=20.sp,fontFamily=numberFont,fontWeight=FontWeight.Bold)
             } else if(shown in tabs) Text(shown,style=MaterialTheme.typography.headlineMedium)
-            else TextButton(back,contentPadding=PaddingValues(start=Space.xs,end=Space.md)){
-                GlyphIcon(Glyph.Back,size=20.dp,tint=c.onSurface);Spacer(Modifier.width(6.dp))
-                Text("返回",color=c.onSurface,style=MaterialTheme.typography.labelLarge)
+            // Pages without their own heading show their name beside the back arrow; the
+            // control is still announced as "返回".
+            else TextButton(back,Modifier.semantics{contentDescription="返回"},contentPadding=PaddingValues(start=Space.xs,end=Space.md)){
+                GlyphIcon(Glyph.Back,size=20.dp,tint=c.onSurface);Spacer(Modifier.width(Space.sm))
+                val title=pageTitle(shown)
+                Text(title ?: "返回",color=c.onSurface,style=if(title!=null) MaterialTheme.typography.titleLarge else MaterialTheme.typography.labelLarge)
             }
             if(shown in tabs) IconButton({navigate("设置")},modifier=Modifier.semantics{contentDescription="设置"}) {
                 GlyphIcon(Glyph.Settings,tint=c.onSurface)
@@ -69,10 +75,10 @@ internal fun SimpleShell(page:String,navigate:(String)->Unit,back:()->Unit,conte
             val pill by animateDpAsState(if(selected) 60.dp else 28.dp,motionSpring(Spring.StiffnessMediumLow,.7f),label="标签胶囊宽度")
             val fill by animateColorAsState(if(selected) signalSoft else signalSoft.copy(alpha=0f),motionTween(Motion.standard),label="标签胶囊颜色")
             val ink by animateColorAsState(if(selected) c.primary else c.onSurfaceVariant,motionTween(Motion.standard),label="标签颜色")
-            Column(Modifier.weight(1f).selectable(selected,role=Role.Tab){navigate(label)}.padding(vertical=Space.sm),
+            Column(Modifier.weight(1f).selectable(selected,role=Role.Tab){navigate(label)}.padding(top=6.dp,bottom=Space.xs),
                 horizontalAlignment=Alignment.CenterHorizontally) {
-                Box(Modifier.height(32.dp).width(60.dp),contentAlignment=Alignment.Center){
-                    Box(Modifier.size(pill,32.dp).background(fill,Shapes.pill))
+                Box(Modifier.height(30.dp).width(60.dp),contentAlignment=Alignment.Center){
+                    Box(Modifier.size(pill,30.dp).background(fill,Shapes.pill))
                     CompositionLocalProvider(LocalContentColor provides ink){SectionIcon(i)} }
                 Text(label,color=ink,style=MaterialTheme.typography.labelMedium.copy(fontSize=13.sp,lineHeight=18.sp,
                     fontWeight=if(selected) FontWeight.SemiBold else FontWeight.Medium))
@@ -115,7 +121,7 @@ internal fun StatusPill(link:Link,status:String) {
     val pulse by rememberPulse(link==Link.Busy)
     val motion=LocalMotion.current
     Surface(shape=Shapes.pill,color=container) {
-        Row(Modifier.padding(horizontal=14.dp,vertical=6.dp).animateContentSize(motionTween(Motion.standard)),
+        Row(Modifier.padding(horizontal=Space.md,vertical=5.dp).animateContentSize(motionTween(Motion.standard)),
             verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.sm)){
             Box(Modifier.size(8.dp).graphicsLayer{val s=1f+.5f*pulse;scaleX=s;scaleY=s;alpha=1f-.45f*pulse}.background(dot,CircleShape))
             AnimatedContent(status,transitionSpec={
@@ -136,16 +142,16 @@ private fun ClockText(time:()->String) { Text(time(),style=MaterialTheme.typogra
 internal fun HomeSkeleton() {
     Column(Modifier.fillMaxSize().padding(horizontal=Space.page,vertical=Space.sm),horizontalAlignment=Alignment.CenterHorizontally,
         verticalArrangement=Arrangement.spacedBy(Space.md)) {
-        Box(Modifier.size(248.dp),contentAlignment=Alignment.Center){
+        Box(Modifier.size(Sizes.dial),contentAlignment=Alignment.Center){
             val line=palette.line
             Canvas(Modifier.fillMaxSize()){ for(i in 0..2) drawCircle(line,size.minDimension/2*(126-18*i)/130f,style=Stroke(1.5.dp.toPx())) }
-            Box(Modifier.size(132.dp).shimmer(CircleShape))
+            Box(Modifier.size(Sizes.dialCore).shimmer(CircleShape))
         }
         SkeletonBlock(120.dp,30.dp,shape=Shapes.pill)
         SkeletonBlock(160.dp,20.dp)
         Spacer(Modifier.height(Space.sm))
-        SkeletonBlock(null,72.dp,shape=Shapes.card)
-        SkeletonBlock(null,52.dp,shape=Shapes.control)
+        SkeletonBlock(null,64.dp,shape=Shapes.card)
+        SkeletonBlock(null,48.dp,shape=Shapes.control)
     }
 }
 
@@ -158,19 +164,19 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
     if(first){
         val hero:@Composable ()->Unit={
             Column(horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(10.dp)){
-                Box(Modifier.size(176.dp),contentAlignment=Alignment.Center){
+                Box(Modifier.size(148.dp),contentAlignment=Alignment.Center){
                     Canvas(Modifier.fillMaxSize()){
                         drawCircle(Brush.radialGradient(listOf(p.signal.copy(alpha=.22f),Color.Transparent)),size.width/2)
                         for(i in 0..2)drawCircle(p.line,size.width*(.48f-.075f*i),style=Stroke(1.dp.toPx()))
                     }
-                    Box(Modifier.size(76.dp).background(c.onSurface,CircleShape),contentAlignment=Alignment.Center){Mark(Modifier.size(38.dp),c.background)}
+                    Box(Modifier.size(68.dp).background(Brush.linearGradient(listOf(p.signal,p.signalDeep)),CircleShape),contentAlignment=Alignment.Center){Mark(Modifier.size(32.dp),p.onSignal)}
                 }
                 Text("欢迎使用 Nexus",style=MaterialTheme.typography.headlineMedium)
                 Text("先添加一个节点来源。之后每次打开，点一下就能连接。",textAlign=TextAlign.Center,color=c.onSurfaceVariant)
             }
         }
         val actions:@Composable ()->Unit={
-            Column(horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(14.dp)){
+            Column(horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(10.dp)){
                 ListEntrance(1){ActionRow("添加机场订阅","粘贴订阅链接，或扫二维码",1,addSubscription)}
                 ListEntrance(2){ActionRow("接入我的服务器","使用服务器地址和密码绑定",2,addServer)}
                 if(receive!=null) TextButton(receive){Text("收到了邀请？扫码或粘贴",color=c.onSurfaceVariant)}
@@ -195,7 +201,7 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
     val traffic=rememberTraffic(state)
     val motion=LocalMotion.current
     val dial:@Composable ()->Unit={
-        Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(6.dp)){
+        Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(Space.xs)){
             Orbit(state,enabled,toggle)
             StatusPill(link,status)
             AnimatedContent(on,transitionSpec={
@@ -203,7 +209,7 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
                     fadeOut(tweenFor(motion,Motion.quick,Motion.leave)) using SizeTransform(clip=false){ _,_ -> tweenFor(motion) }
             },contentAlignment=Alignment.Center,label="计时与提示") { connected ->
                 if(connected) ClockText { traffic.value.time }
-                else Text(if(enabled)"点按圆环即可"+(if(state.active)"断开" else "连接") else "请先选择可用节点",Modifier.padding(vertical=Space.xs),
+                else Text(if(enabled)"点按圆环即可"+(if(state.active)"断开" else "连接") else "请先选择可用节点",
                     color=c.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
             }
         }
@@ -227,7 +233,7 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
             val (text,error)=if(notice.isNotBlank()) notice to failed else lastNotice
             Notice(text,error)
         }
-        if(overview!=null){Spacer(Modifier.height(10.dp));overview()}
+        if(overview!=null){Spacer(Modifier.height(Space.xs));overview()}
     }
     // A faint wash of the state colour behind the dial; it fades between states with the dial.
     val wash by animateColorAsState(link.tone().copy(alpha=when(link){Link.On->.10f;Link.Busy,Link.Failed->.07f;Link.Idle->0f}),
@@ -235,14 +241,14 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
     BoxWithConstraints(Modifier.fillMaxSize().drawBehind {
         if(wash.alpha>0f) {
             val wide=maxOf(size.width,size.height)>=600.dp.toPx() && size.width>size.height
-            val centre=androidx.compose.ui.geometry.Offset(if(wide) size.width*.25f else size.width/2,132.dp.toPx())
+            val centre=androidx.compose.ui.geometry.Offset(if(wide) size.width*.25f else size.width/2,Sizes.dial.toPx()/2+Space.xs.toPx())
             drawCircle(Brush.radialGradient(listOf(wash,wash.copy(alpha=wash.alpha*.4f),Color.Transparent),centre,size.width*.8f),size.width*.8f,centre)
         }
     }){
         if(maxWidth>=600.dp && maxWidth>maxHeight)Row(Modifier.fillMaxSize().padding(horizontal=Space.page),horizontalArrangement=Arrangement.spacedBy(Space.xl)){
             Column(Modifier.weight(.85f).verticalScroll(rememberScrollState())){dial()}
-            Column(Modifier.weight(1.25f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){details()}
-        } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page,vertical=Space.sm),
-            verticalArrangement=Arrangement.spacedBy(10.dp)){dial();details()}
+            Column(Modifier.weight(1.25f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.sm)){details()}
+        } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=Space.page,vertical=Space.xs),
+            verticalArrangement=Arrangement.spacedBy(Space.sm)){dial();details()}
     }
 }

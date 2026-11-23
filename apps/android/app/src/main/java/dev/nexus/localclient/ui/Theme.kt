@@ -32,7 +32,8 @@ internal val LocalForeground = compositionLocalOf { true }
 
 @Composable
 internal fun NexusTheme(content:@Composable ()->Unit) {
-    val dark=isSystemInDarkTheme()
+    // White and blue in every system theme (see LightPalette); there is no dark variant.
+    val dark=false
     val ctx=LocalContext.current
     val lifecycle=(ctx as? ComponentActivity)?.lifecycle
     val power=remember(ctx){ctx.getSystemService(PowerManager::class.java)}
@@ -49,7 +50,7 @@ internal fun NexusTheme(content:@Composable ()->Unit) {
         ctx.contentResolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE),false,scale)
         onDispose { lifecycle?.removeObserver(observer);ctx.unregisterReceiver(screen);ctx.contentResolver.unregisterContentObserver(scale) }
     }
-    val tokens=if(dark) DarkPalette else LightPalette
+    val tokens=LightPalette
     val colors=remember(dark) {
         val p=tokens
         val base=if(dark) darkColorScheme() else lightColorScheme()
@@ -75,15 +76,15 @@ internal fun nexusTypography():Typography {
     val t=Typography()
     fun style(size:Int,line:Int,weight:FontWeight=FontWeight.Normal)=t.bodyLarge.copy(fontSize=size.sp,lineHeight=line.sp,fontWeight=weight,letterSpacing=0.sp)
     return t.copy(
-        displaySmall=style(46,54,FontWeight.Bold).copy(fontFamily=numberFont,fontFeatureSettings="tnum"),
-        headlineLarge=style(32,40,FontWeight.Bold),
-        headlineMedium=style(28,36,FontWeight.Bold),
-        headlineSmall=style(24,32,FontWeight.Bold),
+        displaySmall=style(34,40,FontWeight.Bold).copy(fontFamily=numberFont,fontFeatureSettings="tnum"),
+        headlineLarge=style(28,36,FontWeight.Bold),
+        headlineMedium=style(24,32,FontWeight.Bold),
+        headlineSmall=style(22,28,FontWeight.Bold),
         titleLarge=style(20,28,FontWeight.Bold),
         titleMedium=style(17,24,FontWeight.SemiBold),
         titleSmall=style(15,22,FontWeight.SemiBold),
-        bodyLarge=style(16,24),
-        bodyMedium=style(15,22),
+        bodyLarge=style(16,22),
+        bodyMedium=style(15,21),
         bodySmall=style(13,18),
         labelLarge=style(16,22,FontWeight.SemiBold),
         labelMedium=style(14,20,FontWeight.Medium),
