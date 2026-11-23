@@ -22,4 +22,3 @@ internal object V2Connection {
 
     fun retry(code: Int) = code == 4 || code == 6
 }
-
