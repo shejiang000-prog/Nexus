@@ -8,10 +8,10 @@ Android 可用 Nexus 私人节点连接全设备 VPN，或按配置开放本机 
 
 在「我的服务器」填写服务器 IP。域名可留空，安装器自动部署 V2 和 Reality。有域名时 V2 由 Caddy 申请和续期公有证书；Hysteria2 也需要域名。使用 IP 时节点保存一把 P-256 私钥，证书续期与升级沿用该密钥。普通卸载保留密钥，彻底清除（`uninstall --purge`）后重装需重新领取邀请。
 
-管理员通过已安装节点生成一次性链接，`$EXPIRES_AT` 为 RFC3339 格式的领取截止时间。CLI 从部署配置读取入口和端口，IP 模式自动附带 SPKI 固定值。二维码与链接是同一份凭据，请私下分享。
+管理员通过已安装节点生成一次性链接，`$EXPIRES_AT` 为 RFC3339 格式的领取截止时间。CLI 从部署配置读取入口和端口，IP 模式自动附带 SPKI 固定值。若服务器上已有 `qrencode`，追加 `--qr` 会在终端绘制二维码；否则仍输出可复制的链接。二维码与链接是同一份凭据，请私下分享。
 
 ```sh
-runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger "$DB" invite --link "$USER_ID" "$EXPIRES_AT"
+runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger /var/lib/nexus-v2/ledger.db invite --link "$USER_ID" "$EXPIRES_AT"
 ```
 
 Android Keystore 优先使用 StrongBox。域名邀请校验证书链和域名，带固定值时也校验固定值。IP 邀请使用固定值验证身份。兑换和每次 H2/H3 握手均执行验证，失败返回证书错误并停止。认证失败、撤销或到期会停止自动重试；网络中断按退避重连。绕过大陆、全局代理、DNS 和「设置 → 按应用代理与出口诊断」沿用现有 VPN 路径。H2 恢复到 H3 时已有 H2 流可继续读写。

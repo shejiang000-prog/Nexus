@@ -34,6 +34,9 @@ func normalize(o Options) (Options, error) {
 	o.Domain = strings.TrimSuffix(strings.ToLower(o.Domain), ".")
 	if len(o.Ports) == 0 {
 		o.Ports = map[string]int{"v2": 0}
+		if o.Domain == "" {
+			o.Ports["reality"] = 0
+		}
 	}
 	ports := map[string]int{}
 	claimed := map[int]bool{}
@@ -69,8 +72,8 @@ func normalize(o Options) (Options, error) {
 	}
 	if o.Domain == "" {
 		ip := net.ParseIP(o.PublicHost)
-		if len(ports) != 1 || ports["reality"] == 0 || ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
-			return o, errors.New("a domain is required, except for Reality alone with a node IP")
+		if ports["hysteria2"] != 0 || ip == nil || ip.IsUnspecified() || ip.IsMulticast() || o.CertFile != "" || o.KeyFile != "" || o.ACMECA != "" || o.ACMERoot != "" {
+			return o, errors.New("IP mode requires a node IP and supports V2 and Reality; Hysteria2 and custom TLS options require a domain")
 		}
 		o.PublicHost = ip.String()
 	} else {
@@ -100,7 +103,7 @@ func normalize(o Options) (Options, error) {
 	if ports["v2"] == 0 && ports["hysteria2"] == 0 && (o.CertFile != "" || o.ACMERoot != "" || o.ACMECA != "") {
 		return o, errors.New("certificate options require V2 or Hysteria2")
 	}
-	if (ports["v2"] != 0 || ports["hysteria2"] != 0) && o.CertFile == "" && (ports["reality"] == 80 || ports["reality"] == 443 || ports["v2"] == 80) {
+	if o.Domain != "" && (ports["v2"] != 0 || ports["hysteria2"] != 0) && o.CertFile == "" && (ports["reality"] == 80 || ports["reality"] == 443 || ports["v2"] == 80) {
 		return o, errors.New("ACME needs 80/tcp and 443/tcp for Caddy")
 	}
 	o.Ports = ports
@@ -134,7 +137,9 @@ func (o Options) deployment() deployment {
 	mode := "none"
 	if o.Ports["v2"] != 0 || o.Ports["hysteria2"] != 0 {
 		mode = "acme"
-		if o.CertFile != "" {
+		if o.Domain == "" {
+			mode = "ip"
+		} else if o.CertFile != "" {
 			mode = "manual"
 		}
 	}

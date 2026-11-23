@@ -40,13 +40,46 @@ func admin(args []string, out io.Writer) error {
 	if handled, err := compatAdmin(args, out); handled {
 		return err
 	}
-	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit | compat {enable|disable|rotate|apply|status|export} ...}")
+	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite [--link] [--qr] USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit | compat {enable|disable|rotate|apply|status|export} ...}")
 	if len(args) < 2 {
 		return usage
 	}
 	var id proof.ID
 	var until time.Time
 	var err error
+	var share *shareInvite
+	var qr bool
+	if args[1] == "invite" {
+		var link bool
+		root := "/"
+		clean := append([]string(nil), args[:2]...)
+		for n := 2; n < len(args); n++ {
+			switch args[n] {
+			case "--link":
+				link = true
+			case "--qr":
+				qr, link = true, true
+			case "--root":
+				n++
+				if n >= len(args) {
+					return usage
+				}
+				root = args[n]
+			default:
+				clean = append(clean, args[n])
+			}
+		}
+		args = clean
+		if root != "/" && !link {
+			return usage
+		}
+		if link {
+			share, err = installedInvite(root, args[0])
+			if err != nil {
+				return err
+			}
+		}
+	}
 	switch args[1] {
 	case "create-user":
 		if len(args) > 3 {
@@ -109,6 +142,9 @@ func admin(args []string, out io.Writer) error {
 		token, e := l.Invite(ctx, id, until)
 		if e != nil {
 			return e
+		}
+		if share != nil {
+			return share.write(out, token, qr)
 		}
 		_, err = fmt.Fprintln(out, base64.RawURLEncoding.EncodeToString(token))
 	case "revoke":

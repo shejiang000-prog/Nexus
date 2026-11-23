@@ -25,6 +25,7 @@ func TestCertificateModesAndPorts(t *testing.T) {
 		{"V2 custom", Options{Domain: "node.test", Ports: map[string]int{"v2": 7443}}, "acme", []socket{{"tcp", 7443}, {"udp", 7443}, {"tcp", 80}, {"tcp", 443}}, true},
 		{"Hysteria2", Options{Domain: "node.test", Ports: map[string]int{"hysteria2": 0}}, "acme", []socket{{"tcp", 80}, {"tcp", 443}, {"udp", 443}}, true},
 		{"Hysteria2 manual", Options{Domain: "node.test", CertFile: "cert", KeyFile: "key", Ports: map[string]int{"hysteria2": 0}}, "manual", []socket{{"udp", 443}}, true},
+		{"V2 IP", Options{PublicHost: "192.0.2.2", Ports: map[string]int{"v2": 0}}, "ip", []socket{{"tcp", 443}, {"udp", 443}}, true},
 		{"Reality address", Options{PublicHost: "192.0.2.2", Ports: map[string]int{"reality": 0}}, "none", []socket{{"tcp", 443}}, false},
 		{"V2 manual", Options{Domain: "node.test", CertFile: "cert", KeyFile: "key"}, "manual", []socket{{"tcp", 443}, {"udp", 443}}, true},
 	} {
@@ -43,7 +44,7 @@ func TestCertificateModesAndPorts(t *testing.T) {
 		})
 	}
 	for _, o := range []Options{
-		{Ports: map[string]int{"v2": 443}, PublicHost: "192.0.2.1"},
+		{Ports: map[string]int{"v2": 443}, PublicHost: "192.0.2.1", ACMECA: "https://invalid.test"},
 		{Ports: map[string]int{"hysteria2": 443}, PublicHost: "192.0.2.1"},
 		{Ports: map[string]int{"reality": 443}, PublicHost: "0.0.0.0"},
 		{Domain: "node.test", CertFile: "cert"},

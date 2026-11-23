@@ -82,9 +82,9 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		f.BoolVar(&interactive, "interactive", false, "prompt for installation settings")
 		f.BoolVar(&unattended, "non-interactive", false, "use flags only")
 		f.BoolVar(&o.SkipDNSCheck, "skip-dns-check", false, "continue if the domain HTTP callback fails; ACME issuance is still required")
-		f.StringVar(&protocols, "protocols", "v2", "comma-separated v2,reality,hysteria2")
-		f.StringVar(&o.Domain, "domain", "", "node DNS name (required for V2 and Hysteria2)")
-		f.StringVar(&o.PublicHost, "public-host", "", "node IP for a domainless Reality installation")
+		f.StringVar(&protocols, "protocols", "", "comma-separated v2,reality,hysteria2")
+		f.StringVar(&o.Domain, "domain", "", "node DNS name (optional for V2 and Reality; required for Hysteria2)")
+		f.StringVar(&o.PublicHost, "public-host", "", "node IP for a domainless V2 / Reality installation")
 		f.StringVar(&names, "reality-server-names", "", "comma-separated target certificate DNS names (default: target hostname)")
 		f.StringVar(&o.ACMECA, "acme-ca", "", "HTTPS ACME directory (default: Let's Encrypt)")
 		f.StringVar(&o.ACMERoot, "acme-root", "", "absolute PEM trust bundle for a private ACME authority")
@@ -113,6 +113,14 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	if interactive && unattended {
 		return o, errors.New("choose one input mode")
 	}
+	defaults := func() {
+		if protocols == "" {
+			protocols = "v2"
+			if o.Domain == "" {
+				protocols = "v2,reality"
+			}
+		}
+	}
 	if interactive || (!unattended && len(args) == 0) {
 		r := bufio.NewReader(input)
 		ask = func(label string, dest *string) error {
@@ -135,10 +143,11 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			}
 			return strings.EqualFold(answer, "yes") || strings.EqualFold(answer, "y"), nil
 		}
-		if err := ask("Protocols (v2,reality,hysteria2)", &protocols); err != nil {
+		if err := ask("Domain (blank for IP mode; Hysteria2 requires a domain)", &o.Domain); err != nil {
 			return o, err
 		}
-		if err := ask("Domain (V2 and Hysteria2 require one; blank for Reality only)", &o.Domain); err != nil {
+		defaults()
+		if err := ask("Protocols (v2,reality,hysteria2)", &protocols); err != nil {
 			return o, err
 		}
 		o.Ports = make(map[string]int)
@@ -160,10 +169,10 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			o.Ports[name] = n
 		}
 		if o.Domain == "" {
-			if _, only := o.Ports["reality"]; !only || len(o.Ports) != 1 {
-				return o, errors.New("V2 and Hysteria2 require a domain; only Reality supports an IP-only node")
+			if _, selected := o.Ports["hysteria2"]; selected {
+				return o, errors.New("Hysteria2 requires a domain; IP mode supports V2 and Reality")
 			}
-			if err := ask("Node IP for Reality only", &o.PublicHost); err != nil {
+			if err := ask("Node IP for V2 and Reality", &o.PublicHost); err != nil {
 				return o, err
 			}
 		}
@@ -180,7 +189,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 		}
 		_, v := o.Ports["v2"]
 		_, h := o.Ports["hysteria2"]
-		if v || h {
+		if (v || h) && o.Domain != "" {
 			if err := ask("Certificate PEM (blank for automatic ACME)", &o.CertFile); err != nil {
 				return o, err
 			}
@@ -191,6 +200,7 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 			}
 		}
 	}
+	defaults()
 	o.Ports = make(map[string]int)
 	for _, raw := range strings.Split(protocols, ",") {
 		name := strings.TrimSpace(raw)
@@ -215,16 +225,19 @@ func deploymentOptions(action string, args []string, input io.Reader, out io.Wri
 	_, v := o.Ports["v2"]
 	_, h := o.Ports["hysteria2"]
 	if o.Domain == "" {
-		if v || h {
-			return o, errors.New("V2 and Hysteria2 require a domain; only Reality supports an IP-only node")
+		if h {
+			return o, errors.New("Hysteria2 requires a domain; IP mode supports V2 and Reality")
 		}
 		ip := net.ParseIP(o.PublicHost)
 		if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
 			return o, errors.New("provide the node IP with --public-host")
 		}
 		o.PublicHost = ip.String()
+		if o.CertFile != "" || o.KeyFile != "" || o.ACMECA != "" || o.ACMERoot != "" {
+			return o, errors.New("IP mode uses its own persistent TLS identity")
+		}
 	} else if !dnsName(o.Domain) || o.PublicHost != "" {
-		return o, errors.New("use --domain with a DNS name, or --public-host for Reality only")
+		return o, errors.New("use --domain with a DNS name or --public-host with a node IP")
 	}
 	if (o.CertFile == "") != (o.KeyFile == "") || o.CertFile != "" && (!filepath.IsAbs(o.CertFile) || !filepath.IsAbs(o.KeyFile)) {
 		return o, errors.New("manual certificates require both absolute --cert and --key")
@@ -366,10 +379,18 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 			return err
 		}
 	}
-	managed := (v || h) && o.CertFile == ""
+	managed := (v || h) && o.Domain != "" && o.CertFile == ""
+	host := o.Domain
+	if host == "" {
+		host = o.PublicHost
+	}
 	store := "/var/lib/nexus-v2/caddy"
 	chain, key := "/etc/nexus-v2/cert.pem", "/etc/nexus-v2/key.pem"
 	tlsApp := object{"certificates": object{"load_files": []object{{"certificate": chain, "key": key}}}}
+	if v && o.Domain == "" {
+		chain, key = "/var/lib/nexus-v2/ip-cert.pem", "/var/lib/nexus-v2/ip-key.pem"
+		tlsApp = object{"automation": object{"policies": []object{{"get_certificate": []object{{"via": "nexus_ip", "ip": host, "directory": "/var/lib/nexus-v2"}}}}}}
+	}
 	if managed {
 		ca := o.ACMECA
 		if ca == "" {
@@ -412,10 +433,14 @@ func renderDeployment(ctx context.Context, o installer.Options, dir string) erro
 	}
 	if v {
 		port := o.Ports["v2"]
-		handler := object{"handler": "nexus", "authority": net.JoinHostPort(o.Domain, strconv.Itoa(port)), "ledger_path": "/var/lib/nexus-v2/ledger.db"}
+		handler := object{"handler": "nexus", "authority": net.JoinHostPort(host, strconv.Itoa(port)), "ledger_path": "/var/lib/nexus-v2/ledger.db"}
 		node := public(port, append([]object{{"handle": []object{handler}}}, routes...))
 		node["protocols"] = []string{"h1", "h2", "h3"}
 		node["enable_datagrams"] = true
+		if o.Domain == "" {
+			node["automatic_https"] = object{"disable": true}
+			node["tls_connection_policies"] = []object{{"protocol_min": "tls1.3", "default_sni": host}}
+		}
 		servers["node"] = node
 	}
 	if h {

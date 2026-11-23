@@ -186,13 +186,17 @@ func (h host) siteTLS(ctx context.Context, d deployment) error {
 	}
 	var roots *x509.CertPool
 	var cert string
-	if d.CertMode != "acme" {
-		cert = "cert.pem"
+	serverName := d.Domain
+	if d.CertMode == "ip" {
+		cert = state + "/ip-cert.pem"
+		serverName = d.PublicHost
+	} else if d.CertMode != "acme" {
+		cert = cfg + "/cert.pem"
 	} else if d.ACMERoot != "" {
-		cert = "acme-root.pem"
+		cert = cfg + "/acme-root.pem"
 	}
 	if cert != "" {
-		pem, e := os.ReadFile(h.path(cfg + "/" + cert))
+		pem, e := os.ReadFile(h.path(cert))
 		if e != nil {
 			return e
 		}
@@ -201,7 +205,7 @@ func (h host) siteTLS(ctx context.Context, d deployment) error {
 			return errTLSBundle
 		}
 	}
-	dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: d.Domain, RootCAs: roots, NextProtos: []string{"h2"}}}
+	dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: serverName, RootCAs: roots, NextProtos: []string{"h2"}}}
 	c, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if e != nil {
 		return e

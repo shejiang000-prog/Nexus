@@ -51,6 +51,14 @@ nexus-node ledger DB audit
 
 创建用户与邀请都要求指定的到期秒数晚于当前时间。撤销未知设备时 CLI 报错并返回非零，已撤销设备提示后返回 0。`revoke-user` 撤销命令提交时该用户已有的全部设备；同一事务禁用该用户已开通的兼容协议。对 Reality 的撤销默认要求所有 Reality 连接断开，其他用户可凭原链接重连。显式指定 `--keep-connections` 时保留已经认证的 Reality 流。CLI 等待各协议实际应用，服务不可用时返回失败，以原代次重试。现有邀请和用户记录继续保留。
 
+## IP 节点身份与邀请
+
+安装器在无域名时默认选中 V2 和 Reality。例如 `install --non-interactive --public-host 192.0.2.10` 按安装器自动分配端口。通过 `--protocols v2` 或 `--protocols reality` 可单选；Hysteria2 需要域名。有域名时 ACME 与手工证书选项继续适用。
+
+IP 模式的 V2 节点生成 ECDSA P-256 自签证书，SAN 为发布的 IP。节点在 `/var/lib/nexus-v2/ip-key.pem` 保留身份私钥，证书位于同目录的 `ip-cert.pem`。两个文件权限为 0600。证书有效期一年，启动或 TLS 握手时发现剩余不足 30 天，会用同一私钥续签。升级和普通卸载后重新安装会继承原身份；使用 `uninstall --purge` 会清除私钥，新装的节点需重新邀请。需要在新机器恢复同一身份时，将私钥作为机密与账本分别备份，恢复到专用账户的私有目录。
+
+签发完整邀请的命令为 `nexus-node ledger /var/lib/nexus-v2/ledger.db invite --link USER_HEX RFC3339`。链接从已安装配置获取地址与端口；IPv4 和 IPv6 邀请自动携带证书 SPKI 的 SHA-256。添加 `--qr` 可使用服务器已有的 `qrencode` 在终端显示同一份邀请。
+
 ## 在线备份与离线恢复
 
 1. 用服务账号运行 `nexus-node ledger /absolute/ledger.db backup /absolute/backup.db`，备份目录须受控，目标须不存在。命令在目标目录的私有文件执行 `VACUUM INTO`，以只读连接执行 `PRAGMA integrity_check`，通过后原子发布 0600 副本。记录成功的时间与备份所在目录。

@@ -33,7 +33,7 @@ func TestDeploymentInputAndPEM(t *testing.T) {
 			t.Fatalf("accepted %v", args)
 		}
 	}
-	o, err := deploymentOptions("install", []string{"--interactive"}, strings.NewReader("v2,hysteria2\nNexus.Test\n24443\n24444\n/input/lab.pem\n/input/lab.key\n"), io.Discard)
+	o, err := deploymentOptions("install", []string{"--interactive"}, strings.NewReader("Nexus.Test\nv2,hysteria2\n24443\n24444\n/input/lab.pem\n/input/lab.key\n"), io.Discard)
 	if err != nil || o.Domain != "nexus.test" || o.Ports["v2"] != 24443 || o.Ports["hysteria2"] != 24444 {
 		t.Fatalf("interactive options: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestACMECallbackConfirmation(t *testing.T) {
 		want, failed bool
 	}{{"yes\n", true, false}, {"\n", false, false}, {"no\n", false, false}, {"", false, true}} {
 		var output strings.Builder
-		o, err := deploymentOptions("install", []string{"--interactive"}, strings.NewReader("v2\nnexus.test\n0\n\n"+tc.answer), &output)
+		o, err := deploymentOptions("install", []string{"--interactive"}, strings.NewReader("nexus.test\nv2\n0\n\n"+tc.answer), &output)
 		if err != nil {
 			t.Fatal(err)
 		}
