@@ -36,7 +36,10 @@ import org.json.JSONObject
 @Composable
 internal fun DeploymentDomain(domain:String, change:(String)->Unit, protocols:Set<String>, select:(Set<String>)->Unit, enabled:Boolean) {
     OutlinedTextField(domain,{change(it.trim().take(253))},Modifier.fillMaxWidth(),enabled=enabled,singleLine=true,
-        label={Text("域名（可选）")},supportingText={Text("留空部署 V2 和 Reality。有域名时伪装效果更好。")},shape=Shapes.control)
+        label={Text("域名（可选）")},supportingText={Text("留空部署 V2 和 Reality。有域名时伪装效果更好。")},shape=Shapes.control,
+        colors=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=MaterialTheme.colorScheme.outlineVariant,
+            focusedBorderColor=MaterialTheme.colorScheme.primary,unfocusedContainerColor=MaterialTheme.colorScheme.background,
+            focusedContainerColor=MaterialTheme.colorScheme.background))
     if (domain.isNotBlank()) {
         Text("随 V2 部署",style=MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
@@ -45,7 +48,7 @@ internal fun DeploymentDomain(domain:String, change:(String)->Unit, protocols:Se
                     onClick={select(if(id in protocols) protocols-id else protocols+id)},label={Text(name)})
             }
         }
-        if (protocols.isNotEmpty()) Text("兼容协议的凭据可以复制。管理员可轮换或禁用凭据；单设备即时撤销仅适用于 V2。",style=MaterialTheme.typography.bodySmall)
+        if (protocols.isNotEmpty()) Text("兼容协议的凭据可以复制。管理员可轮换或禁用凭据。单设备即时撤销仅适用于 V2。",style=MaterialTheme.typography.bodySmall)
     }
 }
 
