@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -120,18 +121,11 @@ func TestInstalledACMERenewal(t *testing.T) {
 	adminTransport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", acmeLabSocket)
 	}}
-	defer adminTransport.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/config/", nil)
-	check(err)
-	current, err := (&http.Client{Transport: adminTransport}).Do(req)
-	check(err)
-	var active, cfg map[string]any
-	defer current.Body.Close()
-	check(json.NewDecoder(current.Body).Decode(&active))
+	t.Cleanup(adminTransport.CloseIdleConnections)
+	client := &http.Client{Transport: adminTransport, Timeout: time.Second}
+	var cfg map[string]any
 	check(json.Unmarshal(base, &cfg))
-	if current.StatusCode != 200 || !reflect.DeepEqual(cfg, active) {
-		t.Fatal("active Caddy configuration differs from installed lab configuration")
-	}
+	check(matchACMELabConfig(ctx, client, cfg))
 
 	admin := func(args ...string) string {
 		t.Helper()
@@ -196,7 +190,7 @@ func TestInstalledACMERenewal(t *testing.T) {
 	automation["policies"].([]any)[0].(map[string]any)["renewal_window_ratio"] = renewalRatio
 	accelerated, err := json.Marshal(cfg)
 	check(err)
-	prepareACMELabTimer(t, accelerated)
+	prepareACMELabTimer(t, accelerated, client)
 	// Wait out a stale certificate or an initial start-up renewal. Only accept
 	// a valid common leaf whose renewal window is still in the future.
 	var public, local *quic.Conn
@@ -304,9 +298,32 @@ func TestInstalledACMERenewal(t *testing.T) {
 	t.Fatalf("both fresh handshakes did not converge on a renewed ACME leaf: %v", lastErr)
 }
 
+func matchACMELabConfig(ctx context.Context, client *http.Client, expected map[string]any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/config/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Caddy admin status %d", resp.StatusCode)
+	}
+	var active map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(active, expected) {
+		return errors.New("active Caddy configuration differs from installed lab configuration")
+	}
+	return nil
+}
+
 // CertMagic creates its maintenance ticker at process start. Install a private
 // lab config before measurement, and retain the original inode for restoration.
-func prepareACMELabTimer(t *testing.T, accelerated []byte) {
+func prepareACMELabTimer(t *testing.T, accelerated []byte, admin *http.Client) {
 	t.Helper()
 	const caddyUnit = "nexus-v2.service"
 	const hyUnit = "nexus-v2-hysteria2.service"
@@ -327,9 +344,32 @@ func prepareACMELabTimer(t *testing.T, accelerated []byte) {
 		// Hysteria2 requires Caddy. Some systemd versions stop the dependent
 		// while restarting its prerequisite.
 		if err := systemctl("is-active", "--quiet", hyUnit); err != nil {
-			return systemctl("start", hyUnit)
+			if err := systemctl("start", hyUnit); err != nil {
+				return err
+			}
 		}
-		return nil
+		// Type=simple marks the unit active before Caddy opens its admin socket.
+		data, err := os.ReadFile(acmeLabConfig)
+		if err != nil {
+			return err
+		}
+		var expected map[string]any
+		if err := json.Unmarshal(data, &expected); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		for {
+			err = matchACMELabConfig(ctx, admin, expected)
+			if err == nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("Caddy admin readiness: %w", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	}
 	info, err := os.Lstat(acmeLabConfig)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
