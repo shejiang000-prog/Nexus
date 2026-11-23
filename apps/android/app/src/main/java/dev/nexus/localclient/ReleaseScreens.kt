@@ -47,7 +47,7 @@ internal fun RecoverySettings(alwaysOn:Boolean,openVpnSettings:()->Unit){
 }
 
 @Composable
-internal fun switchColors()=SwitchDefaults.colors(checkedTrackColor=signal,checkedThumbColor=Color(0xFF03140C),
+internal fun switchColors()=SwitchDefaults.colors(checkedTrackColor=signal,checkedThumbColor=palette.onSignal,
     uncheckedTrackColor=MaterialTheme.colorScheme.surfaceVariant,uncheckedThumbColor=MaterialTheme.colorScheme.onSurfaceVariant)
 
 @Composable
@@ -161,7 +161,7 @@ internal fun AboutScreen(){
         }else{
             item{
                 Column(Modifier.fillMaxWidth().padding(top=12.dp,bottom=4.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(6.dp)){
-                    Box(Modifier.size(72.dp).background(signal,RoundedCornerShape(22.dp)),contentAlignment=Alignment.Center){ Mark(Modifier.size(34.dp),Color(0xFF03140C)) }
+                    Box(Modifier.size(72.dp).background(signal,RoundedCornerShape(22.dp)),contentAlignment=Alignment.Center){ Mark(Modifier.size(34.dp),palette.onSignal) }
                     Text("Nexus",style=MaterialTheme.typography.headlineMedium.copy(fontFamily=numberFont))
                     Text("版本 "+BuildConfig.VERSION_NAME+" · 构建于 "+built,color=c.onSurfaceVariant,fontSize=14.sp)
                     Text("以 GPL-3.0 开源发布",color=c.onSurfaceVariant,fontSize=14.sp)

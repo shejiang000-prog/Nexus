@@ -78,7 +78,7 @@ internal fun ClaimArt(done:Boolean) {
             Box(Modifier.size(56.dp).background(c.surface,RoundedCornerShape(16.dp)),contentAlignment=Alignment.Center){SectionIcon(i,28.dp)}
         }}
         if(done)Box(Modifier.size(36.dp).graphicsLayer{if(motion){scaleX=enterCurve.transform(phase);scaleY=scaleX};alpha=phase}
-            .background(selected,CircleShape),contentAlignment=Alignment.Center){Text("✓",color=Color(0xFF03140C))}
+            .background(selected,CircleShape),contentAlignment=Alignment.Center){GlyphIcon(Glyph.Check,size=18.dp,tint=palette.onSignal)}
     }
 }
 

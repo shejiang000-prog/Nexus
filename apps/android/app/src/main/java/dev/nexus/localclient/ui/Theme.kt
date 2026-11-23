@@ -20,10 +20,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 
-internal val signalDark @Composable get() = isSystemInDarkTheme()
-internal val signal @Composable get() = if(signalDark) Color(0xFF3EE6A3) else Color(0xFF2BD394)
-internal val signalSoft @Composable get() = signal.copy(alpha=if(signalDark) .14f else .18f)
-internal val signalAmber @Composable get() = if(signalDark) Color(0xFFFFB547) else Color(0xFF9A5B00)
 // The bundled file is the variable font (default instance Light). Register each weight we use so
 // Android selects a real axis value instead of synthesizing bold from Light.
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
@@ -36,7 +32,7 @@ internal val LocalForeground = compositionLocalOf { true }
 
 @Composable
 internal fun NexusTheme(content:@Composable ()->Unit) {
-    val dark=signalDark
+    val dark=isSystemInDarkTheme()
     val ctx=LocalContext.current
     val lifecycle=(ctx as? ComponentActivity)?.lifecycle
     val power=remember(ctx){ctx.getSystemService(PowerManager::class.java)}
@@ -53,29 +49,43 @@ internal fun NexusTheme(content:@Composable ()->Unit) {
         ctx.contentResolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE),false,scale)
         onDispose { lifecycle?.removeObserver(observer);ctx.unregisterReceiver(screen);ctx.contentResolver.unregisterContentObserver(scale) }
     }
+    val tokens=if(dark) DarkPalette else LightPalette
     val colors=remember(dark) {
-        fun tone(light:Long,night:Long)=Color(if(dark) night else light)
-        val bg=tone(0xFFF3F5F8,0xFF0A0D11)
-        val face=tone(0xFFFFFFFF,0xFF12171D)
-        val well=tone(0xFFE9EDF1,0xFF1A2129)
-        val line=tone(0xFFD8DFE6,0xFF263039)
-        val ink=tone(0xFF0A0D11,0xFFEEF2F6)
-        val sub=tone(0xFF47525E,0xFFA9B4BF)
-        val muted=tone(0xFF5F6B78,0xFF8592A0)
-        val green=tone(0xFF0A7F55,0xFF3EE6A3)
+        val p=tokens
         val base=if(dark) darkColorScheme() else lightColorScheme()
-        base.copy(background=bg,onBackground=ink,surface=face,onSurface=ink,primary=green,onPrimary=tone(0xFFFFFFFF,0xFF03140C),
-            secondary=sub,onSecondary=bg,primaryContainer=well,onPrimaryContainer=ink,secondaryContainer=well,onSecondaryContainer=ink,
-            tertiary=sub,onTertiary=bg,tertiaryContainer=well,onTertiaryContainer=ink,
-            surfaceVariant=well,onSurfaceVariant=sub,outline=muted,outlineVariant=line,surfaceTint=face,
-            surfaceContainerLowest=bg,surfaceContainerLow=face,surfaceContainer=face,surfaceContainerHigh=well,surfaceContainerHighest=well,
-            inverseSurface=ink,inverseOnSurface=bg,error=tone(0xFFC42B2B,0xFFFF7A7A))
+        base.copy(background=p.canvas,onBackground=p.ink,surface=p.surface,onSurface=p.ink,primary=p.signalText,onPrimary=if(dark) p.onSignal else Color.White,
+            secondary=p.inkSoft,onSecondary=p.canvas,primaryContainer=p.signalSoft,onPrimaryContainer=p.ink,secondaryContainer=p.well,onSecondaryContainer=p.ink,
+            tertiary=p.inkSoft,onTertiary=p.canvas,tertiaryContainer=p.well,onTertiaryContainer=p.ink,
+            surfaceVariant=p.well,onSurfaceVariant=p.inkSoft,outline=p.inkMuted,outlineVariant=p.line,surfaceTint=p.surface,
+            surfaceContainerLowest=p.canvas,surfaceContainerLow=p.surface,surfaceContainer=p.surface,surfaceContainerHigh=p.raised,surfaceContainerHighest=p.well,
+            inverseSurface=p.ink,inverseOnSurface=p.canvas,error=p.danger,errorContainer=p.dangerSoft,onErrorContainer=p.danger)
     }
-    val type=remember {
-        val t=Typography()
-        val title=t.headlineMedium.copy(fontSize=30.sp,lineHeight=38.sp,fontWeight=FontWeight.Bold)
-        t.copy(headlineMedium=title,headlineSmall=title,bodySmall=t.bodyLarge,bodyMedium=t.bodyLarge,
-            labelLarge=t.bodyLarge.copy(fontWeight=FontWeight.SemiBold),labelMedium=t.bodyLarge,labelSmall=t.bodyLarge)
-    }
-    CompositionLocalProvider(LocalMotion provides animate,LocalForeground provides active) { MaterialTheme(colors,typography=type,content=content) }
+    val shapes=remember { androidx.compose.material3.Shapes(extraSmall=androidx.compose.foundation.shape.RoundedCornerShape(Radius.xs),
+        small=androidx.compose.foundation.shape.RoundedCornerShape(Radius.sm),medium=androidx.compose.foundation.shape.RoundedCornerShape(Radius.md),
+        large=androidx.compose.foundation.shape.RoundedCornerShape(Radius.lg),extraLarge=androidx.compose.foundation.shape.RoundedCornerShape(Radius.xl)) }
+    val type=remember { nexusTypography() }
+    CompositionLocalProvider(LocalPalette provides tokens,LocalMotion provides animate,LocalForeground provides active) { MaterialTheme(colors,shapes=shapes,typography=type,content=content) }
+}
+
+/**
+ * Type scale. Body text stays at 16 sp for reading; secondary lines step down to 15 and 13 sp,
+ * titles step up, and the connection timer uses the bundled display face.
+ */
+internal fun nexusTypography():Typography {
+    val t=Typography()
+    fun style(size:Int,line:Int,weight:FontWeight=FontWeight.Normal)=t.bodyLarge.copy(fontSize=size.sp,lineHeight=line.sp,fontWeight=weight,letterSpacing=0.sp)
+    return t.copy(
+        displaySmall=style(46,54,FontWeight.Bold).copy(fontFamily=numberFont,fontFeatureSettings="tnum"),
+        headlineLarge=style(32,40,FontWeight.Bold),
+        headlineMedium=style(28,36,FontWeight.Bold),
+        headlineSmall=style(24,32,FontWeight.Bold),
+        titleLarge=style(20,28,FontWeight.Bold),
+        titleMedium=style(17,24,FontWeight.SemiBold),
+        titleSmall=style(15,22,FontWeight.SemiBold),
+        bodyLarge=style(16,24),
+        bodyMedium=style(15,22),
+        bodySmall=style(13,18),
+        labelLarge=style(16,22,FontWeight.SemiBold),
+        labelMedium=style(14,20,FontWeight.Medium),
+        labelSmall=style(12,16,FontWeight.Medium))
 }
