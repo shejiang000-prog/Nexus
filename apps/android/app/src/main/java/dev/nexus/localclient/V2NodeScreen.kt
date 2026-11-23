@@ -39,13 +39,14 @@ internal fun V2InviteConfirmation(invite:V2Invite, completed:(V2Node)->Unit, dis
     AlertDialog(onDismissRequest={if (!busy) dismiss()}, title={Text("加入 V2 私人节点？")},
         text={Column(verticalArrangement=Arrangement.spacedBy(Space.sm)) {
             Text(invite.authority,style=MaterialTheme.typography.titleMedium)
-            Text("请与邀请人核对节点域名。确认后会为这台设备生成密钥并兑换邀请。",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("请与邀请人核对节点地址。确认后会为这台设备生成密钥并兑换邀请。",color=MaterialTheme.colorScheme.onSurfaceVariant)
             if (error.isNotEmpty()) Text(error,color=MaterialTheme.colorScheme.error)
         }}, confirmButton={PrimaryAction(enabled=!busy,onClick={
             busy=true
             scope.launch {
                 try { completed(withContext(Dispatchers.IO) { V2Devices.enroll(ctx,invite) }) }
                 catch (e:CancellationException) { throw e }
+                catch (e:V2Failure) { error=V2Connection.error(e.code) }
                 catch (_:Exception) { error="兑换未完成，请检查网络、节点证书和邀请有效期。" }
                 finally { busy=false }
             }
@@ -63,7 +64,7 @@ internal fun V2DeviceScreen(node:V2Node, tunnel:TunnelState, select:()->Unit, re
     }
     val status:@Composable ()->Unit={
         ListRow("有效期（本地时间）",node.expiryText(),GroupPlace.First)
-        ListRow("连接状态","V2 · "+node.statusText(tunnel),GroupPlace.Last)
+        ListRow("连接状态","V2 · "+node.mode+" · "+node.statusText(tunnel),GroupPlace.Last)
     }
     val removeRow:@Composable ()->Unit={
         ListRow("在本机移除此节点",if(active) "请先断开此节点" else "",enabled=!active,

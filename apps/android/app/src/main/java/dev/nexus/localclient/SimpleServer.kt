@@ -34,7 +34,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit) {
+internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) {
     val ctx = LocalContext.current
     val access = remember { OwnerAccess(ctx) }
     val scope = rememberCoroutineScope()
@@ -44,9 +44,7 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
     var pin by remember { mutableStateOf("") }
     var deploy by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
-    var dns by remember { mutableStateOf("1.1.1.1") }
-    var port by remember { mutableStateOf("8443") }
-    var claim by remember { mutableStateOf("8444") }
+    var domain by remember { mutableStateOf("") }
     var days by remember { mutableStateOf("7") }
     var count by remember { mutableStateOf("1") }
     var mb by remember { mutableStateOf("") }
@@ -65,7 +63,10 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
         }
     }
     LaunchedEffect(host, adding) {
-        if (!adding && host in access.hosts) work { devices=withContext(Dispatchers.IO) { JSONArray(access.manager(host).owner("devices")) } }
+        if (!adding && host in access.hosts) work { devices=withContext(Dispatchers.IO) {
+            val manager = access.manager(host)
+            if (access.isV2(host)) manager.v2Devices() else JSONArray(manager.owner("devices"))
+        } }
     }
     fun checkHost(create: Boolean) = work {
         deploy=create
@@ -89,6 +90,8 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
                         unfocusedContainerColor=c.background,focusedContainerColor=c.background)
                     OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
                         shape=Shapes.control,colors=field)
+                    OutlinedTextField(domain,{ domain=it.trim().take(253) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
+                        label={Text("域名（可选）")},supportingText={Text("留空使用 IP 模式。有域名时伪装效果更好。")},shape=Shapes.control,colors=field)
                     OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
                         visualTransformation=PasswordVisualTransformation(),label={ Text("root 密码（仅用一次）") },
                         shape=Shapes.control,colors=field)
@@ -100,25 +103,33 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             SecondaryAction({ checkHost(false) },Modifier.fillMaxWidth(),enabled=ready) { Text("绑定已部署的服务器") }
             if (!ready && !busy) Text(if (host.isBlank()) "先填写服务器 IP" else "请输入服务器密码",Modifier.fillMaxWidth(),
                 color=c.onSurfaceVariant,fontSize=14.sp,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
-            TextButton({ expanded=!expanded }) { Text(if(expanded) "收起高级设置" else "高级设置",color=c.onSurfaceVariant) }
-            androidx.compose.animation.AnimatedVisibility(expanded) {
-                Surface(shape=signalCard,color=c.surface,border=androidx.compose.foundation.BorderStroke(1.dp,c.outlineVariant)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                        Text("一般不用改。端口是服务器的网络入口，DNS 用来查找网站地址。",color=c.onSurfaceVariant,fontSize=14.sp)
-                        val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,unfocusedContainerColor=c.background,focusedContainerColor=c.background)
-                        val shape=Shapes.control
-                        OutlinedTextField(dns,{dns=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("DNS")},shape=shape,colors=field)
-                        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                            OutlinedTextField(port,{port=it},Modifier.weight(1f),singleLine=true,label={Text("连接端口")},shape=shape,colors=field)
-                            OutlinedTextField(claim,{claim=it},Modifier.weight(1f),singleLine=true,label={Text("邀请端口")},shape=shape,colors=field)
-                        }
-                    }
-                }
-            }
             Column {
                 ListRow("其他登录方式与迁移","密钥登录、从旧服务器迁移授权",if(access.current!=null) GroupPlace.First else GroupPlace.Single) { advanced(null) }
                 if (access.current!=null) ListRow("返回已绑定服务器",access.current.orEmpty(),GroupPlace.Last) { host=access.current!!; password=""; adding=false }
             }
+        } else if (access.isV2(host)) {
+            Text(host, style=MaterialTheme.typography.titleLarge)
+            val validDays = days.toIntOrNull()?.takeIf { it in 1..365 }
+            OutlinedTextField(days,{days=it.take(3)},Modifier.fillMaxWidth(),singleLine=true,label={Text("设备有效天数（1–365）")})
+            PrimaryAction({ work {
+                link=withContext(Dispatchers.IO) { access.manager(host).v2Invite(validDays) }
+            } },Modifier.fillMaxWidth(),enabled=!busy && validDays!=null) { Text("邀请朋友或我的设备") }
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Text("已授权设备",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                TextButton({ work { devices=withContext(Dispatchers.IO) { access.manager(host).v2Devices() } } },enabled=!busy) { Text("刷新") }
+            }
+            val rows=devices
+            if (rows==null || rows.length()==0) Text(if(rows==null) "正在读取设备…" else "还没有已授权设备",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            else repeat(rows.length()) { i ->
+                val row=rows.getJSONObject(i)
+                val active=row.isNull("revoked_at")
+                ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
+                    if(active) "撤销设备" else "已撤销",groupPlace(i,rows.length()-1,false,false),enabled=active && !busy) { revoke=row }
+            }
+            access.hosts.filter { it!=host }.forEach { other ->
+                ListRow(other,"切换服务器",GroupPlace.Single) { host=other;access.current=other;devices=null;status="" }
+            }
+            SecondaryAction({host="";domain="";adding=true;devices=null;status=""},Modifier.fillMaxWidth(),enabled=!busy) { Text("添加其他服务器") }
         } else {
             ServerSummary(host,devices){advanced(host)}
             val limits=runCatching {
@@ -183,16 +194,17 @@ internal fun SimpleServer(saved: (Profile) -> Unit, advanced: (String?) -> Unit)
             val trusted=pin; pin=""
             work {
                 val secret=password; password=""
-                val result=withContext(Dispatchers.IO) { access.enroll(host,trusted,secret,deploy,dns,port.toInt(),claim.toInt()) }
+                val result=withContext(Dispatchers.IO) { access.bindPrivate(host,trusted,secret,deploy,domain) }
                 result?.let(saved)
                 expanded=false; adding=false; status=if (deploy) "部署成功" else "绑定成功"
             }
         }) {Text("确认")}},dismissButton={SecondaryAction({pin=""}) {Text("取消")}})
-    if (link.isNotEmpty()) ShareInvite(link,listOf(days+" 天",count+" 台",mb.takeIf { it.isNotBlank() }?.plus(" MB") ?: "不限")) { link="" }
+    if (link.isNotEmpty()) ShareInvite(link,if(access.isV2(host)) listOf(days+" 天","一次领取") else listOf(days+" 天",count+" 台",mb.takeIf { it.isNotBlank() }?.plus(" MB") ?: "不限")) { link="" }
     revoke?.let { row -> AlertDialog(onDismissRequest={revoke=null},title={Text("撤销这台设备？")},
         text={Text(row.getString("name")+" 将失去连接权限。")},confirmButton={PrimaryAction({
             revoke=null; work { devices=withContext(Dispatchers.IO) { val m=access.manager(host)
-                m.owner("revoke",JSONObject().put("id",row.getString("id"))); JSONArray(m.owner("devices")) } }
+                if (access.isV2(host)) { m.v2Revoke(row.getString("id")); m.v2Devices() }
+                else { m.owner("revoke",JSONObject().put("id",row.getString("id"))); JSONArray(m.owner("devices")) } } }
         }) {Text("确认撤销")}},dismissButton={SecondaryAction({revoke=null}) {Text("取消")}}) }
 }
 

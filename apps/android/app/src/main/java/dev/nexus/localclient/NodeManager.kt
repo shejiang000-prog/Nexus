@@ -64,15 +64,22 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         }
     }
 
-    fun authorize(publicKey: String, deploy: Boolean) = session { ssh ->
+    fun authorize(publicKey: String, deploy: Boolean, v2: Boolean = false) = session { ssh ->
         require(publicKey.matches(Regex("(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+ Nexus")))
-        val installed = run(ssh,"if test -f /opt/nexus-node/node_admin.py; then echo yes; else echo no; fi") == "yes"
+        val kind = installedKind(ssh)
+        val installed = if (v2) kind != 0 else kind == 1
         check(installed != deploy) { if (installed) "这台服务器已经部署，请选择绑定" else "尚未找到部署，请选择部署" }
         val key = "restrict $publicKey"
         run(ssh, "umask 077 && mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && " +
             "(grep -qxF '$key' ~/.ssh/authorized_keys || printf '\\n%s\\n' '$key' >> ~/.ssh/authorized_keys)")
         Unit
     }
+    private fun installedKind(ssh: Session): Int = run(ssh,
+        "if test -x /opt/nexus-v2/bin/nexus-node; then echo 2; elif test -f /opt/nexus-node/node_admin.py; then echo 1; else echo 0; fi"
+    ).toInt()
+
+    fun isV2(): Boolean = session { installedKind(it) == 2 }
+
     private fun run(ssh: Session, cmd: String, data: JSONObject? = null, limit: Int = 131072): String {
         val channel = ssh.openChannel("exec") as ChannelExec
         try {
@@ -94,6 +101,68 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         migration?.let { config.put("migration",it) }
         return Profile.parse(install(config))
     }
+    private fun upload(sftp: ChannelSftp, asset: String, destination: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        context.assets.open(asset).use { input ->
+            java.security.DigestInputStream(input, digest).use { sftp.put(it, destination) }
+        }
+        return hex(digest.digest())
+    }
+
+    internal fun installV2(domain: String) = session { ssh ->
+        require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
+        val address = if (domain.isBlank()) "--public-host $host" else {
+            require(domain.length <= 253 && '.' in domain && nodeIP(domain) == null &&
+                domain.split('.').all { it.matches(Regex("[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")) }) { "请填写有效的域名" }
+            "--domain $domain"
+        }
+        val arch = run(ssh, "uname -m")
+        require(arch in setOf("x86_64", "aarch64"))
+        val dir = run(ssh, "umask 077 && mktemp -d /tmp/nexus-upload.XXXXXXXXXX")
+        require(dir.matches(Regex("/tmp/nexus-upload\\.[A-Za-z0-9]{10}")))
+        val staged = "$dir/nexus-node"
+        try {
+            val sftp = ssh.openChannel("sftp") as ChannelSftp
+            val digest = try {
+                sftp.connect(8000)
+                upload(sftp, "linux/$arch/nexus-node", staged)
+            } finally { sftp.disconnect() }
+            check(run(ssh, "sha256sum $staged").substringBefore(' ') == digest)
+            ssh.setServerAliveInterval(15000)
+            val sudo = if (user == "root") "" else "sudo -n "
+            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address")
+        } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
+        Unit
+    }
+
+    private val v2Ledger: String get() =
+        (if (user == "root") "" else "sudo -n ") +
+            "runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger /var/lib/nexus-v2/ledger.db"
+
+    internal fun v2Invite(days: Int? = null): String = session { ssh ->
+        require(days == null || days in 1..365)
+        fun until(n: Int) = run(ssh, "date -u -d '+$n days' +%Y-%m-%dT%H:%M:%SZ").also {
+            java.time.Instant.parse(it)
+            require(it.matches(Regex("[0-9TZ:-]+")))
+        }
+        val deadline = until(minOf(days ?: 7, 7))
+        val accountEnd = days?.let { " " + until(it) }.orEmpty()
+        val account = run(ssh, "$v2Ledger create-user$accountEnd")
+        require(account.matches(Regex("[0-9a-f]{32}")))
+        run(ssh, "$v2Ledger invite --link $account $deadline").also { V2Invite.parse(it) }
+    }
+
+    internal fun v2Devices() = session { ssh ->
+        org.json.JSONArray().apply {
+            run(ssh, "$v2Ledger devices").lineSequence().filter(String::isNotBlank).forEach { put(JSONObject(it)) }
+        }
+    }
+
+    internal fun v2Revoke(id: String) {
+        require(id.matches(Regex("[0-9a-f]{32}")))
+        session { run(it, "$v2Ledger revoke $id") }
+    }
+
     fun exportMigration(pass: CharArray, output: java.io.OutputStream) {
         writeMigration(pass,output) { install(JSONObject().put("action","migration-export")).toByteArray() }
     }
@@ -112,11 +181,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             try {
                 sftp.connect(8000)
                 for ((file, asset) in listOf("nexus-server" to "linux/$arch/nexus-server", "node_admin.py" to "node_admin.py", "install_node.py" to "install_node.py")) {
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    context.assets.open(asset).use { input ->
-                        java.security.DigestInputStream(input, digest).use { sftp.put(it, "$dir/$file") }
-                    }
-                    hashes.put(file, hex(digest.digest()))
+                    hashes.put(file, upload(sftp, asset, "$dir/$file"))
                 }
             } finally { sftp.disconnect() }
             check(run(ssh,"sha256sum $dir/install_node.py").substringBefore(' ')==hashes.getString("install_node.py"))

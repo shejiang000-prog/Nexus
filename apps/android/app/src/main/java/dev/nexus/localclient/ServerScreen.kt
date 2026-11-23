@@ -19,7 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: String? = null) {
+internal fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: String?, onV2: (V2Node) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var host by remember { mutableStateOf(boundHost.orEmpty()) }; var sshPort by remember { mutableStateOf("22") }
@@ -27,6 +27,7 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: Str
     var sshKey by remember { mutableStateOf<ByteArray?>(null) }
     DisposableEffect(sshKey) { val key = sshKey; onDispose { key?.fill(0) } }
     var pin by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }
+    var domain by remember { mutableStateOf("") }
     var dns by remember { mutableStateOf("") }; var port by remember { mutableStateOf("8443") }
     var claimPort by remember { mutableStateOf("8444") }
     var days by remember { mutableStateOf("30") }; var quota by remember { mutableStateOf("") }
@@ -96,13 +97,17 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: Str
             }
             OutlinedTextField(pin,{ pin = it.take(64) },singleLine = true,label = { Text("SSH 主机指纹 SHA256") })
             } else Text("已绑定服务器 · "+boundHost)
+            if (boundHost == null) {
+                OutlinedTextField(domain,{domain=it.trim().take(253)},singleLine=true,label={Text("域名（可选）")},supportingText={Text("留空使用 IP 模式。有域名时伪装效果更好。")})
+                PrimaryAction(enabled=!busy && host.isNotBlank() && pin.isNotBlank(),onClick={confirm="部署私人节点"}) {Text("预览部署")}
+            }
             HorizontalDivider()
+            Text("旧版节点维护",style=MaterialTheme.typography.titleMedium)
             OutlinedTextField(dns,{ dns = it.take(15) }, singleLine = true,label = { Text("节点可用的 IPv4 DNS") })
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(port,{ port = it.take(5) }, Modifier.weight(1f),singleLine = true,label = { Text("隧道端口") })
                 OutlinedTextField(claimPort,{ claimPort = it.take(5) }, Modifier.weight(1f),singleLine = true,label = { Text("邀请端口") })
             }
-            PrimaryAction(enabled = !busy && name.isNotBlank() && host.isNotBlank() && dns.isNotBlank() && (boundHost != null || pin.isNotBlank()),onClick = { confirm = "部署私人节点" }) { Text("预览部署") }
             Row {
                 for (action in listOf("更新节点程序","回滚节点程序")) SecondaryAction(enabled = !busy && host.isNotBlank() && (boundHost != null || pin.isNotBlank()),
                     onClick = { confirm = action }) { Text(action) }
@@ -146,7 +151,7 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: Str
     }
     if (confirm.isNotEmpty()) AlertDialog(onDismissRequest = { confirm = "" }, title = { Text(confirm) },
         text = { Text(when (confirm) {
-            "部署私人节点" -> "将在 $host 上验证 SSH 指纹（Debian 12/13 或 Ubuntu 24.04），创建独立账户和两个 systemd 服务。需要 root 或免密 sudo。隧道端口 $port，邀请端口 $claimPort。请确保网络允许这些端口。"
+            "部署私人节点" -> if (domain.isBlank()) "将在 $host 上安装 V2 和 Reality。V2 使用 IP 地址和 443 端口，Reality 默认使用 8443/TCP。" else "将在 $host 上安装 V2，并为 $domain 申请证书。请先将域名解析到服务器并放行 80 和 443。"
             "更新节点程序","回滚节点程序" -> "将重启 $host 的两个 Nexus 服务，当前连接会中断。程序更新保留设备授权、证书和配额。"
             "重启服务" -> "将重启 $host 的隧道与邀请服务，中断当前连接。"
             "移除部署" -> "将停止 $host 上的 Nexus 服务，移除启动项并归档程序。现有连接会中断，设备授权和密钥保留在服务器，可恢复。"
@@ -177,8 +182,12 @@ fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, boundHost: Str
                         feedback = "程序已切换，两个服务均已启动"
                     }
                     "部署私人节点" -> {
-                        val p = withContext(Dispatchers.IO) { manager().deploy(name,dns,port.toInt(),claimPort.toInt()) }
-                        onProfile(p)
+                        val node = withContext(Dispatchers.IO) {
+                            val m=manager()
+                            m.installV2(domain)
+                            V2Devices.enroll(context,V2Invite.parse(m.v2Invite()))
+                        }
+                        onV2(node)
                     }
                     else -> {
                         val m = manager()

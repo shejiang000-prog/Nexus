@@ -4,20 +4,17 @@ Android 可用 Nexus 私人节点连接全设备 VPN，或按配置开放本机 
 
 ## V2 私人节点邀请
 
-在「节点 → 添加节点」粘贴或扫描 `nexus://invite/v2#…`；也可从首次启动页进入「收到了邀请」。核对弹窗中的节点域名和端口，点「确认兑换」为本机注册。卡片显示账户到期日和实际承载；老节点省略账户到期信息时显示「到期时间未知」。点卡片进入节点列表，再点设备记录，可查看设备 ID 简写或移除本机密钥。移除后需向邀请人索取新的邀请。节点管理员仍可在账本中撤销设备。
+在「节点 → 添加节点」粘贴或扫描 `nexus://invite/v2#…`；也可从首次启动页进入「收到了邀请」。核对弹窗中的节点地址和端口，点「确认兑换」为本机注册。卡片显示账户到期日和实际承载；老节点省略账户到期信息时显示「到期时间未知」。点卡片进入节点列表，再点设备记录，可查看设备 ID 简写或移除本机密钥。移除后需向邀请人索取新的邀请。节点管理员仍可在账本中撤销设备。
 
-管理员可将账本创建的一次性邀请组装为链接。下面示例使用已安装的 Python 3 标准库。将 `node.example` 和端口换成客户端实际访问的入口，`$DB`、`$USER_ID` 和 `$EXPIRES_AT` 对应账本命令的三个参数。生成的链接是一次性凭据，通过私密渠道交给受邀人。二维码的内容与链接相同。
+在「我的服务器」填写服务器 IP。域名可留空，安装器自动部署 V2 和 Reality。有域名时 V2 由 Caddy 申请和续期公有证书；Hysteria2 也需要域名。使用 IP 时节点保存一把 P-256 私钥，证书续期与升级沿用该密钥。普通卸载保留密钥，彻底清除（`uninstall --purge`）后重装需重新领取邀请。
+
+管理员通过已安装节点生成一次性链接，`$EXPIRES_AT` 为 RFC3339 格式的领取截止时间。CLI 从部署配置读取入口和端口，IP 模式自动附带 SPKI 固定值。二维码与链接是同一份凭据，请私下分享。
 
 ```sh
-nexus-node ledger "$DB" invite "$USER_ID" "$EXPIRES_AT" |
-  python3 -c 'import base64, json, re, sys
-secret = sys.stdin.read().strip()
-if not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret): sys.exit("未获取到有效的账本邀请")
-payload = {"v": 2, "host": "node.example", "port": 443, "invite": secret}
-print("nexus://invite/v2#" + base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode())'
+runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger "$DB" invite --link "$USER_ID" "$EXPIRES_AT"
 ```
 
-Android Keystore 优先使用 StrongBox，普通邀请会验证系统信任链和域名。本版会在本地拒绝带 SPKI 固定值的邀请。认证失败、撤销或到期会停止自动重试；网络中断按退避重连。绕过大陆、全局代理、DNS 和「设置 → 按应用代理与出口诊断」沿用现有 VPN 路径。H2 恢复到 H3 时已有 H2 流可继续读写。
+Android Keystore 优先使用 StrongBox。域名邀请校验证书链和域名，带固定值时也校验固定值。IP 邀请使用固定值验证身份。兑换和每次 H2/H3 握手均执行验证，失败返回证书错误并停止。认证失败、撤销或到期会停止自动重试；网络中断按退避重连。绕过大陆、全局代理、DNS 和「设置 → 按应用代理与出口诊断」沿用现有 VPN 路径。H2 恢复到 H3 时已有 H2 流可继续读写。
 
 升级时重新生成节点配置，或移除旧版站点中的公开 `/health.bin` 路由和同名静态文件后重载 Caddy。V2 handler 只向出示有效设备证明的 H2/H3 请求提供健康对象与账户到期时间。新客户端在旧节点返回公开 HEAD 200 时尝试一次 CONNECT-UDP 认证，目标为 `1.1.1.1:53`。需要兼容这条旧路径的节点须允许该目标。更新节点后才能做已认证的健康比较。
 

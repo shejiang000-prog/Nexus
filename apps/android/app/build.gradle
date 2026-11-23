@@ -56,7 +56,7 @@ android {
     sourceSets.main.jniLibs.srcDir(layout.buildDirectory.dir('shoesJni'))
     sourceSets.main.assets.srcDir(layout.buildDirectory.dir('shoesNotices'))
     defaultConfig {
-        applicationId labAar ? 'dev.nexus.lab.m0' : 'dev.nexus.localclient'
+        applicationId providers.gradleProperty('nexusDeviceAcceptance').isPresent() ? 'dev.nexus.qa.m32' : (labAar ? 'dev.nexus.lab.m0' : 'dev.nexus.localclient')
         testInstrumentationRunner 'dev.nexus.localclient.CatalogCheck'
         minSdk 26
         targetSdk 36
@@ -103,6 +103,8 @@ def buildEngine = tasks.register('buildV2Engine', Exec) {
     commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'), script, source, engineAar.get().asFile
 }
 dependencies {
+    // The pinned Gradle distribution already includes JUnit 4 and its matcher library.
+    testImplementation fileTree(new File(gradle.gradleHomeDir, 'lib')) { include 'junit-4*.jar', 'hamcrest-core-*.jar' }
     implementation 'androidx.work:work-runtime-ktx:2.10.1'
     if (labAar) implementation files(file(labAar))
     else implementation files(engineAar).builtBy(buildEngine)
@@ -134,7 +136,23 @@ def rustBuild = tasks.register('buildRust', Exec) {
 }
 tasks.named('preBuild').configure { dependsOn rustBuild, shoesBuild; if (!labAar) dependsOn buildEngine }
 
+def v2NodeAssets = layout.buildDirectory.dir('v2LinuxNodes')
+def buildNodeAssets = tasks.register('buildV2LinuxNodes', Exec) {
+    inputs.files(fileTree(new File(repoRoot, 'v2')) {
+        include '**/*.go', '**/*.sql', '**/*.patch', 'go.mod', 'go.sum'
+        exclude '**/*_test.go'
+    }, new File(repoRoot, 'tools/build_v2_node_assets.py'), new File(repoRoot, 'tools/prepare_v2.py'))
+    outputs.dir(v2NodeAssets)
+    if (gradle.startParameter.offline) {
+        environment 'GOPROXY', 'off'
+        environment 'GOSUMDB', 'off'
+    }
+    commandLine providers.environmentVariable('NEXUS_PYTHON').getOrElse('python'),
+        new File(repoRoot, 'tools/build_v2_node_assets.py'), v2NodeAssets.get().asFile
+}
 def adminAssets = tasks.register('prepareNodeAssets', Sync) {
+    dependsOn buildNodeAssets
+    from(v2NodeAssets) { into 'linux'; include 'x86_64/nexus-node', 'aarch64/nexus-node' }
     from(new File(rootProject.projectDir.parentFile.parentFile, 'PRIVACY.md'))
     from(new File(rootProject.projectDir.parentFile.parentFile, 'LICENSE')) { into 'licenses/Nexus' }
     from(new File(rootProject.projectDir.parentFile.parentFile, 'tools')) { include 'node_admin.py', 'install_node.py' }

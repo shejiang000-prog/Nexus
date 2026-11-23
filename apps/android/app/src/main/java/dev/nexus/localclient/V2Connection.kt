@@ -11,7 +11,7 @@ internal class V2Failure(val code: Int) : Exception()
 internal object V2Connection {
     fun error(code: Int) = when (code) {
         1 -> "V2 节点配置无效，请检查连接参数"
-        2 -> "节点证书验证失败，请检查域名和系统时间"
+        2 -> "节点证书验证失败。请核对节点地址和系统时间，或联系邀请人"
         3 -> "设备认证失败，授权可能已撤销或到期，请联系节点管理员"
         4 -> "节点资源暂时不足，请稍后重试"
         5 -> "节点无法访问目标地址，请检查目标或节点策略"

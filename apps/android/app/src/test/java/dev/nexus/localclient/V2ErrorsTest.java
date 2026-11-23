@@ -1,8 +1,9 @@
 package dev.nexus.localclient;
 
-/** Run with JDK 17+ source-file mode and build/tmp/kotlin-classes/debug on the classpath. */
+import org.junit.Test;
 public final class V2ErrorsTest {
-    public static void main(String[] args) {
+    @Test
+    public void mappedErrorsExplainCauseAndRetryPolicy() {
         String[] categories = {"配置", "证书", "认证", "资源", "目标", "中断", "已经送达"};
         for (int code = 1; code <= categories.length; code++) {
             String message = V2Connection.INSTANCE.error(code);

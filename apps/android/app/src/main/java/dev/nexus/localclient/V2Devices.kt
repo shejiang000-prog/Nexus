@@ -24,14 +24,15 @@ internal class V2Invite private constructor(internal val value: Invitation) {
     val host: String get() = value.host()
     val authority: String get() = value.authority()
     val name: String get() = value.name()
+    val pin: ByteArray get() = value.pin() ?: byteArrayOf()
 
     companion object {
         fun parse(raw: String): V2Invite {
             try {
                 return V2Invite(Enrollment.parse(raw.trim()))
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 // Never include input, native exception text, or a chained cause in a report.
-                throw IllegalArgumentException(if (e.message == "此版本尚不支持带证书固定值的邀请") e.message else "V2 邀请格式无效")
+                throw IllegalArgumentException("V2 邀请格式无效")
             }
         }
     }
@@ -39,9 +40,10 @@ internal class V2Invite private constructor(internal val value: Invitation) {
 
 internal class V2Node(
     val key: String, val authority: String, val name: String, val deviceId: String,
-    val expiresAt: Long?, val expiryKnown: Boolean, val endpoint: String, val ca: ByteArray
+    val expiresAt: Long?, val expiryKnown: Boolean, val endpoint: String, val ca: ByteArray, val pin: ByteArray
 ) {
-    val host: String get() = authority.substringBeforeLast(':')
+    val host: String get() = authority.substringBeforeLast(':').removeSurrounding("[", "]")
+    val mode: String get() = if (nodeIP(host) != null) "IP 模式" else "域名模式"
     val deviceIdBytes: ByteArray get() = ByteArray(16) { deviceId.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     fun signer(): Signer {
         val privateKey = keyStore().getKey(key, null) as? PrivateKey ?: error("本机设备密钥不可用")
@@ -102,7 +104,7 @@ internal object V2Devices {
         val authority = j.getString("authority")
         return V2Node(key, authority, j.getString("name"), j.getString("id"),
             if (j.has("expires")) j.getLong("expires") else null, j.getBoolean("expiryKnown"),
-            j.optString("endpoint", authority), dec.decode(j.optString("ca", "")))
+            j.optString("endpoint", authority), dec.decode(j.optString("ca", "")), dec.decode(j.optString("pin", "")))
     }
 
     // The pending record contains only a request ID. A lost reply retries the same proof
@@ -110,7 +112,10 @@ internal object V2Devices {
     @Synchronized
     fun enroll(context: Context, invite: V2Invite, endpoint: String = invite.authority, ca: ByteArray = byteArrayOf()): V2Node {
         val key = "v2:" + invite.value.localID()
-        get(context, key)?.let { return it }
+        get(context, key)?.let {
+            if (!it.pin.contentEquals(invite.pin)) throw V2Failure(2)
+            return it
+        }
         val prefs = prefs(context)
         val store = keyStore()
         if (!store.containsAlias(key)) makeKey(context, key)
@@ -132,13 +137,20 @@ internal object V2Devices {
             val ip = nodeAddress(network, invite.host).hostAddress ?: error("无法解析节点域名")
             (if (':' in ip) "[$ip]" else ip) + ":" + invite.authority.substringAfterLast(':')
         } else endpoint
-        val result = Enrollment.redeem(invite.value, dial, ca, request, compressed) { message -> sign(privateKey, message) }
+        val result = try {
+            Enrollment.redeem(invite.value, dial, ca, request, compressed) { message -> sign(privateKey, message) }
+        } catch (e: Exception) {
+            if (mobile.Mobile.errorCode(e) == 2) throw V2Failure(2)
+            throw e
+        }
         val data = JSONObject().put("authority", invite.authority).put("name", invite.name.ifBlank { invite.host })
             .put("id", result.deviceID).put("expiryKnown", result.expiryKnown)
         if (result.expiresAt > 0) data.put("expires", result.expiresAt)
         if (endpoint != invite.authority) data.put("endpoint", endpoint)
         if (ca.isNotEmpty()) data.put("ca", enc.encodeToString(ca))
+        if (invite.pin.isNotEmpty()) data.put("pin", enc.encodeToString(invite.pin))
         check(prefs.edit().putString(key, data.toString()).remove(pending).commit()) { "无法保存设备信息，请重试" }
+        revision.value++
         return checkNotNull(get(context, key))
     }
 

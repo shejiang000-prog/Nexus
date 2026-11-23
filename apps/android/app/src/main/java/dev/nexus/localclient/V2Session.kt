@@ -30,10 +30,10 @@ internal class V2Session(
         }.getOrDefault(false)
     }
     val client = try {
-        Mobile.start(node.authority, node.endpoint, "auto", node.ca, node.deviceIdBytes, null,
+        Mobile.startPinned(node.authority, node.endpoint, "auto", node.ca, node.deviceIdBytes, null,
             node.signer(), protector, mobile.Resolver { host ->
                 network.getAllByName(host).joinToString(",") { it.hostAddress!! }
-            }, mobile.Observer { bearer(it) })
+            }, mobile.Observer { bearer(it) }, node.pin)
     } catch (e: Exception) { throw V2Failure(Mobile.errorCode(e)) }
 
     private fun updatePower() = client.setRecoveryAllowed(power.isInteractive && !power.isDeviceIdleMode)
@@ -75,6 +75,7 @@ internal class V2Session(
     }
 
     fun check(flowError: Int) {
+        if (client.state() == "stopped") confirm()
         if (flowError != 0 && flowError != 3) throw V2Failure(flowError)
         val event = foregroundEvents.get()
         if (flowError == 3 || event != foreground) {

@@ -39,13 +39,13 @@ internal class OwnerAccess(private val context: Context) {
 
     /** Drops the pinned identity and local management key after the owner says the server was reinstalled. */
     fun forget(host: String) {
-        val edit = prefs.edit().remove("key/$host").remove("ready/$host")
+        val edit = prefs.edit().remove("key/$host").remove("ready/$host").remove("v2/$host")
         if (current == host) edit.remove("current")
         check(edit.commit())
     }
 
     fun checkHost(host: String): String {
-        require(android.util.Patterns.IP_ADDRESS.matcher(host).matches()) { "请填写有效的服务器 IP" }
+        require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
         val pin = NodeManager.discover(host)
         knownPin(host)?.let { if (it != pin) throw ChangedServer() }
         return pin
@@ -87,6 +87,20 @@ internal class OwnerAccess(private val context: Context) {
         })
     }
 
+    fun isV2(host: String) = prefs.getBoolean("v2/$host", false)
+
+    fun bindPrivate(host: String, pin: String, password: String, deploy: Boolean, domain: String): V2Node? {
+        val json = prepare(host, pin)
+        val bootstrap = NodeManager(context, host, 22, "root", password, pin)
+        bootstrap.authorize(json.getString("public"), deploy, v2 = true)
+        val manager = manager(host)
+        if (deploy) manager.installV2(domain)
+        val v2 = manager.isV2()
+        if (v2) manager.v2Devices() else manager.owner("devices")
+        check(prefs.edit().putBoolean("ready/$host", true).putBoolean("v2/$host", v2).putString("current", host).commit())
+        return if (deploy && v2) V2Devices.enroll(context, V2Invite.parse(manager.v2Invite())) else null
+    }
+
     fun enroll(host: String, pin: String, password: String, deploy: Boolean, dns: String, port: Int, claim: Int): Profile? {
         val json = prepare(host,pin)
         val bootstrap = NodeManager(context,host,22,"root",password,pin)
@@ -117,6 +131,6 @@ internal fun sharedInvitation(text: String): Invitation? {
 internal fun friendlyError(e: Exception): String = when {
     e is ChangedServer -> "服务器身份已变化，操作已停止。请先向服务器提供商核实。"
     e is com.jcraft.jsch.JSchException && e.message.orEmpty().contains("auth",true) -> "登录失败，请检查服务器密码或本机的管理授权。"
-    e.message in listOf("请填写有效的服务器 IP","请先解除固定出口","这台服务器已经部署，请选择绑定","尚未找到部署，请选择部署") -> e.message!!
+    e.message in listOf("请填写有效的服务器 IP","请填写有效的域名","请先解除固定出口","这台服务器已经部署，请选择绑定","尚未找到部署，请选择部署") -> e.message!!
     else -> "操作未完成。请检查网络和服务器状态后重试。"
 }

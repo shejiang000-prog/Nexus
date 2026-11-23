@@ -1,9 +1,10 @@
 # V2 客户端传输接口 · M0 冻结版
 
-对应实现提交 `607a3f8`。
+原冻结版提交 `607a3f8`。当前增量接口版本为 2.1。
 
 ## 变更记录
 
+- 2026-11-24 · 2.1。`Mobile.startPinned` 在 `start` 的原参数之后追加 32 字节 SPKI SHA-256，`Invitation.pin()` 返回邀请中的值。域名可传空值沿用公有 PKI；有固定值则两者均须通过。IP 入口必须提供固定值，并匹配证书 IP SAN 与有效期。H2、H3 和独立兑换每次握手均校验，连接 IP 不发送 SNI。证书错误为 2，调用方停止重试。原 `start` 等方法保留。
 - 2026-11-23 · M3（`2a566ea`、`56bf5b9`）。Android 增加独立邀请兑换绑定和 TCP 半关闭。调用方可选用 `Stream.closeWrite()`。Go 的 `DialTCP` 保持 `io.ReadWriteCloser` 返回类型，需要半关闭的调用方可断言 `interface{ CloseWrite() error }`。现有调用方可沿用原代码。
 - 2026-11-23 · M0。固定默认 H2 握手配置，Go 与移动端增加可选节点解析回调。原有移动端调用在 Protector 与 Observer 之间补入 Resolver，可传 null。此后接口变更须在本节注明提交、调用方影响和迁移方式。
 
@@ -55,7 +56,7 @@ val resolver = mobile.Resolver { host ->
 }
 ```
 
-Android 的邀请兑换使用独立绑定 `enrollment.Enrollment.parse` 和 `redeem`。先解析并展示域名，确认后用 Keystore 签署本次兑换握手的证明。回执中的设备 ID 为 16 字节标识；`expiresAt` 是账户到期的 Unix 秒，`expiryKnown` 用来区分长期有效和旧节点未给出信息。本轮导入器拒绝含 SPKI pin 的邀请。业务方法沿用原签名；新增 `Stream.closeWrite()` 仅发送上行结束，调用方仍可读取目标在 EOF 后返回的数据。
+Android 的邀请兑换使用独立绑定 `enrollment.Enrollment.parse` 和 `redeem`。先解析并展示节点地址，确认后用 Keystore 签署本次兑换握手的证明。回执中的设备 ID 为 16 字节标识；`expiresAt` 是账户到期的 Unix 秒，`expiryKnown` 用来区分长期有效和旧节点未给出信息。导入器读取邀请中的 SPKI 固定值，Android 随设备记录保存，用于后续业务握手。业务方法沿用原签名；新增 `Stream.closeWrite()` 仅发送上行结束，调用方仍可读取目标在 EOF 后返回的数据。目标先结束发送时，收到下行 EOF 表示中继已结束，后续写入返回错误；EOF 前在途的写入无法证明已经送达，不自动重放。
 
 ## 浏览器参考配置维护
 

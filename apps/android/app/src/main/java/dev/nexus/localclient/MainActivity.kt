@@ -38,12 +38,12 @@ class MainActivity : ComponentActivity() {
     private var inviteError by mutableStateOf<String?>(null)
 
     private fun acceptV2Link(text:String):Boolean {
-        if (!text.startsWith("nexus://invite/v2#")) return false
-        val parsed=runCatching { V2Invite.parse(text) }
+        val link=text.trim().removePrefix(INVITE_MESSAGE+"\n")
+        if (!link.startsWith("nexus://invite/v2#")) return false
+        val parsed=runCatching { V2Invite.parse(link) }
         v2Invite=parsed.getOrNull()
         inviteError=parsed.exceptionOrNull()?.let {
-            if (it.message=="此版本尚不支持带证书固定值的邀请") "此版本尚不支持带证书固定值（SPKI pin）的邀请。"
-            else "请使用邀请人发来的完整 V2 链接或二维码。"
+            "请使用邀请人发来的完整 V2 链接或二维码。"
         }
         return true
     }
@@ -245,7 +245,7 @@ class MainActivity : ComponentActivity() {
                         val servers = remember(profile) { Profile.servers(this@MainActivity) }
                         Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                             v2Nodes.forEach { node ->
-                                ListRow(node.name,"V2 · "+node.expiryText()+" · "+node.statusText(tunnel)) {
+                                ListRow(node.name,"V2 · "+node.mode+" · "+node.expiryText()+" · "+node.statusText(tunnel)) {
                                     deviceKey=node.key;message="";page="设备信息"
                                 }
                             }
@@ -262,8 +262,11 @@ class MainActivity : ComponentActivity() {
 
                         }
                     }
-                    "我的服务器" -> SimpleServer({save(it)}, {boundHost=it;page="服务器高级"})
-                    "服务器高级" -> ServerScreen({candidate=it;page="高级"},goBack,boundHost)
+                    "我的服务器" -> SimpleServer({if(!prefs.contains("pinned")) choose(it.key)}, {boundHost=it;page="服务器高级"})
+                    "服务器高级" -> ServerScreen({candidate=it;page="高级"},goBack,boundHost) {
+                        if (!prefs.contains("pinned")) choose(it.key)
+                        page="连接"
+                    }
                     "领取" -> ReceiveInvite(incoming,::save,{
                         incoming=null;page="连接"
                         switchConnection(privateRequest())
@@ -292,7 +295,7 @@ class MainActivity : ComponentActivity() {
                                 },pick={addSubscription=false;page="节点"},mode=::changeMode,
                                 addSubscription={addSubscription=true;page="节点"},addServer={page="我的服务器"},
                                 receive={incoming=null;page="领取"},
-                                nodeInfo=if(shownV2!=null) shownV2.statusText(tunnel)+" · "+shownV2.expiryText() else if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
+                                nodeInfo=if(shownV2!=null) shownV2.mode+" · "+shownV2.statusText(tunnel)+" · "+shownV2.expiryText() else if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
                                 region=if(shownV2!=null) "V2" else if(showingPrivate) "NX" else shownRow?.region.orEmpty(),
                                 latency=shownRow?.let { catalog?.results?.get(it.favorite) }?.takeIf {it.ok}?.ms,
                                 overview=catalog?.takeIf { shownV2==null && it.sources.isNotEmpty() }?.let { data -> {
