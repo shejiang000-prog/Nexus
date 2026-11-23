@@ -234,14 +234,31 @@ func (l *Ledger) checkpoints(ctx context.Context) {
 	defer tick.Stop()
 	defer close(l.quotaDone)
 	for {
+		var accounts []*quotaAccount
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			for _, a := range l.accounts() {
-				if err := a.checkpoint(true); err != nil {
-					slog.Error("quota checkpoint failed", "error", err)
-				}
+			accounts = l.accounts()
+		case <-l.flowEnded:
+			// Keep concurrent short streams from serializing a write transaction
+			// on every close. The first close starts a fixed coalescing window.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(25 * time.Millisecond):
+			}
+			l.mu.Lock()
+			accounts = make([]*quotaAccount, 0, len(l.pending))
+			for a := range l.pending {
+				accounts = append(accounts, a)
+			}
+			clear(l.pending)
+			l.mu.Unlock()
+		}
+		for _, a := range accounts {
+			if err := a.checkpoint(true); err != nil {
+				slog.Error("quota checkpoint failed", "error", err)
 			}
 		}
 	}

@@ -48,6 +48,8 @@ type Ledger struct {
 	meters    map[proof.ID]*quotaAccount
 	retired   map[*quotaAccount]bool
 	quotaDone chan struct{}
+	flowEnded chan struct{}
+	pending   map[*quotaAccount]struct{}
 	flows     sync.WaitGroup
 	closing   bool
 }
@@ -133,6 +135,8 @@ func OpenLedger(path string) (*Ledger, error) {
 	l.meters = make(map[proof.ID]*quotaAccount)
 	l.retired = make(map[*quotaAccount]bool)
 	l.quotaDone = make(chan struct{})
+	l.flowEnded = make(chan struct{}, 1)
+	l.pending = make(map[*quotaAccount]struct{})
 	go l.checkpoints(ctx)
 	go l.watchRevocations(ctx)
 	return l, nil
@@ -473,10 +477,11 @@ func (l *Ledger) register(id proof.ID, stop func()) (*quotaAccount, func(), bool
 			delete(l.active, id)
 		}
 		a.refs.Add(-1)
-		l.mu.Unlock()
-		if err := a.checkpoint(true); err != nil {
-			slog.Error("flow quota settlement failed", "error", err)
+		if len(l.pending) == 0 {
+			l.flowEnded <- struct{}{}
 		}
+		l.pending[a] = struct{}{}
+		l.mu.Unlock()
 	}, true
 }
 
