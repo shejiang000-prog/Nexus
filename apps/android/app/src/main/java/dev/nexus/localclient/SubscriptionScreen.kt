@@ -123,7 +123,7 @@ internal fun rememberDefaultPhysical(connectivity: ConnectivityManager): Network
 }
 
 @Composable
-internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAutomatic:(Boolean,List<NodeRow>)->Unit={_,_->}, addInitially: Boolean = false, manageSource: String? = null, onManageOpened: () -> Unit = {}, onInvite: (Invitation?) -> Unit, onSelected: (NodeRow) -> Unit = {}, onImported: () -> Unit = {}, onPick: (NodeRow,List<NodeRow>) -> Unit = { _,_ -> }, home: @Composable (List<NodeRow>) -> Unit) {
+internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAutomatic:(Boolean,List<NodeRow>)->Unit={_,_->}, addInitially: Boolean = false, manageSource: String? = null, onManageOpened: () -> Unit = {}, onInvite: (Invitation?) -> Unit, onV2Link:(String)->Boolean={false}, onSelected: (NodeRow) -> Unit = {}, onImported: () -> Unit = {}, onPick: (NodeRow,List<NodeRow>) -> Unit = { _,_ -> }, home: @Composable (List<NodeRow>) -> Unit) {
     val context = LocalContext.current
     val store = remember { Subscriptions(context) }
     val scope = rememberCoroutineScope()
@@ -238,6 +238,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     }
     fun importAndTest(value: String) {
         adding=false
+        if (onV2Link(value.trim())) {input=""; return}
         val name=label.trim().ifEmpty { "机场订阅" }
         update {
             val source=store.import(name,value)
@@ -539,7 +540,8 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 val clipboard=context.getSystemService(android.content.ClipboardManager::class.java)
                 val clip=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text?.toString()?.trim()
                 val invite=clip?.let(::sharedInvitation)
-                if(invite!=null) { adding=false;onInvite(invite) }
+                if(clip!=null && onV2Link(clip)) { adding=false;input="" }
+                else if(invite!=null) { adding=false;onInvite(invite) }
                 else if(clip!=null && clip.startsWith("https://") && clip.length<=8192) importAndTest(clip)
                 else errorMessage="请复制订阅链接，或选择手动输入"
             },modifier=Modifier.fillMaxWidth()) { Text("粘贴并添加") }

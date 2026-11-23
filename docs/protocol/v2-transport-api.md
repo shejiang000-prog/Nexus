@@ -51,6 +51,8 @@ val resolver = mobile.Resolver { host ->
 }
 ```
 
+Android 的邀请兑换使用独立绑定 `enrollment.Enrollment.parse` 和 `redeem`。先解析并展示域名，确认后用 Keystore 签署本次兑换握手的证明。回执中的设备 ID 为 16 字节标识；`expiresAt` 是账户到期的 Unix 秒，`expiryKnown` 用来区分长期有效和旧节点未给出信息。本轮导入器拒绝含 SPKI pin 的邀请。业务方法沿用原签名；新增 `Stream.closeWrite()` 仅发送上行结束，调用方仍可读取目标在 EOF 后返回的数据。
+
 ## 浏览器参考配置维护
 
 Chrome 稳定版主版本变化后，在回环上用临时用户配置采样。将规范工作树的 `tools/` 加入 PYTHONPATH，运行 `python tools/generate_v2_chrome_profile.py --chrome <本机浏览器路径>`。生成器只提取两个审核过的字段，遇到新的锚摘要或签名列表会停止。审核新版 uTLS 预设、新字段和上游 H3 ChromeParrot 分支后更新生成器，重新生成 Go 表。当前固定的 H3 分支提交为 `2895f039137a`。

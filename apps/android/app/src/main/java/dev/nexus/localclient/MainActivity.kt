@@ -34,13 +34,27 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 class MainActivity : ComponentActivity() {
+    private var v2Invite by mutableStateOf<V2Invite?>(null)
+    private var inviteError by mutableStateOf<String?>(null)
+
+    private fun acceptV2Link(text:String):Boolean {
+        if (!text.startsWith("nexus://invite/v2#")) return false
+        val parsed=runCatching { V2Invite.parse(text) }
+        v2Invite=parsed.getOrNull()
+        inviteError=parsed.exceptionOrNull()?.let {
+            if (it.message=="此版本尚不支持带证书固定值的邀请") "此版本尚不支持带证书固定值（SPKI pin）的邀请。"
+            else "请使用邀请人发来的完整 V2 链接或二维码。"
+        }
+        return true
+    }
+
     private var incoming by mutableStateOf<Invitation?>(null)
     private var discovered by mutableStateOf<Invitation?>(null)
     private var foundSource by mutableStateOf<String?>(null)
     private var checkedClip = -1L
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus || incoming != null) return
+        if (!hasFocus || incoming != null || v2Invite != null) return
         val clipboard=getSystemService(android.content.ClipboardManager::class.java)
         runCatching {
             val desc=clipboard.primaryClipDescription ?: return
@@ -49,6 +63,7 @@ class MainActivity : ComponentActivity() {
             // Reading the clip shows Android's paste notice; only look at text copied in the last 10 minutes.
             if (System.currentTimeMillis()-desc.timestamp !in 0..600_000L) return
             val item=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text ?: return
+            if(item.length<=6000 && acceptV2Link(item.toString().trim())) return
             if(item.length<=4200) discovered=sharedInvitation(item.toString())
             if(discovered==null) subscriptionLink(item.toString())?.takeIf { link -> Subscriptions(this).all().none { it.url==link } }?.let { foundSource=it }
         }
@@ -56,6 +71,7 @@ class MainActivity : ComponentActivity() {
     private fun readInvitation(value: Intent?) {
         if (value?.action != Intent.ACTION_VIEW) return
         val url = value.data ?: return
+        if (acceptV2Link(url.toString())) { value.data=null; return }
         if (url.scheme=="nexus" && url.host=="invite" && url.port == -1 && url.encodedUserInfo==null &&
             url.encodedQuery==null && url.encodedFragment==null) incoming=runCatching { Invitation.parse(url.toString()) }.getOrNull()
     }
@@ -115,6 +131,10 @@ class MainActivity : ComponentActivity() {
         fun choose(key:String) { choice=key; prefs.edit().putString("simple-node",key).apply() }
         val store=remember { Subscriptions(this) }
         var catalog by remember { mutableStateOf<HomeCatalog?>(null) }
+        var v2Nodes by remember { mutableStateOf(emptyList<V2Node>()) }
+        var deviceKey by rememberSaveable { mutableStateOf<String?>(null) }
+        val selectedV2=v2Nodes.firstOrNull { it.key==choice }?.takeUnless { prefs.contains("pinned") }
+        val activeV2=v2Nodes.firstOrNull { it.key==tunnel.node }
         val rows=catalog?.rows.orEmpty()
         val best=catalog?.best
         val loaded=catalog!=null
@@ -140,6 +160,7 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(incoming) { if(incoming!=null) page="领取" }
         var rotate by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
+            v2Nodes=withContext(Dispatchers.IO) { V2Devices.list(this@MainActivity) }
             runCatching { withContext(Dispatchers.IO) { Profile.load(this@MainActivity) } }
                 .onSuccess { profile = it }.onFailure { message = "原有设备配置已失效，请重新导入" }
         }
@@ -183,25 +204,43 @@ class MainActivity : ComponentActivity() {
         }
 
         fun save(p:Profile) { p.save(this);profile=p;choose("private") }
-        val goBack: ()->Unit = { page=when(page) { "服务器高级"->"我的服务器";"高级","诊断","关于"->"设置";else->"连接" }; incoming=null;manageSource=null;message="" }
+        val goBack: ()->Unit = { page=when(page) { "设备信息"->"节点"; "服务器高级"->"我的服务器";"高级","诊断","关于"->"设置";else->"连接" }; incoming=null;manageSource=null;message="" }
         androidx.activity.compose.BackHandler(page!="连接",onBack=goBack)
         NexusTheme {
             ReleaseStartup()
             val colors=MaterialTheme.colorScheme
             SimpleShell(page,{ target -> page=target;addSubscription=false;manageSource=null;message="" },goBack) { displayed ->
                 when(displayed) {
+                    "设备信息" -> v2Nodes.firstOrNull { it.key==deviceKey }?.let { node ->
+                        V2DeviceScreen(node,tunnel,select={
+                            if(prefs.contains("pinned")) message="请先在设置中解除固定出口"
+                            else { choose(node.key);page="连接"; if(tunnel.active) switchConnection(v2Request(this,node.key)) }
+                        },remove={
+                            scope.launch {
+                                runCatching { withContext(Dispatchers.IO) { V2Devices.remove(this@MainActivity,node.key);V2Devices.list(this@MainActivity) } }
+                                    .onSuccess { v2Nodes=it;if(choice==node.key) choose("auto");page="节点" }
+                                    .onFailure { message="移除失败，请重试" }
+                            }
+                        })
+                        if(message.isNotEmpty()) Text(message,color=colors.error)
+                    }
                     "节点" -> SubscriptionScreen(bypass,automatic=choice=="auto" || choice==null && !privateNode,onAutomatic={ enabled,all ->
                         if(prefs.contains("pinned")) message="请先在设置中解除固定出口" else scope.launch {
                             val next=withContext(Dispatchers.IO){fastestNode(this@MainActivity,all)}
                             if(enabled)choose("auto") else if(next!=null)choose(next.favorite) else message="请点选一个节点以关闭自动选择"
                             if(tunnel.active && next!=null)switchConnection(subscriptionRequest(this@MainActivity,next,all,"1.1.1.1",enabled))
                         }
-                    },addInitially=addSubscription,manageSource=manageSource,onManageOpened={manageSource=null},onInvite={incoming=it;page="领取"},onSelected={choose(it.favorite);page="连接"},onImported={choose("auto")},onPick={row,all ->
+                    },addInitially=addSubscription,manageSource=manageSource,onManageOpened={manageSource=null},onInvite={incoming=it;page="领取"},onV2Link=::acceptV2Link,onSelected={choose(it.favorite);page="连接"},onImported={choose("auto")},onPick={row,all ->
                         choose(row.favorite);page="连接"
                         if(tunnel.active) switchConnection(subscriptionRequest(this,row,all,"1.1.1.1",false))
                     }) { all ->
                         val servers = remember(profile) { Profile.servers(this@MainActivity) }
                         Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                            v2Nodes.forEach { node ->
+                                ListRow(node.name,"V2 · "+node.expiryText()+" · "+node.statusText(tunnel)) {
+                                    deviceKey=node.key;message="";page="设备信息"
+                                }
+                            }
                             var showPrivate by rememberSaveable { mutableStateOf(false) }
                             if(servers.size>1) ActionRow("私人节点","${servers.size} 个已保存",2) { showPrivate=!showPrivate }
                             if(servers.size<=1 || showPrivate) servers.forEach { server ->
@@ -220,33 +259,35 @@ class MainActivity : ComponentActivity() {
                     "领取" -> ReceiveInvite(incoming,::save,{
                         incoming=null;page="连接"
                         switchConnection(privateRequest())
-                    },goBack)
+                    },goBack,::acceptV2Link)
                     "关于" -> AboutScreen()
-                    "诊断" -> NetworkScreen(profile,tunnel,bypass,::changeMode,{profile=it;choose("private")},goBack)
+                    "诊断" -> NetworkScreen(profile,tunnel,bypass,::changeMode,{profile=it;choose("private")},goBack,selectedV2Key=selectedV2?.key)
                     "连接" -> {
                         if(!loaded && !tunnel.active) HomeSkeleton() else {
-                            val first=catalog?.sources.isNullOrEmpty() && profile==null && !tunnel.active
+                            val first=catalog?.sources.isNullOrEmpty() && profile==null && v2Nodes.isEmpty() && !tunnel.active
+                            val shownV2=if(tunnel.active) activeV2 else selectedV2
                             val activeRow=tunnel.node?.let { key -> rows.firstOrNull { it.favorite==key } }
-                            val shownRow=if(tunnel.active) activeRow else selected.takeUnless { privateNode }
-                            val node=shownRow?.node?.optString("name") ?: tunnel.subscription.ifEmpty {
+                            val shownRow=if(tunnel.active) activeRow else selected.takeUnless { privateNode || shownV2!=null }
+                            val node=shownV2?.name ?: shownRow?.node?.optString("name") ?: tunnel.subscription.ifEmpty {
                                 (tunnel.activeProfile ?: profile.takeIf {privateNode})?.name.orEmpty()
                             }
                             val showingPrivate=tunnel.activeProfile!=null || (!tunnel.active && privateNode)
                             val notice=tunnel.error.ifEmpty { message }.ifEmpty {
-                                if(!first && !privateNode && selected==null && !tunnel.active) "请添加可用节点，或重新测试现有节点" else ""
+                                if(!first && shownV2==null && !privateNode && selected==null && !tunnel.active) "请添加可用节点，或重新测试现有节点" else ""
                             }
-                            ConnectionHome(tunnel,first,tunnel.active || privateNode || selected!=null,node,bypass,notice,
+                            ConnectionHome(tunnel,first,tunnel.active || shownV2!=null || privateNode || selected!=null,node,bypass,notice,
                                 toggle={
                                     if(tunnel.active) startService(Intent(this@MainActivity,TunnelService::class.java).setAction("stop"))
+                                    else if(selectedV2!=null) start(v2Request(this@MainActivity,selectedV2.key))
                                     else if(privateNode) start(privateRequest())
                                     else selected?.let { start(subscriptionRequest(this@MainActivity,it,rows,"1.1.1.1",manual==null)) }
                                 },pick={addSubscription=false;page="节点"},mode=::changeMode,
                                 addSubscription={addSubscription=true;page="节点"},addServer={page="我的服务器"},
                                 receive={incoming=null;page="领取"},
-                                nodeInfo=if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
-                                region=if(showingPrivate) "NX" else shownRow?.region.orEmpty(),
+                                nodeInfo=if(shownV2!=null) "V2 · "+shownV2.statusText(tunnel)+" · "+shownV2.expiryText() else if(showingPrivate) "私人服务器" else shownRow?.let { it.type.uppercase()+" · "+it.source.label }.orEmpty(),
+                                region=if(showingPrivate || shownV2!=null) "NX" else shownRow?.region.orEmpty(),
                                 latency=shownRow?.let { catalog?.results?.get(it.favorite) }?.takeIf {it.ok}?.ms,
-                                overview=catalog?.takeIf { it.sources.isNotEmpty() }?.let { data -> {
+                                overview=catalog?.takeIf { shownV2==null && it.sources.isNotEmpty() }?.let { data -> {
                                     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
                                     LaunchedEffect(Unit) { while(true) { now=System.currentTimeMillis();kotlinx.coroutines.delay(60_000) } }
                                     SubscriptionOverview(data.sources,data.rows,data.problems,store,data.results,now,
@@ -305,6 +346,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            v2Invite?.let { invite ->
+                V2InviteConfirmation(invite,completed={ node ->
+                    v2Invite=null
+                    v2Nodes=v2Nodes.filterNot { it.key==node.key }+node
+                    if (!prefs.contains("pinned")) choose(node.key)
+                    message="已保存 V2 节点";page="连接"
+                },dismiss={v2Invite=null})
+            }
+            inviteError?.let { reason -> AlertDialog(onDismissRequest={inviteError=null},title={Text("无法导入 V2 邀请")},
+                text={Text(reason)},confirmButton={TextButton({inviteError=null}){Text("知道了")}}) }
             foundSource?.let { link -> AlertDialog(onDismissRequest={foundSource=null},title={Text("发现订阅链接，添加？")},
                 text={Text("来自 "+(runCatching { Uri.parse(link).host }.getOrNull() ?: "剪贴板")+"。添加后会自动测试全部节点，并开启「自动选最快」。")},
                 confirmButton={PrimaryAction({

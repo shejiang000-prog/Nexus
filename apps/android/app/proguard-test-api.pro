@@ -389,7 +389,7 @@
   dev.nexus.localclient.SubscriptionRefresh INSTANCE;
 }
 -keep,allowobfuscation class dev.nexus.localclient.SubscriptionScreenKt {
-  public static void SubscriptionScreen(boolean,boolean,kotlin.jvm.functions.Function2,boolean,java.lang.String,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function2,kotlin.jvm.functions.Function3,androidx.compose.runtime.Composer,int,int,int);
+  public static void SubscriptionScreen(boolean,boolean,kotlin.jvm.functions.Function2,boolean,java.lang.String,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function1,kotlin.jvm.functions.Function0,kotlin.jvm.functions.Function2,kotlin.jvm.functions.Function3,androidx.compose.runtime.Composer,int,int,int);
   public static java.util.List sourceRows(java.util.List);
   public static android.content.Intent subscriptionRequest(android.content.Context,dev.nexus.localclient.NodeRow,java.util.List,java.lang.String,boolean);
 }

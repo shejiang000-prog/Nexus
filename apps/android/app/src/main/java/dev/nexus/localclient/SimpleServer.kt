@@ -333,7 +333,7 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
 }
 
 @Composable
-internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, connect: () -> Unit, close: () -> Unit) {
+internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, connect: () -> Unit, close: () -> Unit, onV2Link:(String)->Boolean={false}) {
     val ctx=LocalContext.current
     val scope=rememberCoroutineScope()
     var invite by remember(initial) { mutableStateOf(initial) }
@@ -344,7 +344,7 @@ internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, co
     var done by remember(initial){mutableStateOf(false)}
     val motion=LocalMotion.current
     LaunchedEffect(done){if(done){kotlinx.coroutines.delay(if(motion)750L else 150L);connect()}}
-    fun read(value: String) { invite=sharedInvitation(value); if(invite==null) error="没有找到有效邀请，请重新复制或扫码。" else error="" }
+    fun read(value: String) { if (onV2Link(value.trim())) { input="";error="";return }; invite=sharedInvitation(value); if(invite==null) error="没有找到有效邀请，请重新复制或扫码。" else error="" }
     val scan=rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) { it.contents?.let(::read) }
     val file=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if(uri!=null) scope.launch {
         runCatching { withContext(Dispatchers.IO) { Subscriptions(ctx).readFile(uri) } }.onSuccess(::read).onFailure { error="请重新选择邀请文件" }
@@ -355,7 +355,7 @@ internal fun ReceiveInvite(initial: Invitation?, accepted: (Profile) -> Unit, co
         Text(if(done)"已设为当前节点，即将连接" else "朋友邀请你使用一台私人服务器，接受后会自动连接",color=MaterialTheme.colorScheme.onSurfaceVariant)
         val current=invite
         if(current==null) {
-            OutlinedTextField(input,{input=it.take(4200);read(input)},label={Text("粘贴邀请消息")})
+            OutlinedTextField(input,{input=it.take(6000);read(input)},label={Text("粘贴邀请消息")})
             PrimaryAction({ scan.launch(com.journeyapps.barcodescanner.ScanOptions().setDesiredBarcodeFormats("QR_CODE").setOrientationLocked(false).setBeepEnabled(false)) }) { Text("扫描邀请") }
             SecondaryAction({ file.launch(arrayOf("image/*","text/plain")) }) { Text("从文件读取") }
         } else {
