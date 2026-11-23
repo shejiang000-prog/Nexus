@@ -36,3 +36,42 @@ mihomo 订阅按导出链接逐项检查两项代理的 name、type、server、p
 - 沿批准矩阵在 Debian 12/13、Ubuntu 22.04/24.04 的 x86_64/arm64 真机验证开机启动、实际防火墙和公网证书。
 - Shadowrocket、v2rayN / v2rayNG、mihomo 类客户端分别实测导入及连通。mihomo 官方已注明对 Xray v26.7.11+ 的 Reality 兼容性不作保证，本次锁定的 v26.11.9 在该范围内，放行须保留具体核心版本和实际连通结果。[mihomo Reality 说明](https://wiki.metacubex.one/config/proxies/tls/#reality-opts)
 - 仅 IP 部署仍待产品决定。IP SAN 公有证书和可信邀请固定公钥的前提及站点外观差异已记入 Linux 安装器规范。公开发行时还需提供独立可验证的 Nexus 发行摘要和签名材料。
+
+## Claude 评审
+
+评审对象：开发分支 `9fa13e0`…`053facd`（共 23 个提交），规范分支 `bf1c9fa`、`c5d81cc`。
+
+结论：**工程质量通过**（事务回滚、幂等、权限、下载核验、凭据代次都做得扎实），但有**两处设计须在 M2 第 2 部分修改**，否则“一键部署”对普通用户不可用。
+
+**独立复现（NexusLab，从 `053facd` 的 git archive 构建，GOPROXY=off）**
+
+- prepare、节点构建、`go vet ./...` 通过。带独立节点的 `go test -race -count=1 -v ./...`：10 个包全部通过，新增的 installer 包也通过。唯一跳过的是需要真实 systemd 安装的 `TestInstalledPrivateNode`，评审未重做实际安装，这一项以 Codex 的记录为准。
+- 实验室缓存的 `Xray-linux-64.zip`、`hysteria-linux-amd64` 经评审重新计算 SHA-256，与批准清单一致。
+- 用 `unshare --mount --net` 独立运行 `tools/verify_v2_compat.py`（51 s，退出码 0）：
+  - Reality、Hysteria2 各两个用户的 TCP/UDP 均通过；
+  - 轮换和禁用后旧凭据被拒，其他用户不受影响；
+  - 回环字面地址和解析到回环的域名都被拒绝；
+  - 离线轮换后重启，在重放前旧凭据已失效，同代次重放后可用；
+  - mihomo 字段核对通过。
+  - 旧流关闭时间本次为 Reality 2.06 s、Hysteria2 0.03 s。
+- 引导脚本：HTTPS-only、摘要必填、校验后才执行、0700 暂存目录、`set -eu`，没有问题。下载重定向只允许 github.com 和 githubusercontent，有 256 MiB 上限、ELF 架构核对，Xray 只取 ZIP 中唯一的 `xray`。
+
+**设计问题 1（重要）：Reality 采用“每用户独立密钥 + 每用户 SNI”**
+
+当前每个用户有独立的 X25519 密钥，`serverNames` 为 `<32位十六进制用户ID>.<节点域名>`，`target` 要求管理员自备能接待这些名字的通配证书 HTTPS 站点。问题有三：
+
+- SNI 在 ClientHello 中是明文。每个用户一个形如 32 位十六进制子域名的 SNI，旁路观察者能数出用户数、按用户关联会话，而且这种名字本身就很可疑；
+- Reality 的价值在于借用知名外部站点的真实证书。改成自己的通配站点后，需要额外的域名、证书和 Web 服务，普通用户基本做不到；
+- 独立密钥没有安全收益。公钥本来就写在分享链接里，撤销某个用户只需移除他的 UUID。
+
+这个设计来自评审给出的 M2 第 1 部分指令（“Reality 用 VLESS UUID 与 Reality 密钥对”），是评审的措辞问题。应改为标准用法：每节点一对 Reality 密钥（可整体轮换）；`target` 和 `serverNames` 为管理员选择的外部知名 TLS 站点（安装器给出合理默认值并做可达性和 TLS 1.3 预检）；每用户独立 UUID（可另配每用户 shortId）；撤销即移除该用户的 UUID。
+
+**设计问题 2（重要）：证书必须由管理员手工提供**
+
+安装器要求 `--cert` / `--key` 提供 PEM。真正“一键”需要自动签发：V2 节点本身就是 Caddy，可以直接用 ACME（HTTP-01/TLS-ALPN-01）自动申请和续期。Hysteria2 读取同一张证书，并在续期后自动重载。手工证书保留为可选项。公网签发的实测在 M4 做，M2 实现时可以用本地 ACME 测试服务器做自动化验收。
+
+**其他（中/低）**
+
+- Hysteria2 没有配置 masquerade。认证失败的探测看到的是 Hysteria 默认响应，与同域名的 V2 网站不一致。建议把 masquerade 反代到本机 Caddy 站点。
+- 防火墙遇到启用中的 ufw 或 firewalld 直接中止。Ubuntu 用户常开 ufw，建议支持“启用的 ufw 上增删本安装的规则”，至少给出可复制的命令；需确认 ufw 未启用时不阻断安装。
+- 只导出订阅文件、不提供订阅地址，对手机上的 Clash 类客户端导入不便。可以以后再加，若加，须带每用户令牌、可吊销、错误令牌回落到网站。
