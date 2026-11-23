@@ -51,6 +51,24 @@ public final class Probe extends Instrumentation {
             boolean vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
             if (vpn != "on".equals(options.getString("vpn"))) throw new AssertionError("unexpected default network");
             result.putString("default", vpn ? "VPN" : "ordinary network");
+            if (options.containsKey("m3")) {
+                if (!vpn || !"192.0.2.85".equals(options.getString("echo"))) throw new AssertionError("requires dedicated M3 VPN target");
+                InetSocketAddress target = new InetSocketAddress(options.getString("echo"), Integer.parseInt(options.getString("port")));
+                try (Socket sock = new Socket()) {
+                    sock.connect(target, 5000); sock.setSoTimeout(5000);
+                    sock.getOutputStream().write(65);
+                    if (sock.getInputStream().read()!=65) throw new AssertionError("TCP receipt");
+                }
+                try (DatagramSocket sock = new DatagramSocket()) {
+                    byte[] nonce = new SecureRandom().generateSeed(32);
+                    sock.connect(target); sock.setSoTimeout(5000); sock.send(new DatagramPacket(nonce, nonce.length));
+                    DatagramPacket reply = new DatagramPacket(new byte[64],64); sock.receive(reply);
+                    if (!Arrays.equals(nonce, Arrays.copyOf(reply.getData(),reply.getLength()))) throw new AssertionError("UDP receipt");
+                }
+                result.putString("m3", "separate UID TCP and UDP verified");
+                status = Activity.RESULT_OK;
+                return;
+            }
             String resolver = options.getString("dns");
             if (vpn && !cm.getLinkProperties(network).getDnsServers().contains(InetAddress.getByName(resolver)))
                 throw new AssertionError("incorrect VPN DNS");
