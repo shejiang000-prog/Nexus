@@ -71,6 +71,7 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 					}
 				}()
 				discarded := make(chan struct{}, 1)
+				kept := make(chan struct{}, 1)
 				var dials atomic.Int32
 				s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string)}
 				s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
@@ -80,7 +81,13 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 						return nil, ctx.Err()
 					case <-time.After(1150 * time.Millisecond):
 					}
-					return &transportLane{kind: kind, health: h3.health, usable: func() bool { return true },
+					return &transportLane{kind: kind, health: h3.health, usable: func() bool {
+						select {
+						case kept <- struct{}{}:
+						default:
+						}
+						return true
+					},
 						round: func(*http.Request) (*http.Response, error) { return answer(), nil },
 						close: func() { discarded <- struct{}{} }}, nil
 				}
@@ -101,8 +108,10 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 						t.Fatalf("downgraded %s", scenario)
 					}
 				case <-discarded:
-					if scenario == "control-only" {
-						t.Fatal("discarded working H2 on blocked H3")
+					t.Fatal("discarded the authenticated H2 candidate")
+				case <-kept:
+					if scenario != "second-head-succeeds" && scenario != "business-reply" {
+						t.Fatal("kept the blocked H3 selected")
 					}
 				case <-time.After(5 * time.Second):
 					t.Fatal("no selection decision within five seconds")

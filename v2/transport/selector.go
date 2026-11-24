@@ -155,6 +155,11 @@ func (s *selector) capacityContext(ctx context.Context, l *transportLane, measur
 	defer resp.Body.Close()
 	n, e := io.Copy(io.Discard, io.LimitReader(resp.Body, 32769))
 	if e != nil || resp.StatusCode != 200 || n != 32768 || l.accepted(resp) != nil {
+		// A rejected or malformed complete response invalidates a parked
+		// candidate. A capacity read deadline alone says nothing about identity.
+		if resp.StatusCode != 200 || e == nil {
+			l.ack.Store(false)
+		}
 		trace("health_fail", l.kind, "")
 		return 0
 	}
@@ -357,6 +362,15 @@ func (s *selector) watch() {
 	var pending <-chan *transportLane
 	var abandon context.CancelFunc
 	var owner *transportLane
+	var standby *transportLane
+	var standbyUntil time.Time
+	closeStandby := func() {
+		if standby != nil {
+			standby.close()
+			standby = nil
+		}
+	}
+	defer closeStandby()
 	discard := func() {
 		if pending != nil {
 			abandon()
@@ -374,6 +388,7 @@ func (s *selector) watch() {
 			}
 			if sleep {
 				discard()
+				closeStandby()
 				weak = 0
 				tick.Stop()
 				select {
@@ -391,6 +406,9 @@ func (s *selector) watch() {
 		case <-tick.C:
 		}
 		l = s.current()
+		if standby != nil && (observed != l || !time.Now().Before(standbyUntil) || !standby.usable()) {
+			closeStandby()
+		}
 		if observed != l {
 			weak = 0
 			prev = 0
@@ -465,12 +483,15 @@ func (s *selector) watch() {
 		}
 		if l.active.Load() == 0 || (!gone && (progress || idle)) {
 			discard()
+			if l.active.Load() == 0 || idle {
+				closeStandby()
+			}
 			weak = 0
 			continue
 		}
 		weak++
 		if weak < 2 {
-			if delta == 0 && time.Since(lastH2) >= 10*time.Second {
+			if standby == nil && delta == 0 && time.Since(lastH2) >= 10*time.Second {
 				lastH2 = time.Now()
 				pending, abandon = s.prebuildH2()
 				owner = l
@@ -499,7 +520,11 @@ func (s *selector) watch() {
 			go func() { sample <- s.capacity(l) }()
 		}
 		var alt *transportLane
-		if pending != nil {
+		reused := standby != nil
+		if reused {
+			alt, standby = standby, nil
+			trace("standby_reuse", alt.kind, "")
+		} else if pending != nil {
 			alt = <-pending
 			discard()
 		} else if s.androidVPN || time.Since(lastH2) >= 10*time.Second || gone {
@@ -514,8 +539,10 @@ func (s *selector) watch() {
 			continue
 		}
 		var degraded bool
+		keep := reused
 		if businessStalled {
 			verified := authenticatedHead(s.ctx, alt, 2*time.Second)
+			keep = verified
 			responsive := <-reachable
 			degraded = verified && !responsive && l.active.Load() > 0 && l.delivered.Load() == delivered
 		} else if bursty {
@@ -563,6 +590,18 @@ func (s *selector) watch() {
 				trace("old_closed", l.kind, "")
 			} else {
 				go s.drainH3(l, alt)
+			}
+		} else if keep && alt.ack.Load() && alt.usable != nil && alt.usable() && l.active.Load() > 0 && s.current() == l {
+			// Retain only this already authenticated H2 for the adjacent checks.
+			// No listener or keepalive. Reuse never renews its original deadline.
+			if !reused {
+				standbyUntil = time.Now().Add(5 * time.Second)
+			}
+			if time.Now().Before(standbyUntil) {
+				standby = alt
+				trace("standby_keep", alt.kind, "")
+			} else {
+				alt.close()
 			}
 		} else {
 			alt.close()
