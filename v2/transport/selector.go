@@ -81,6 +81,7 @@ func (s *selector) set(old, l *transportLane) bool {
 		return false
 	}
 	s.lane = l
+	trace("selected", l.kind, "")
 	s.mu.Unlock()
 	select {
 	case s.events <- l.kind:
@@ -149,16 +150,19 @@ func (s *selector) capacityContext(parent context.Context, l *transportLane, mea
 	start := time.Now()
 	resp, e := l.round(req)
 	if e != nil {
+		trace("health_fail", l.kind, "")
 		return 0
 	}
 	defer resp.Body.Close()
 	n, e := io.Copy(io.Discard, io.LimitReader(resp.Body, 32769))
 	if e != nil || resp.StatusCode != 200 || n != 32768 || l.accepted(resp) != nil {
+		trace("health_fail", l.kind, "")
 		return 0
 	}
 	if measured != nil {
 		*measured = responseCounters(resp)
 	}
+	trace("health_ok", l.kind, "")
 	// Some Android monotonic clocks have a coarser tick than a LAN health GET.
 	// An authenticated TLS response with the exact body length is still success.
 	return max(time.Since(start), time.Nanosecond)
@@ -384,8 +388,10 @@ func (s *selector) watch() {
 			if time.Now().Before(nextProbe) || s.recoveryBlocked.Load() || (s.androidVPN && age > 30*time.Second) || (!s.androidVPN && (l.active.Load() == 0 || age > 3*time.Second)) {
 				continue
 			}
+			trace("recovery_start", "h3", "")
 			q, ok := s.recoverH3()
 			if ok && !s.recoveryBlocked.Load() {
+				trace("recovery_ok", "h3", "")
 				success++
 				if s.androidVPN || success == 2 {
 					if s.set(l, q) {
@@ -397,6 +403,7 @@ func (s *selector) watch() {
 					continue
 				}
 			} else {
+				trace("recovery_fail", "h3", "")
 				success = 0
 				if !s.recoveryBlocked.Load() {
 					probeInterval = min(5*time.Minute, 2*probeInterval)
@@ -493,6 +500,13 @@ func (s *selector) watch() {
 			}
 		}
 		if degraded {
+			if labTrace {
+				if l.stats() == now {
+					trace("h3_failed", l.kind, "")
+				} else {
+					trace("h3_degraded", l.kind, "")
+				}
+			}
 			if !s.set(l, alt) {
 				continue
 			}
@@ -501,6 +515,7 @@ func (s *selector) watch() {
 			success = 0
 			if silentForTwoWindows(l, now, lastProgress) {
 				l.close()
+				trace("old_closed", l.kind, "")
 			} else {
 				go s.drainH3(l, alt)
 			}
@@ -523,6 +538,7 @@ func (s *selector) retire(l *transportLane) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	l.close()
+	trace("old_closed", l.kind, "")
 }
 
 // Positive H2 health is established by the caller. Count all QUIC receive bytes,
@@ -551,10 +567,12 @@ func (s *selector) drainH3(old, backup *transportLane) {
 			s.capacity(old)
 			if silentForTwoWindows(old, prev, since) && backup.usable() {
 				old.close()
+				trace("old_closed", old.kind, "")
 				return
 			}
 			prev, since = old.stats(), time.Now()
 		}
 	}
 	old.close()
+	trace("old_closed", old.kind, "")
 }

@@ -107,13 +107,16 @@ func start(parent context.Context, c Config, pin []byte) (*Client, error) {
 	expiry := new(atomic.Int64)
 	expiry.Store(-1)
 	s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
+		trace("dial_start", kind, "")
 		l, err := dialLane(ctx, c, kind, pin)
 		if err != nil {
+			trace("dial_fail", kind, "")
 			var typed *Error
 			if errors.As(networkError(err), &typed) && typed.Code == Certificate {
 				cancel(typed)
 			}
 		} else {
+			trace("dial_ok", kind, "")
 			l.wake = s.wake
 			l.expiry = expiry
 		}
@@ -132,6 +135,7 @@ func start(parent context.Context, c Config, pin []byte) (*Client, error) {
 		return nil, networkError(e)
 	}
 	s.lane = l
+	trace("selected", l.kind, "")
 	s.events <- l.kind
 	go func() {
 		for {
@@ -192,6 +196,7 @@ func (c *Client) acquire(business bool) (*transportLane, error) {
 		go s.retire(l)
 		l = next
 		s.lane = l
+		trace("selected", l.kind, "")
 		changed = true
 	}
 	if business {
@@ -406,6 +411,11 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 		return nil, e
 	}
 	defer l.opening.Add(-1)
+	var port string
+	if labTrace {
+		_, port, _ = net.SplitHostPort(a)
+		trace("tcp_start", l.kind, port)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
 	req := (&http.Request{Method: "CONNECT", Host: a, URL: &url.URL{Scheme: "https", Host: a}, Body: pr, ContentLength: -1}).WithContext(ctx)
@@ -433,6 +443,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 		return nil, networkError(e)
 	}
 	http3.NexusKeepTunnelAlive(ctx, resp.Body)
+	trace("tcp_open", l.kind, port)
 	s := &stream{in: resp.Body, out: pw, l: l}
 	s.close = sync.OnceFunc(func() { cancel(); pw.Close(); pr.Close(); resp.Body.Close(); l.active.Add(-1) })
 	if len(initial) > 0 {
@@ -450,14 +461,18 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 }
 
 type Association struct {
-	a *udp.Association
-	l *transportLane
+	a   *udp.Association
+	l   *transportLane
+	dns bool
 }
 
 func (a *Association) ReadPacket() ([]byte, error) {
 	p, e := a.a.ReadPacket()
 	if e == nil {
 		a.l.business()
+		if labTrace && a.dns {
+			trace("dns_read", a.l.kind, "53")
+		}
 	}
 	return p, e
 }
@@ -465,6 +480,9 @@ func (a *Association) WritePacket(p []byte) error {
 	e := a.a.WritePacket(p)
 	if e == nil {
 		a.l.business()
+		if labTrace && a.dns {
+			trace("dns_write", a.l.kind, "53")
+		}
 	}
 	return e
 }
@@ -563,7 +581,8 @@ func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*
 	}
 	if business {
 		http3.NexusKeepTunnelAlive(ctx, resp.Body)
+		trace("udp_open", l.kind, p)
 	}
 	channel := udp.New(ctx, r, w, d, func(e error) bool { var x *quic.DatagramTooLargeError; return errors.As(e, &x) }, func() { cancel(); closeStream(); release() })
-	return &Association{channel, l}, nil
+	return &Association{channel, l, labTrace && p == "53"}, nil
 }
