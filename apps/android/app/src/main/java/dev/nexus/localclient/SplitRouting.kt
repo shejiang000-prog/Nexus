@@ -1,7 +1,6 @@
 package dev.nexus.localclient
 
 import android.content.Context
-import android.content.pm.ApplicationInfo
 import android.net.LinkProperties
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -23,7 +22,7 @@ internal object SplitRouting {
 
     fun data(context: Context, vpnDns: String? = null, physical: LinkProperties? = null): ByteArray {
         val rules = run {
-            if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            if (BuildConfig.DEBUG) {
                 val fixture = File(context.filesDir, "split-routing-test.txt")
                 if (fixture.isFile) return@run fixture.readBytes().also { require(it.isNotEmpty()) }
             }
