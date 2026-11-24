@@ -552,7 +552,13 @@ func (s *selector) watch() {
 			probeInterval = 30 * time.Second
 			nextProbe = time.Now().Add(probeInterval)
 			success = 0
-			if silentForTwoWindows(l, now, lastProgress) {
+			// A late QUIC packet cannot revive two failed round trips. Preserve
+			// an old flow only if business data actually arrived during selection.
+			closeOld := silentForTwoWindows(l, now, lastProgress)
+			if businessStalled {
+				closeOld = l.delivered.Load() == delivered
+			}
+			if closeOld {
 				l.close()
 				trace("old_closed", l.kind, "")
 			} else {

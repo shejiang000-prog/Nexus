@@ -31,7 +31,7 @@ func TestAutoColdStart(t *testing.T) {
 }
 
 func TestAndroidOneWayH3Failure(t *testing.T) {
-	for _, scenario := range []string{"control-only", "second-head-succeeds", "business-reply"} {
+	for _, scenario := range []string{"control-only", "second-head-succeeds", "business-reply", "reply-during-selection"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -40,7 +40,8 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 					return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: http.NoBody}
 				}
 				var receipts atomic.Uint64
-				h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: receipts.Load, close: func() {}}
+				var oldClosed atomic.Bool
+				h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: receipts.Load, close: func() { oldClosed.Store(true) }}
 				h3.active.Store(1)
 				h3.opening.Store(1)
 				var attempts atomic.Int32
@@ -71,7 +72,7 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				}()
 				discarded := make(chan struct{}, 1)
 				var dials atomic.Int32
-				s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1)}
+				s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string)}
 				s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
 					dials.Add(1)
 					select {
@@ -85,9 +86,18 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				}
 				watched := make(chan struct{})
 				go func() { s.watch(); close(watched) }()
+				if scenario == "reply-during-selection" {
+					// set has published the new lane but is still handing its
+					// state event to the consumer. Deliver buffered old-flow data.
+					end := time.Now().Add(5 * time.Second)
+					for s.current() == h3 && time.Now().Before(end) {
+						time.Sleep(10 * time.Millisecond)
+					}
+					h3.delivered.Add(1)
+				}
 				select {
 				case <-s.events:
-					if scenario != "control-only" {
+					if scenario != "control-only" && scenario != "reply-during-selection" {
 						t.Fatalf("downgraded %s", scenario)
 					}
 				case <-discarded:
@@ -99,6 +109,10 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				}
 				if dials.Load() != 1 || attempts.Load() != 2 {
 					t.Fatalf("H2 dials=%d, H3 challenges=%d", dials.Load(), attempts.Load())
+				}
+				synctest.Wait()
+				if oldClosed.Load() != (scenario == "control-only") {
+					t.Fatalf("old H3 closed=%v in %s", oldClosed.Load(), scenario)
 				}
 				h3.active.Store(0)
 				cancel()
