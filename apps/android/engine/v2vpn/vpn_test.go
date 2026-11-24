@@ -1,10 +1,14 @@
 package v2vpn
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/buf"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
@@ -68,5 +72,38 @@ func TestSplitRoutingWithV2Outbound(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type cachedUpload struct {
+	data []byte
+	err  error
+}
+
+func (c cachedUpload) ReadMultiBufferTimeout(d time.Duration) (buf.MultiBuffer, error) {
+	if d != 0 {
+		panic("waited for payload")
+	}
+	return buf.MergeBytes(nil, c.data), c.err
+}
+
+func (cachedUpload) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	return nil, errors.New("unexpected second read")
+}
+
+func TestTCPInitialPayload(t *testing.T) {
+	payload := bytes.Repeat([]byte("clienthello"), 2048)
+	reader := cachedUpload{payload, io.EOF}
+	initial, tail, readErr := initialTCP(reader)
+	var rest bytes.Buffer
+	if err := uploadTCP(reader, buf.NewWriter(&rest), tail, readErr); err != nil {
+		t.Fatal(err)
+	}
+	if len(initial) != 16384 || !bytes.Equal(append(initial, rest.Bytes()...), payload) {
+		t.Fatal("early payload was lost, repeated or reordered")
+	}
+	initial, tail, readErr = initialTCP(cachedUpload{err: buf.ErrReadTimeout})
+	if len(initial) != 0 || len(tail) != 0 || readErr != nil {
+		t.Fatal("server-first connection must open without data")
 	}
 }

@@ -84,6 +84,37 @@ func (h *handler) dialError(err error) {
 	}
 }
 
+// The Android sniffer buffers the client hello before selecting this outbound. Only
+// take bytes already on hand so a server-first peer can still send its greeting.
+func initialTCP(reader buf.Reader) ([]byte, buf.MultiBuffer, error) {
+	timed, ok := reader.(buf.TimeoutReader)
+	if !ok {
+		return nil, nil, nil
+	}
+	batch, err := timed.ReadMultiBufferTimeout(0)
+	if errors.Is(err, buf.ErrReadTimeout) {
+		err = nil
+	}
+	payload := make([]byte, min(batch.Len(), 16384))
+	tail, _ := buf.SplitBytes(batch, payload)
+	return payload, tail, err
+}
+
+func uploadTCP(reader buf.Reader, writer buf.Writer, tail buf.MultiBuffer, readErr error) error {
+	if len(tail) > 0 {
+		if err := writer.WriteMultiBuffer(tail); err != nil {
+			return err
+		}
+	}
+	if errors.Is(readErr, io.EOF) {
+		return nil
+	}
+	if readErr != nil {
+		return readErr
+	}
+	return buf.Copy(reader, writer)
+}
+
 func (h *handler) Dispatch(ctx context.Context, link *transport.Link) {
 	outs := session.OutboundsFromContext(ctx)
 	if len(outs) == 0 {
@@ -97,15 +128,17 @@ func (h *handler) Dispatch(ctx context.Context, link *transport.Link) {
 		h.udp(ctx, link, out)
 		return
 	}
-	stream, err := h.client.DialTCP(out.Target.NetAddr(), nil)
+	initial, tail, readErr := initialTCP(link.Reader)
+	stream, err := h.client.DialTCP(out.Target.NetAddr(), initial)
 	if err != nil {
+		buf.ReleaseMulti(tail)
 		h.dialError(err)
 		return
 	}
 	defer stream.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		if err := buf.Copy(link.Reader, buf.NewWriter(stream)); err == nil {
+		if err := uploadTCP(link.Reader, buf.NewWriter(stream), tail, readErr); err == nil {
 			// Android's shutdownOutput ends only the CONNECT request body.
 			if err := stream.CloseWrite(); err == nil {
 				return
