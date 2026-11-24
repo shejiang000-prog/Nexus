@@ -129,6 +129,11 @@ func (h host) upgrade(ctx context.Context, d deployment, o Options) (err error) 
 	if err = stageBinaries(ctx, o, newBin); err != nil {
 		return err
 	}
+	var tx transaction
+	defer func() { tx.rollback(&err) }()
+	if err = h.tuneTCP(ctx, d.Token, &tx, true); err != nil {
+		return err
+	}
 	bg := context.Background()
 	if err = h.stop(ctx, d); err != nil {
 		return errors.Join(err, h.start(bg, d))
@@ -289,6 +294,9 @@ func (h host) uninstall(ctx context.Context, d deployment, purge bool) (err erro
 			}
 		}
 		if err = h.system(ctx, "daemon-reload"); err != nil {
+			return err
+		}
+		if err = h.tuneTCP(ctx, d.Token, &tx, false); err != nil {
 			return err
 		}
 		if err = move(cfg); err != nil {

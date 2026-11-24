@@ -81,6 +81,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
     var revoke by remember { mutableStateOf<JSONObject?>(null) }
     var compatAccount by remember(host) { mutableStateOf<JSONObject?>(null) }
     var changed by remember { mutableStateOf(false) }
+    var confirmUpgrade by remember(host) { mutableStateOf(false) }
     var retrust by remember { mutableStateOf(false) }
     fun work(block: suspend () -> Unit) {
         if (busy) return
@@ -159,8 +160,9 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
                         }
                     }, revoke={ revoke=row }, compat={ status=""; compatAccount=row })
             }
+            ToolRow("更新节点程序","通过 SSH 更新并重启节点服务",GroupPlace.Single,!busy) { confirmUpgrade=true }
             access.hosts.filter { it!=host }.forEach { other ->
-                ListRow(other,"切换服务器",GroupPlace.Single) { host=other;access.current=other;devices=null;status="" }
+                ListRow(other,"切换服务器",GroupPlace.Single,enabled=!busy) { host=other;access.current=other;devices=null;status="" }
             }
             SecondaryAction({host="";domain="";adding=true;devices=null;status=""},Modifier.fillMaxWidth(),enabled=!busy) { Text("添加其他服务器") }
         } else {
@@ -215,6 +217,16 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
         if (status.isNotBlank()) Text(status, color=MaterialTheme.colorScheme.onSurface)
         if (changed && !busy) SecondaryAction({ retrust=true },Modifier.fillMaxWidth()) { Text("我重装过这台服务器") }
     }
+    if (confirmUpgrade) AlertDialog(onDismissRequest={confirmUpgrade=false},title={Text("更新节点程序？")},
+        text={Text("将更新 $host 上已部署的协议服务。现有连接会短暂中断，设备授权和证书将保留。")},
+        confirmButton={PrimaryAction({
+            confirmUpgrade=false
+            val server=host
+            work {
+                withContext(Dispatchers.IO) { access.manager(server).upgradeV2() }
+                status="节点程序已更新，服务已启动"
+            }
+        }) {Text("更新")}},dismissButton={SecondaryAction({confirmUpgrade=false}) {Text("取消")}})
     if (retrust) AlertDialog(onDismissRequest={retrust=false},title={Text("重新信任这台服务器？")},
         text={ Text("只有在你确定自己重装过系统或换过服务器时才继续。否则可能有人在冒充你的服务器。\n\n继续后需要再输入一次服务器密码。") },
         confirmButton={PrimaryAction({

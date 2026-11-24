@@ -143,7 +143,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         return digest
     }
 
-    internal fun installV2(domain: String, extraProtocols: Set<String> = v2CompatProtocols.keys) = session { ssh ->
+    internal fun installV2(domain: String, extraProtocols: Set<String> = v2CompatProtocols.keys) {
         require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
         val protocols = v2InstallProtocols(domain, extraProtocols)
         val address = if (domain.isBlank()) "--public-host $host" else {
@@ -151,6 +151,12 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
                 domain.split('.').all { it.matches(Regex("[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")) }) { "请填写有效的域名" }
             "--domain $domain"
         }
+        runV2Installer("install --non-interactive $address --protocols $protocols")
+    }
+
+    internal fun upgradeV2() = runV2Installer("upgrade")
+
+    private fun runV2Installer(arguments: String) = session { ssh ->
         val arch = run(ssh, "uname -m")
         require(arch in setOf("x86_64", "aarch64"))
         val dir = run(ssh, "umask 077 && mktemp -d /tmp/nexus-upload.XXXXXXXXXX")
@@ -159,7 +165,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         try {
             stageNode(ssh, "nexus-node", arch, staged)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address --protocols $protocols")
+            run(ssh, "chmod 0700 $staged && ${sudo}$staged $arguments")
         } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
         Unit
     }

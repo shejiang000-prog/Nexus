@@ -94,7 +94,7 @@ func (h host) preflight(ctx context.Context, d deployment, checkPorts bool) erro
 		release[k] = strings.Trim(v, "\"'")
 	}
 	id, v := release["ID"], release["VERSION_ID"]
-	if !(id == "debian" && (v == "12" || v == "13") || id == "ubuntu" && (v == "22.04" || v == "24.04")) {
+	if !(id == "debian" && (v == "12" || v == "13") || id == "ubuntu" && (v == "22.04" || v == "24.04" || v == "26.04")) {
 		return fmt.Errorf("unsupported system %s %s", id, v)
 	}
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {

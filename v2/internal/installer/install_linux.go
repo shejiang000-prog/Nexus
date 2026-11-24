@@ -167,7 +167,13 @@ func (h host) run(ctx context.Context, action string, o Options, render RenderFu
 			if err := h.healthy(ctx, d); err != nil {
 				return err
 			}
-			return h.firewall(ctx, d, true)
+			if e := h.firewall(ctx, d, true); e != nil {
+				return e
+			}
+			var tx transaction
+			err := h.tuneTCP(ctx, d.Token, &tx, true)
+			tx.rollback(&err)
+			return err
 		}
 		return h.install(ctx, o, d, !missing, render)
 	}
@@ -295,6 +301,9 @@ func (h host) install(ctx context.Context, o Options, old deployment, retained b
 	}
 	var tx transaction
 	defer func() { tx.rollback(&err) }()
+	if err = h.tuneTCP(ctx, d.Token, &tx, true); err != nil {
+		return err
+	}
 	bg := context.Background()
 	if !retained {
 		if _, err = h.command(ctx, "useradd", "--system", "--user-group", "--no-create-home", "--home-dir", state, "--shell", "/usr/sbin/nologin", account); err != nil {
