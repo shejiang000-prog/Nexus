@@ -35,6 +35,12 @@ class ReleaseAssetsTest(unittest.TestCase):
             for arch, cpu in (("x86_64", "amd64"), ("aarch64", "arm64")):
                 self.assertEqual((dest / f"nexus-node-linux-{cpu}").read_bytes(), (nodes / arch / "nexus-node").read_bytes())
 
+            stale = dest / "Nexus-old-arm64.apk"
+            stale.touch()
+            with self.assertRaisesRegex(ValueError, "unrelated files"):
+                prepare("v1.2.3", root, nodes, dest, changelog)
+            stale.unlink()
+
             source = nodes / "x86_64" / "nexus-node"
             original = source.read_bytes()
             source.write_bytes(original + b"changed")

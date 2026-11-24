@@ -43,6 +43,9 @@ def prepare(tag, apks, nodes, dest, changelog):
                     raise ValueError(f"APK must contain only the matching Linux binary digest: {name} {path}")
         assets[name] = apks / name
     dest.mkdir(parents=True, exist_ok=True)
+    expected_files = set(assets) | {"SHA256SUMS.txt", "release-notes.md"}
+    if any(entry.name not in expected_files for entry in dest.iterdir()):
+        raise ValueError("Release output contains unrelated files; choose a fresh directory")
     sums = []
     for name, source in assets.items():
         target = dest / name

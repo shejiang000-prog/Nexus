@@ -91,4 +91,4 @@ jobs:
         run: |
           test "$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" = "$EXPECTED_MANIFEST"
           sha256sum --check --strict SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md Nexus-*.apk nexus-node-linux-* SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md "Nexus-${GITHUB_REF_NAME#v}-arm64.apk" "Nexus-${GITHUB_REF_NAME#v}-universal.apk" nexus-node-linux-amd64 nexus-node-linux-arm64 SHA256SUMS.txt
