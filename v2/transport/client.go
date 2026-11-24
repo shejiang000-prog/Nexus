@@ -306,19 +306,34 @@ func (l *transportLane) headers(r *http.Request) {
 func (c *Client) AccountExpiry() int64 { return c.expiry.Load() }
 
 // Confirm verifies the current device on demand without marking the carrier as busy.
-func (c *Client) Confirm() error {
+func (c *Client) Confirm() (result error) {
 	l, err := c.acquire(false)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(c.s.ctx, 3*time.Second)
 	defer cancel()
+	phase := "confirm_head"
+	if labTrace {
+		trace("confirm_head_start", l.kind, "")
+		defer func() {
+			if result != nil {
+				trace(phase+"_fail", l.kind, "")
+			} else {
+				trace(phase+"_ok", l.kind, "")
+			}
+		}()
+	}
 	resp, err := l.healthHead(ctx)
 	if err != nil {
 		return networkError(err)
 	}
 	if resp.StatusCode == 200 && resp.Header.Get("Proxy-Authentication-Info") == "" {
 		// Older nodes serve a public file. Only an acknowledged CONNECT proves identity.
+		if labTrace {
+			trace("confirm_head_legacy", l.kind, "")
+			phase = "confirm_legacy"
+		}
 		a, err := l.openUDP(ctx, "1.1.1.1:53", false, nil)
 		if err != nil {
 			return err
