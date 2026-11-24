@@ -6,8 +6,8 @@ fail() { echo "$*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] && [ -r /etc/os-release ] || fail "Linux with os-release required"
 . /etc/os-release
 case "$ID/${VERSION_ID:-}" in
-    debian/12|debian/13|ubuntu/22.04|ubuntu/24.04|ubuntu/26.04) ;;
-    *) fail "supported: Debian 12/13 or Ubuntu 22.04/24.04/26.04";;
+    debian/12|debian/13|ubuntu/22.04|ubuntu/24.04|ubuntu/26.04|ubuntu/26.10) ;;
+    *) fail "supported: Debian 12/13 or Ubuntu 22.04/24.04/26.04/26.10";;
 esac
 [ -d /run/systemd/system ] || fail "systemd required"
 case "$(uname -m)" in

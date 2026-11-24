@@ -9,9 +9,15 @@ import (
 	"testing"
 )
 
-func TestUbuntu2604TCPInstallUpgradeRollback(t *testing.T) {
+func TestUbuntu26TCPInstallUpgradeRollback(t *testing.T) {
+	for _, version := range []string{"26.04", "26.10"} {
+		t.Run(version, func(t *testing.T) { testTCPInstallUpgradeRollback(t, version) })
+	}
+}
+
+func testTCPInstallUpgradeRollback(t *testing.T, version string) {
 	l := newLab(t)
-	if err := os.WriteFile(l.path("/etc/os-release"), []byte("ID=ubuntu\nVERSION_ID=\"26.04\""), 0644); err != nil {
+	if err := os.WriteFile(l.path("/etc/os-release"), []byte("ID=ubuntu\nVERSION_ID=\""+version+"\""), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Dir(l.path(tcpConfig)), 0755); err != nil {
@@ -63,7 +69,7 @@ func TestUbuntu2604TCPInstallUpgradeRollback(t *testing.T) {
 		}
 	}
 
-	// Ubuntu 26.04, optional feature absent: undo even the successful half of the probe.
+	// Optional feature absent: undo even the successful half of the probe.
 	run("install", true)
 	check(defaults, false)
 	supported = true
