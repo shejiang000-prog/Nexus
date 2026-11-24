@@ -13,7 +13,6 @@ import re
 import secrets
 import socket
 import socketserver
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -214,11 +213,12 @@ def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
                         elif words[1:] == ["soak-stop"]:samples.stop()
                         elif len(words)==3 and words[1]=="revoke" and re.fullmatch("[0-9a-f]{32}",words[2]):ledger("revoke",words[2])
                         elif len(words)==3 and words[1]=="extend" and re.fullmatch("[0-9a-f]{32}",words[2]):
-                            with contextlib.closing(sqlite3.connect(db)) as conn, conn:
-                                changed = conn.execute("""UPDATE users SET expires_at=expires_at+86400
-                                    WHERE id=(SELECT i.user_id FROM devices d JOIN invites i ON i.digest=d.invite_digest
-                                    WHERE d.id=?)""", (bytes.fromhex(words[2]),)).rowcount
-                                if changed != 1: return
+                            for device in map(json.loads, ledger("devices").splitlines()):
+                                if device["id"] == words[2]:
+                                    until = datetime.datetime.fromtimestamp(device["expires_at"] + 86400, datetime.timezone.utc)
+                                    ledger("renew", device["user_id"], until.isoformat())
+                                    break
+                            else:return
                         else:return
                     self.wfile.write(b"\x01")
                 except (ValueError,OSError,subprocess.SubprocessError):return

@@ -42,6 +42,25 @@ func TestAdminListings(t *testing.T) {
 	if err := admin([]string{db, "revoke", strings.Repeat("0", 32)}, &bytes.Buffer{}); err == nil {
 		t.Fatal("accepted missing device")
 	}
+	run("renew", user, "never")
+	if !strings.Contains(run("users"), `"expires_at":null`) {
+		t.Fatal("renew never retained deadline")
+	}
+	run("renew", user, until)
+	if strings.Contains(run("users"), `"expires_at":null`) {
+		t.Fatal("renew did not restore deadline")
+	}
+	for _, args := range [][]string{
+		{user, "0001-01-01T00:00:00Z"}, {user, "1970-01-01T00:00:01Z"}, {user, "tomorrow"},
+		{strings.Repeat("0", 32), "never"},
+	} {
+		if err := admin(append([]string{db, "renew"}, args...), &bytes.Buffer{}); err == nil {
+			t.Fatal("invalid renewal succeeded")
+		}
+	}
+	if strings.Count(run("audit"), `"action":"renew","user_id":"`+user+`"`) != 2 {
+		t.Fatal("wrong renewal audit history")
+	}
 	run("backup", filepath.Join(t.TempDir(), "copy.db"))
 	users, devices, audit := run("users"), run("devices"), run("audit")
 	if !strings.Contains(users, user) || devices != "" || !strings.Contains(audit, "create_user") || !strings.Contains(audit, "invite") || strings.Contains(users+devices+audit, token) {

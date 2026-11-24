@@ -309,6 +309,12 @@ func (l *Ledger) CreateUser(ctx context.Context, id proof.ID) error {
 	return l.CreateUserUntil(ctx, id, time.Time{})
 }
 func (l *Ledger) CreateUserUntil(ctx context.Context, id proof.ID, until time.Time) error {
+	return l.writeExpiry(ctx, id, until, "create_user", "INSERT INTO users(expires_at,id) VALUES(?,?)")
+}
+func (l *Ledger) Renew(ctx context.Context, id proof.ID, until time.Time) error {
+	return l.writeExpiry(ctx, id, until, "renew", "UPDATE users SET expires_at=? WHERE id=?")
+}
+func (l *Ledger) writeExpiry(ctx context.Context, id proof.ID, until time.Time, action, query string) error {
 	var expires any
 	if !until.IsZero() {
 		if until.Unix() <= time.Now().Unix() {
@@ -316,7 +322,7 @@ func (l *Ledger) CreateUserUntil(ctx context.Context, id proof.ID, until time.Ti
 		}
 		expires = until.Unix()
 	}
-	return l.userWrite(ctx, id, "create_user", "INSERT INTO users(id,expires_at) VALUES(?,?)", id[:], expires)
+	return l.userWrite(ctx, id, action, query, expires, id[:])
 }
 func (l *Ledger) userWrite(ctx context.Context, user proof.ID, action, query string, args ...any) error {
 	tx, err := l.db.BeginTx(ctx, nil)
@@ -324,8 +330,16 @@ func (l *Ledger) userWrite(ctx context.Context, user proof.ID, action, query str
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
 		return err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("unknown user")
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(occurred_at,action,user_id) VALUES(?,?,?)", time.Now().Unix(), action, user[:]); err != nil {
 		return err
@@ -551,7 +565,7 @@ func (l *Ledger) List(ctx context.Context, kind string, out io.Writer) error {
 	case "users":
 		query = `SELECT json_object('id',lower(hex(id)),'expires_at',expires_at) FROM users ORDER BY id`
 	case "devices":
-		query = `SELECT json_object('id',lower(hex(d.id)),'user_id',lower(hex(i.user_id)),'name',d.name,'revoked_at',d.revoked_at) FROM devices d JOIN invites i ON d.invite_digest=i.digest ORDER BY d.id`
+		query = `SELECT json_object('id',lower(hex(d.id)),'user_id',lower(hex(i.user_id)),'name',d.name,'revoked_at',d.revoked_at,'expires_at',u.expires_at) FROM devices d JOIN invites i ON d.invite_digest=i.digest JOIN users u ON u.id=i.user_id ORDER BY d.id`
 	case "audit":
 		query = `SELECT json_object('seq',a.seq,'time',a.occurred_at,'action',a.action,'user_id',lower(hex(coalesce(a.user_id,i.user_id))),'device_id',CASE WHEN a.device_id IS NOT NULL THEN lower(hex(a.device_id)) END,'protocol',a.protocol,'generation',a.generation,'result',a.result) FROM audit a LEFT JOIN devices d ON d.id=a.device_id LEFT JOIN invites i ON i.digest=d.invite_digest ORDER BY a.seq`
 	default:

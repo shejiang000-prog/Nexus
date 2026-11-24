@@ -129,7 +129,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
         } else if (access.isV2(host)) {
             Text(host, style=MaterialTheme.typography.titleLarge)
             val validDays = days.toIntOrNull()?.takeIf { it in 1..365 }
-            OutlinedTextField(days,{days=it.take(3)},Modifier.fillMaxWidth(),singleLine=true,label={Text("设备有效天数（1–365）")})
+            OutlinedTextField(days,{days=it.take(3)},Modifier.fillMaxWidth(),singleLine=true,label={Text("账号有效天数（1–365）")})
             PrimaryAction({ work {
                 link=withContext(Dispatchers.IO) { access.manager(host).v2Invite(validDays) }
             } },Modifier.fillMaxWidth(),enabled=!busy && validDays!=null) { Text("邀请朋友或我的设备") }
@@ -142,8 +142,25 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             else repeat(rows.length()) { i ->
                 val row=rows.getJSONObject(i)
                 val active=row.isNull("revoked_at")
+                val expires = if(row.isNull("expires_at")) null else row.getLong("expires_at")
+                val expiry = v2ExpiryText(expires, row.has("expires_at"))
                 ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
-                    if(active) "撤销设备" else "已撤销",groupPlace(i,rows.length()-1,false,false),enabled=active && !busy) { revoke=row }
+                    if(active) expiry else "已撤销 · $expiry",groupPlace(i,rows.length()-1,false,false),
+                    enabled=active,trailing={
+                        if (active) Row {
+                            if (expires!=null) TextButton({
+                                if (validDays!=null) work {
+                                    devices=withContext(Dispatchers.IO) {
+                                        val manager=access.manager(host)
+                                        manager.v2Renew(row.getString("user_id"),expires,validDays)
+                                        manager.v2Devices()
+                                    }
+                                    status="账号已续期"
+                                }
+                            },enabled=!busy && validDays!=null) { Text("续期") }
+                            TextButton({revoke=row},enabled=!busy) { Text("撤销") }
+                        }
+                    })
             }
             access.hosts.filter { it!=host }.forEach { other ->
                 ListRow(other,"切换服务器",GroupPlace.Single) { host=other;access.current=other;devices=null;status="" }

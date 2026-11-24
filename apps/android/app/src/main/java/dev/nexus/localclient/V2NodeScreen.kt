@@ -16,8 +16,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-internal fun V2Node.expiryText():String {
-    val seconds = expiresAt ?: return if (expiryKnown) "长期有效" else "到期时间未知"
+internal fun V2Node.expiryText() = v2ExpiryText(expiresAt, expiryKnown)
+
+internal fun v2ExpiryText(seconds: Long?, known: Boolean): String {
+    if (seconds == null) return if (known) "长期有效" else "到期时间未知"
     val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(seconds * 1000))
     return "$date 到期"
 }

@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"testing"
@@ -131,7 +133,9 @@ func TestAuthenticatedHealthAndRenewal(t *testing.T) {
 					return errors.As(c.Confirm(), &e) && e.Code == transport.Authentication
 				})
 				until := time.Now().Add(time.Hour).Unix()
-				setExpiry(until)
+				if out, err := exec.Command(l.bin, "ledger", l.dbPath, "renew", fmt.Sprintf("%x", l.user[:]), time.Unix(until, 0).UTC().Format(time.RFC3339)).CombinedOutput(); err != nil {
+					t.Fatalf("renew: %v %s", err, out)
+				}
 				waitFor("business connection did not receive renewed expiry", func() bool {
 					stream, err := c.DialTCP(t.Context(), l.tcp, nil)
 					if err != nil {

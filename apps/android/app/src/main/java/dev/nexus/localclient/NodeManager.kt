@@ -142,15 +142,23 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
 
     internal fun v2Invite(days: Int? = null): String = session { ssh ->
         require(days == null || days in 1..365)
-        fun until(n: Int) = run(ssh, "date -u -d '+$n days' +%Y-%m-%dT%H:%M:%SZ").also {
-            java.time.Instant.parse(it)
-            require(it.matches(Regex("[0-9TZ:-]+")))
-        }
-        val deadline = until(minOf(days ?: 7, 7))
-        val accountEnd = days?.let { " " + until(it) }.orEmpty()
+        val now = run(ssh, "date -u +%s").toLong()
+        val deadline = endAfterDays(now, minOf(days ?: 7, 7))
+        val accountEnd = days?.let { " " + endAfterDays(now, it) }.orEmpty()
         val account = run(ssh, "$v2Ledger create-user$accountEnd")
         require(account.matches(Regex("[0-9a-f]{32}")))
         run(ssh, "$v2Ledger invite --link $account $deadline").also { V2Invite.parse(it) }
+    }
+
+    private fun endAfterDays(start: Long, days: Int) =
+        java.time.Instant.ofEpochSecond(start).plusSeconds(days * 86400L).toString()
+
+    internal fun v2Renew(account: String, expiresAt: Long, days: Int) {
+        require(account.matches(Regex("[0-9a-f]{32}")) && days in 1..365)
+        session { ssh ->
+            val now = run(ssh, "date -u +%s").toLong()
+            run(ssh, "$v2Ledger renew $account " + endAfterDays(maxOf(now, expiresAt), days))
+        }
     }
 
     internal fun v2Devices() = session { ssh ->

@@ -40,7 +40,7 @@ func admin(args []string, out io.Writer) error {
 	if handled, err := compatAdmin(args, out); handled {
 		return err
 	}
-	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | invite [--link] [--qr] USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit | compat {enable|disable|rotate|apply|status|export} ...}")
+	usage := errors.New("usage: nexus-node ledger ABSOLUTE_DB {create-user [RFC3339] | renew USER_HEX {RFC3339|never} | invite [--link] [--qr] USER_HEX RFC3339 | users | devices | revoke DEVICE_HEX | revoke-user USER_HEX | backup ABSOLUTE_PATH | audit | compat {enable|disable|rotate|apply|status|export} ...}")
 	if len(args) < 2 {
 		return usage
 	}
@@ -92,9 +92,9 @@ func admin(args []string, out io.Writer) error {
 				return errors.New("expiry must be in the future")
 			}
 		}
-	case "invite", "revoke", "revoke-user":
+	case "invite", "renew", "revoke", "revoke-user":
 		want := 3
-		if args[1] == "invite" {
+		if args[1] == "invite" || args[1] == "renew" {
 			want = 4
 		}
 		if len(args) != want {
@@ -106,8 +106,11 @@ func admin(args []string, out io.Writer) error {
 		if _, err := hex.Decode(id[:], []byte(args[2])); err != nil {
 			return usage
 		}
-		if args[1] == "invite" {
+		if args[1] == "invite" || (args[1] == "renew" && args[3] != "never") {
 			until, err = time.Parse(time.RFC3339, args[3])
+			if err == nil && until.IsZero() {
+				return errors.New("expiry must be in the future")
+			}
 		}
 	case "backup":
 		if len(args) != 3 {
@@ -152,6 +155,8 @@ func admin(args []string, out io.Writer) error {
 		if errors.Is(err, server.ErrAlreadyRevoked) {
 			_, err = fmt.Fprintln(out, server.ErrAlreadyRevoked)
 		}
+	case "renew":
+		return l.Renew(ctx, id, until)
 	case "revoke-user":
 		return l.RevokeUser(ctx, id)
 	case "backup":
