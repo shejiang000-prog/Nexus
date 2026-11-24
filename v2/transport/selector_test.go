@@ -30,6 +30,85 @@ func TestAutoColdStart(t *testing.T) {
 	}
 }
 
+func TestAndroidOneWayH3Failure(t *testing.T) {
+	for _, scenario := range []string{"control-only", "second-head-succeeds", "business-reply"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				answer := func() *http.Response {
+					return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: http.NoBody}
+				}
+				var receipts atomic.Uint64
+				h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin", stats: receipts.Load, close: func() {}}
+				h3.active.Store(1)
+				h3.opening.Store(1)
+				var attempts atomic.Int32
+				h3.round = func(r *http.Request) (*http.Response, error) {
+					if r.Method != http.MethodHead {
+						t.Error("expected a new authenticated round trip")
+					}
+					if attempts.Add(1) == 2 {
+						switch scenario {
+						case "second-head-succeeds":
+							return answer(), nil
+						case "business-reply":
+							h3.delivered.Add(1)
+						}
+					}
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				}
+				go func() {
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(200 * time.Millisecond):
+							receipts.Add(80) // Old server packets still cross the one-way block.
+						}
+					}
+				}()
+				discarded := make(chan struct{}, 1)
+				var dials atomic.Int32
+				s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string, 1)}
+				s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
+					dials.Add(1)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(1150 * time.Millisecond):
+					}
+					return &transportLane{kind: kind, health: h3.health, usable: func() bool { return true },
+						round: func(*http.Request) (*http.Response, error) { return answer(), nil },
+						close: func() { discarded <- struct{}{} }}, nil
+				}
+				watched := make(chan struct{})
+				go func() { s.watch(); close(watched) }()
+				select {
+				case <-s.events:
+					if scenario != "control-only" {
+						t.Fatalf("downgraded %s", scenario)
+					}
+				case <-discarded:
+					if scenario == "control-only" {
+						t.Fatal("discarded working H2 on blocked H3")
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("no selection decision within five seconds")
+				}
+				if dials.Load() != 1 || attempts.Load() != 2 {
+					t.Fatalf("H2 dials=%d, H3 challenges=%d", dials.Load(), attempts.Load())
+				}
+				h3.active.Store(0)
+				cancel()
+				<-watched
+				time.Sleep(time.Second) // let the retiring lane observe the closed flow
+			})
+		})
+	}
+}
+
 func TestCertificateFailureStopsColdRace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var h2 atomic.Int32

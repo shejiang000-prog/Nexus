@@ -384,8 +384,11 @@ func (s *stream) Read(p []byte) (int, error) {
 		s.out.CloseWithError(io.ErrClosedPipe)
 	}
 	if n > 0 {
-		if !start.IsZero() && time.Since(start) >= 10*time.Millisecond {
-			s.l.stalledReads.Add(1)
+		if !start.IsZero() {
+			s.l.delivered.Add(1)
+			if time.Since(start) >= 10*time.Millisecond {
+				s.l.stalledReads.Add(1)
+			}
 		}
 		s.l.business()
 	}
@@ -470,6 +473,9 @@ type Association struct {
 func (a *Association) ReadPacket() ([]byte, error) {
 	p, e := a.a.ReadPacket()
 	if e == nil {
+		if a.l.kind == "h3" && a.l.wake != nil {
+			a.l.delivered.Add(1)
+		}
 		a.l.business()
 		if labTrace && a.dns {
 			trace("dns_read", a.l.kind, "53")

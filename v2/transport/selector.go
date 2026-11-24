@@ -29,6 +29,7 @@ type transportLane struct {
 	opening      atomic.Int64
 	wake         chan<- struct{}
 	stalledReads atomic.Uint64
+	delivered    atomic.Uint64
 	last         atomic.Int64
 	ack          atomic.Bool
 	expiry       *atomic.Int64
@@ -281,6 +282,19 @@ func (s *selector) probeH3(parent context.Context) (*transportLane, error) {
 	return s.dial(ctx, "h3")
 }
 
+func authenticatedHead(parent context.Context, l *transportLane, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	resp, err := l.healthHead(ctx)
+	ok := err == nil && resp.StatusCode == http.StatusOK && l.accepted(resp) == nil
+	if ok {
+		trace("head_ok", l.kind, "")
+	} else {
+		trace("head_fail", l.kind, "")
+	}
+	return ok
+}
+
 func (s *selector) recoverH3() (*transportLane, bool) {
 	s.recoveryMu.Lock()
 	if s.recoveryBlocked.Load() {
@@ -311,7 +325,7 @@ func (s *selector) recoverH3() (*transportLane, bool) {
 }
 
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(s.ctx, 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 	ready := make(chan *transportLane)
 
 	go func() {
@@ -331,7 +345,7 @@ func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
 func (s *selector) watch() {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
-	var prev, previousStalls uint64
+	var prev, previousStalls, previousDelivered uint64
 	lastProgress := time.Now()
 	var weak, success int
 	var observed *transportLane
@@ -381,6 +395,7 @@ func (s *selector) watch() {
 			weak = 0
 			prev = 0
 			previousStalls = l.stalledReads.Load()
+			previousDelivered = l.delivered.Load()
 			lastProgress = time.Now()
 			observed = l
 			losses = lossWindow{}
@@ -421,6 +436,9 @@ func (s *selector) watch() {
 			continue
 		}
 		now := l.stats()
+		delivered := l.delivered.Load()
+		businessStalled := s.androidVPN && delivered == previousDelivered && now-prev < 32768
+		previousDelivered = delivered
 		delta := now - prev
 		prev = now
 		if delta != 0 || l.active.Load() == 0 {
@@ -465,7 +483,19 @@ func (s *selector) watch() {
 			continue
 		}
 		sample := make(chan time.Duration, 1)
-		if !bursty {
+		var reachable chan bool
+		if businessStalled {
+			// A one-way block can still deliver QUIC ACKs and retransmissions.
+			// Test new round trips while the authenticated fallback is being built.
+			reachable = make(chan bool, 1)
+			go func() {
+				ok := authenticatedHead(s.ctx, l, 850*time.Millisecond)
+				if !ok && l.active.Load() > 0 && l.delivered.Load() == delivered {
+					ok = authenticatedHead(s.ctx, l, 1700*time.Millisecond)
+				}
+				reachable <- ok
+			}()
+		} else if !bursty {
 			go func() { sample <- s.capacity(l) }()
 		}
 		var alt *transportLane
@@ -476,7 +506,7 @@ func (s *selector) watch() {
 			// On Android, cooldown applies to speculative dials. Two silent windows while
 			// an application needs the path must be able to recover immediately.
 			lastH2 = time.Now()
-			ctx, cancel := context.WithTimeout(s.ctx, time.Second)
+			ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 			alt, _ = s.dial(ctx, "h2")
 			cancel()
 		}
@@ -484,20 +514,10 @@ func (s *selector) watch() {
 			continue
 		}
 		var degraded bool
-		if s.androidVPN && delta == 0 {
-			// A silent H3 needs a working authenticated fallback. Transferring
-			// 32 KiB in a short bandwidth sample is not a liveness requirement.
-			ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-			resp, err := alt.healthHead(ctx)
-			cancel()
-			verified := err == nil && resp.StatusCode == http.StatusOK && alt.accepted(resp) == nil
-			if verified {
-				trace("health_ok", alt.kind, "")
-			} else {
-				trace("health_fail", alt.kind, "")
-			}
-			h3time := <-sample
-			degraded = verified && h3time == 0 && silentForTwoWindows(l, now, lastProgress)
+		if businessStalled {
+			verified := authenticatedHead(s.ctx, alt, 2*time.Second)
+			responsive := <-reachable
+			degraded = verified && !responsive && l.active.Load() > 0 && l.delivered.Load() == delivered
 		} else if bursty {
 			var lossy bool
 			degraded, lossy = s.slowerOnFreshH3(alt)
@@ -520,7 +540,7 @@ func (s *selector) watch() {
 		}
 		if degraded {
 			if labTrace {
-				if l.stats() == now {
+				if businessStalled || l.stats() == now {
 					trace("h3_failed", l.kind, "")
 				} else {
 					trace("h3_degraded", l.kind, "")
