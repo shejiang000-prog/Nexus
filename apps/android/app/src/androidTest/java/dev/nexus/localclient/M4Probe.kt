@@ -82,20 +82,21 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
     fun file(name: String) = File(ctx.noBackupFilesDir, "m4-" + name)
     val cfgFile = File(ctx.noBackupFilesDir, "m4.json")
     val cfg = if (cfgFile.isFile) JSONObject(cfgFile.readText()) else JSONObject()
-    fun ownerHost(): String = args.getString("host") ?: cfg.optString("host").ifBlank {
+    fun ownerHost(): String = args.getString("host") ?: cfg.optString("ownerHost").ifBlank { cfg.optString("host") }.ifBlank {
         requireNotNull(OwnerAccess(ctx).current)
     }
+    fun v2Host() = cfg.optString("v2Host").ifBlank { ownerHost() }.removeSurrounding("[","]").lowercase(Locale.ROOT)
+    val owners = ctx.getSharedPreferences("m4-owner-keys",0)
     fun manager() = OwnerAccess(ctx).manager(ownerHost())
     var temporary: V2Node? = null
     fun v2(): V2Node {
         temporary?.let { return requireNotNull(V2Devices.get(ctx,it.key)) }
-        val host = ownerHost()
-        val saved = file("owner-key")
-        saved.takeIf { it.isFile }?.let { V2Devices.get(ctx,it.readText()) }
-            ?.takeIf { it.host == host }?.let { return it }
+        val host = v2Host()
+        owners.getString(host,null)?.let { V2Devices.get(ctx,it) }
+            ?.takeIf { it.host.equals(host,true) }?.let { return it }
         val peerKey = file("device-key").takeIf { it.isFile }?.readText()
-        return V2Devices.list(ctx).single { it.host == host && it.key != peerKey }
-            .also { saved.writeText(it.key) }
+        return V2Devices.list(ctx).single { it.host.equals(host,true) && it.key != peerKey }
+            .also { check(owners.edit().putString(host,it.key).commit()) }
     }
     fun deviceRow(id: String): JSONObject {
         val rows = manager().v2Devices()
@@ -107,7 +108,9 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
             val row = deviceRow(v2().deviceId)
             val protocol = args.getString("protocol") ?: "reality"
             require(protocol in setOf("reality","hysteria2"))
-            file(protocol+".link").writeText(manager().v2CompatLink(row.getString("user_id"),protocol))
+            val link = manager().v2CompatLink(row.getString("user_id"),protocol)
+            check(android.net.Uri.parse(link).host?.removeSurrounding("[","]").equals(v2Host(),true))
+            file(protocol+".link").writeText(link)
             result.putString("export",protocol)
             return
         }
@@ -146,7 +149,9 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
     fun start(kind: String) {
         val request = if (kind == "v2") v2Request(ctx,v2().key) else {
             val link = file(kind+".link").readText().trim()
-            if (kind == "reality") require(link.startsWith("vless://") && android.net.Uri.parse(link).getQueryParameter("security") == "reality")
+            val uri = android.net.Uri.parse(link)
+            require(uri.scheme == "vless" && uri.getQueryParameter("security") == "reality")
+            check(uri.host?.removeSurrounding("[","]").equals(v2Host(),true))
             val sub = store.import("M4-"+kind,link)
             source = sub.id
             val row = sourceRows(listOf(sub)).single()
@@ -275,13 +280,13 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     var resumed = -1L
                     marker("armed-restart")
                     until(420000) {
-                        val ok = runCatching { fresh() }.isSuccess && available("h3")
+                        val ok = runCatching { fresh() }.isSuccess
                         if (!ok) {
                             if (firstFailure < 0) firstFailure = now()-began
                             latestFailure = now()-began
                             resumed = -1
                         } else if (firstFailure >= 0 && resumed < 0) resumed = now()-began
-                        val done = resumed >= 0 && signal.takeIf { it.exists() }?.readText()?.trim()=="node-up"
+                        val done = resumed >= 0 && available("h3") && signal.takeIf { it.exists() }?.readText()?.trim()=="node-up"
                         if (!done) SystemClock.sleep(150)
                         done
                     }
