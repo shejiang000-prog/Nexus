@@ -444,6 +444,7 @@ class CatalogCheck : Instrumentation() {
                         fixture.delete()
                     }
                 }
+                "m4-probe" -> m4Probe(args,result)
                 "m3-ui" -> m3UiCheck(result)
                 "m32-expiry" -> m32ExpiryCheck(result)
                 "m34-share" -> m34ShareCheck(result)
