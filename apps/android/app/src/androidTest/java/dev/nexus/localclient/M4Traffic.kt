@@ -79,8 +79,9 @@ internal class M4Traffic(
         val target = uri.toString()
         val defaultTitle = if (phase == "reference") "Example Domain" else cfg.optString("probeTitle","Example Domain")
         val title = cfg.optString(phase+"Title", defaultTitle)
-        val text = cfg.optString(phase+"Text", if (phase == "reference") "Example Domain" else cfg.optString("probeText",title))
-        require(text.isNotBlank())
+        val textKey = if (phase == "reference" || !cfg.isNull(phase+"Text")) phase+"Text" else "probeText"
+        val text = if (cfg.isNull(textKey)) null else cfg.getString(textKey).also { require(it.isNotBlank()) }
+        require(title.isNotBlank() || text != null)
         val done = CountDownLatch(1)
         val valid = AtomicBoolean()
         inst.runOnMainSync {
@@ -102,11 +103,13 @@ internal class M4Traffic(
                     val finished = now()
                     // Read the DOM title after the main document has loaded. WebView.title can lag this callback.
                     v.evaluateJavascript("""(() => {let n=performance.getEntriesByType('navigation')[0];
-                        let expectedTitle=${JSONObject.quote(title)}, expectedText=${JSONObject.quote(text)};
-                        let body=document.body && document.body.innerText.trim();
+                        let expectedTitle=${JSONObject.quote(title)}, expectedText=${text?.let(JSONObject::quote) ?: "null"};
+                        let body=(document.body && document.body.textContent || "").trim();
                         return {titleOK:!expectedTitle || document.title===expectedTitle,
                           urlOK:document.URL===${JSONObject.quote(target)},
-                          bodyOK:!!body && (expectedTitle ? body.includes(expectedText) : body===expectedText),
+                          bodyChecked:expectedText!==null,nonempty:n && typeof n.decodedBodySize==='number' ? n.decodedBodySize>0 : !!body,
+                          bodyOK:expectedText===null || (document.contentType==='text/plain' || !expectedTitle
+                              ? body===expectedText : body.includes(expectedText)),
                           complete:document.readyState==='complete',age:performance.now(),
                           dnsStart:n&&n.domainLookupStart,dnsEnd:n&&n.domainLookupEnd,
                           tcpStart:n&&n.connectStart,tlsStart:n&&n.secureConnectionStart,tcpEnd:n&&n.connectEnd,
@@ -115,7 +118,7 @@ internal class M4Traffic(
                         if (done.count == 0L) return@evaluateJavascript
                         runCatching {
                             val nav = JSONObject(raw)
-                            for (key in listOf("titleOK","urlOK","bodyOK","complete"))
+                            for (key in listOf("titleOK","urlOK","bodyChecked","bodyOK","nonempty","complete"))
                                 evidence.put(key,nav.optBoolean(key))
                             for (key in listOf("dnsStart","dnsEnd","tcpStart","tlsStart","tcpEnd","request","response","responseEnd"))
                                 if (!nav.isNull(key)) evidence.put(key + "SinceNavMs",nav.getDouble(key))
@@ -131,7 +134,7 @@ internal class M4Traffic(
                                 .put("pageFinishedBootMs",finished)
                             // Older engines omit responseStatus. A successful main-frame callback plus the
                             // expected page is usable evidence; never invent a status code for it.
-                            if (listOf("titleOK","urlOK","bodyOK","complete").all { nav.optBoolean(it) } &&
+                            if (listOf("titleOK","urlOK","bodyOK","nonempty","complete").all { nav.optBoolean(it) } &&
                                 (status == 0 || status in 200..299) && first > 0 && end >= first && end <= age) {
                                 evidence.put("mainResponseEndBootMsLower",finished-age+end)
                                     .put("mainResponseEndBootMsUpper",upper+end)

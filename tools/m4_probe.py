@@ -193,7 +193,7 @@ if __name__=="__main__":
     s=sub.add_parser("signal"); s.add_argument("value",help="arm-drop, arm-unblock, arm-restart, node-up, or stamped blocked/restored event")
     a=p.parse_args()
     device=Device(a.adb,a.serial,a.package,a.runner)
-    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,probeText=a.probe_text or a.probe_title,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")
+    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,probeText=a.probe_text,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")
     elif a.action=="run":
         print(json.dumps(device.run(a.phase,**{k:v for k,v in vars(a).items() if k in ("pairs","protocol","recovery") and v is not None}),ensure_ascii=False))
     elif a.action=="stage": print(device.stage())
