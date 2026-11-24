@@ -111,7 +111,8 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: () -> Unit) {
                     }
                     val field=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=c.outlineVariant,focusedBorderColor=c.primary,
                         unfocusedContainerColor=c.background,focusedContainerColor=c.background)
-                    OutlinedTextField(host,{ host=it.trim().take(64) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
+                    OutlinedTextField(host,{ host=it.trim().take(64); changed=false },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={ Text("服务器 IP") },
+                        supportingText={ Text("SSH 端口默认 22。其他端口请填 IP:端口 或 [IPv6]:端口。") },
                         shape=Shapes.control,colors=field)
                     DeploymentDomain(domain,{domain=it},extraProtocols,{extraProtocols=it},!busy)
                     OutlinedTextField(password,{ password=it.take(512) },Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,
@@ -189,6 +190,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: () -> Unit) {
                 val secret=password; password=""
                 val result=withContext(Dispatchers.IO) { access.bindPrivate(host,trusted,secret,deploy,domain,extraProtocols) }
                 result?.let(saved)
+                host=requireNotNull(access.current)
                 adding=false; status=if (deploy) "部署成功" else "绑定成功"
             }
         }) {Text("确认")}},dismissButton={SecondaryAction({pin=""}) {Text("取消")}})

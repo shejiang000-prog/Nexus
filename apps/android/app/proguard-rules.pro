@@ -19,6 +19,9 @@
 -keep class v2vpn.** { *; }
 # JSch's algorithm map and ZXing's embedded Activity use class names.
 -keep class com.jcraft.jsch.** { public <init>(...); }
+# JSch also constructs these two SSH login methods by name using package-private constructors.
+-keepclassmembers class com.jcraft.jsch.UserAuthPassword { <init>(); }
+-keepclassmembers class com.jcraft.jsch.UserAuthPublicKey { <init>(); }
 -keep class com.journeyapps.barcodescanner.CaptureActivity { public <init>(); }
 # org.json comes from Android's boot classpath. Preserve JSON constructors if bundled by a provider.
 -keepclassmembers class org.json.** { public <init>(...); }

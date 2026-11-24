@@ -25,7 +25,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
     private fun <T> session(action: (Session) -> T): T {
         require(user.matches(Regex("[A-Za-z_][a-zA-Z0-9_-]{0,31}")) && port in 1..65535)
         require(fingerprint.matches(Regex("SHA256:[a-zA-Z0-9+/]{43}")))
-        if (port==22 && OwnerAccess(context).knownPin(host)?.let { it!=fingerprint }==true) throw ChangedServer()
+        if (OwnerAccess(context).knownPin(SshEndpoint(host, port).authority)?.let { it!=fingerprint }==true) throw ChangedServer()
         val jsch = JSch()
         val identity = loadKey?.invoke() ?: sshKey?.copyOf()
         identity?.let { try { jsch.addIdentity("Nexus SSH", it, null, password.takeIf(String::isNotEmpty)?.toByteArray()) } finally { it.fill(0) } }
@@ -54,11 +54,11 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         }
 
     companion object {
-        fun discover(host: String): String {
+        internal fun discover(endpoint: SshEndpoint): String {
             var found: String? = null
             val jsch = JSch()
             jsch.hostKeyRepository = CheckedHost { pin -> found = pin; false }
-            val session = jsch.getSession("root",host,22)
+            val session = jsch.getSession("root",endpoint.host,endpoint.port)
             session.setConfig("StrictHostKeyChecking","yes")
             try { session.connect(8000) } catch (e: JSchException) { if (found == null) throw e }
             finally { session.disconnect() }
