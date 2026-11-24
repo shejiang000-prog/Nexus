@@ -168,12 +168,26 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	return s.capacityBatch(l, 1, nil)
 }
 
-func (s *selector) capacityContext(ctx context.Context, l *transportLane, measured *packetCounters, authenticated *bool) time.Duration {
+type healthReply uint8
+
+const (
+	inconclusiveReply healthReply = iota
+	noReplyBeforeDeadline
+	authenticatedReply
+)
+
+func (s *selector) capacityContext(ctx context.Context, l *transportLane, measured *packetCounters, reply *healthReply) time.Duration {
+	if reply != nil {
+		*reply = inconclusiveReply
+	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
 	l.healthHeaders(req)
 	start := time.Now()
 	resp, e := l.round(req)
 	if e != nil {
+		if reply != nil && s.ctx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(e, context.DeadlineExceeded) {
+			*reply = noReplyBeforeDeadline
+		}
 		trace("health_no_headers", l.kind, "")
 		trace("health_fail", l.kind, "")
 		return 0
@@ -186,8 +200,8 @@ func (s *selector) capacityContext(ctx context.Context, l *transportLane, measur
 		return 0
 	}
 	trace("health_headers_ok", l.kind, "")
-	if authenticated != nil {
-		*authenticated = true
+	if reply != nil {
+		*reply = authenticatedReply
 	}
 	n, e := io.Copy(io.Discard, io.LimitReader(resp.Body, 32769))
 	if e != nil || n != 32768 {
@@ -353,13 +367,13 @@ func (s *selector) firstH3Challenge(l *transportLane, delivered uint64) *h3Chall
 }
 
 func (s *selector) checkStalledH3(l *transportLane, delivered uint64, first *h3Challenge) <-chan bool {
-	if first == nil {
-		first = s.firstH3Challenge(l, delivered)
-	}
 	reachable := make(chan bool, 1)
 	go func() {
-		defer first.cancel()
-		ok := <-first.answer
+		var ok bool
+		if first != nil {
+			defer first.cancel()
+			ok = <-first.answer
+		}
 		if !ok && l.active.Load() > 0 && l.delivered.Load() == delivered {
 			ok = authenticatedHead(s.ctx, l, 1700*time.Millisecond)
 		}
@@ -591,19 +605,23 @@ func (s *selector) watch() {
 			continue
 		}
 		sample := make(chan time.Duration, 1)
-		var h3Answered bool
+		var h3Reply healthReply
+		measureH3 := func() {
+			ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
+			defer cancel()
+			sample <- s.capacityContext(ctx, l, nil, &h3Reply)
+		}
 		var reachable <-chan bool
 		if businessStalled {
 			// A one-way block can still deliver QUIC ACKs and retransmissions.
 			// Test new round trips while the authenticated fallback is being built.
+			if first == nil {
+				first = s.firstH3Challenge(l, delivered)
+			}
 			reachable = s.checkStalledH3(l, delivered, first)
 			first = nil
 		} else if !bursty {
-			go func() {
-				ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
-				defer cancel()
-				sample <- s.capacityContext(ctx, l, nil, &h3Answered)
-			}()
+			go measureH3()
 		}
 		var alt *transportLane
 		reused := standby != nil
@@ -638,7 +656,7 @@ func (s *selector) watch() {
 			if s.androidVPN {
 				degraded = slowAndroidSample(h3time, h2time)
 				if degraded && !(h3time == 0 && l.stats() == now) {
-					go func() { sample <- s.capacity(l) }()
+					go measureH3()
 					h2time = s.capacity(alt)
 					h3time = <-sample
 					degraded = slowAndroidSample(h3time, h2time)
@@ -646,9 +664,17 @@ func (s *selector) watch() {
 				// The previous window may contain the final business reply.
 				// If neither capacity sample finished and no further reply arrived,
 				// challenge the current H3 now, using this same verified H2.
-				if h2time == 0 && h3time == 0 && !h3Answered && alt.ack.Load() && l.active.Load() > 0 && l.delivered.Load() == delivered {
+				if h2time == 0 && h3time == 0 && h3Reply != authenticatedReply && alt.ack.Load() && l.active.Load() > 0 && l.delivered.Load() == delivered {
 					businessStalled = true
-					reachable = s.checkStalledH3(l, delivered, nil)
+					// A fresh authenticated GET which got no headers for its entire
+					// 850ms budget already supplied the first failed round trip.
+					if h3Reply != noReplyBeforeDeadline {
+						first = s.firstH3Challenge(l, delivered)
+					} else {
+						trace("get_challenge_timeout", l.kind, "")
+					}
+					reachable = s.checkStalledH3(l, delivered, first)
+					first = nil
 				}
 			}
 		}

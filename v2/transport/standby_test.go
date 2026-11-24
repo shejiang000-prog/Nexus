@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestFallbackAfterCapacityBodyTimeout(t *testing.T) {
-	for _, scenario := range []string{"verified-headers", "missing-proof", "no-headers", "switch-revoked", "h3-answered"} {
+	for _, scenario := range []string{"verified-headers", "missing-proof", "no-headers", "switch-revoked", "h3-answered", "immediate-get-error"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -26,7 +27,13 @@ func TestFallbackAfterCapacityBodyTimeout(t *testing.T) {
 				h3.opening.Store(1)
 				h3.round = func(r *http.Request) (*http.Response, error) {
 					if r.Method == http.MethodHead {
-						h3Heads.Add(1)
+						n := h3Heads.Add(1)
+						end, ok := r.Context().Deadline()
+						if !ok || (scenario != "immediate-get-error" || n == 2) && time.Until(end) != 1700*time.Millisecond {
+							t.Error("independent final challenge lost its full deadline")
+						}
+					} else if scenario == "immediate-get-error" {
+						return nil, errors.New("local stream unavailable")
 					} else if scenario == "h3-answered" {
 						reader, writer := io.Pipe()
 						go func() { <-r.Context().Done(); writer.CloseWithError(r.Context().Err()) }()
@@ -75,11 +82,11 @@ func TestFallbackAfterCapacityBodyTimeout(t *testing.T) {
 				go func() { s.watch(); close(done) }()
 				select {
 				case <-s.events:
-					if scenario != "verified-headers" {
+					if scenario != "verified-headers" && scenario != "immediate-get-error" {
 						t.Fatal("selected H2 without valid current authentication")
 					}
 				case <-closed:
-					if scenario == "verified-headers" || scenario == "h3-answered" {
+					if scenario == "verified-headers" || scenario == "h3-answered" || scenario == "immediate-get-error" {
 						t.Fatal("discarded H2 on its capacity read deadline")
 					}
 				case <-kept:
@@ -94,8 +101,12 @@ func TestFallbackAfterCapacityBodyTimeout(t *testing.T) {
 				if dials.Load() != 1 {
 					t.Fatalf("H2 dials %d", dials.Load())
 				}
-				if scenario == "verified-headers" || scenario == "switch-revoked" {
-					if h3Heads.Load() != 2 || h2Heads.Load() != 1 {
+				if scenario == "verified-headers" || scenario == "switch-revoked" || scenario == "immediate-get-error" {
+					wantHeads := int32(1)
+					if scenario == "immediate-get-error" {
+						wantHeads = 2
+					}
+					if h3Heads.Load() != wantHeads || h2Heads.Load() != 1 {
 						t.Fatal("fresh liveness checks missing")
 					}
 				} else if h2Heads.Load() != 0 {
