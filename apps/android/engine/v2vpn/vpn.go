@@ -28,6 +28,8 @@ type Session struct {
 
 type handler struct {
 	client *mobile.Client
+	ctx    context.Context
+	cancel context.CancelFunc
 	code   atomic.Int32
 }
 
@@ -40,9 +42,9 @@ func Start(config string, client *mobile.Client) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	manager := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
-	h := &handler{client: client}
+	h := &handler{client: client, ctx: ctx, cancel: cancel}
 	if old := manager.GetDefaultHandler(); old == nil || old.Tag() != h.Tag() {
 		err = errors.New("missing V2 default outbound")
 	} else {
@@ -58,6 +60,7 @@ func Start(config string, client *mobile.Client) (*Session, error) {
 		}
 	}
 	if err != nil {
+		cancel()
 		instance.Close()
 		return nil, err
 	}
@@ -69,7 +72,7 @@ func (s *Session) ErrorCode() int32 { return s.handler.code.Swap(0) }
 
 func (*handler) Tag() string                          { return "selected" }
 func (*handler) Start() error                         { return nil }
-func (*handler) Close() error                         { return nil }
+func (h *handler) Close() error                       { h.cancel(); return nil }
 func (*handler) SenderSettings() *serial.TypedMessage { return nil }
 func (*handler) ProxySettings() *serial.TypedMessage  { return nil }
 
@@ -142,14 +145,52 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 	var writers sync.Mutex
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() { <-readCtx.Done(); common.Interrupt(link.Reader) }()
+	// Dispatch must be able to return while an Android UDP socket is silent.
+	// Xray closes the underlying TUN queue only after Dispatch returns.
+	incoming := make(chan buf.MultiBuffer)
+	go func() {
+		defer close(incoming)
+		for {
+			batch, err := link.Reader.ReadMultiBuffer()
+			if len(batch) != 0 {
+				select {
+				case incoming <- batch:
+				case <-readCtx.Done():
+					buf.ReleaseMulti(batch)
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	defer func() {
 		for _, peer := range peers {
 			peer.Close()
 		}
 	}()
 	for {
-		batch, err := link.Reader.ReadMultiBuffer()
+		var batch buf.MultiBuffer
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.ctx.Done():
+			return
+		case p := <-retired:
+			if peers[p.source] == p.peer {
+				delete(peers, p.source)
+			}
+			if len(peers) == 0 {
+				return
+			}
+			continue
+		case packets, ok := <-incoming:
+			if !ok {
+				return
+			}
+			batch = packets
+		}
 		for len(batch) > 0 {
 			var packet *buf.Buffer
 			batch, packet = buf.SplitFirst(batch)
@@ -159,19 +200,6 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 			}
 			if !original.IsValid() {
 				original = out.Target
-			}
-			// Only the upload loop owns the map. A read-side EOF frees its slot
-			// even when no further datagram arrives for that destination.
-		drain:
-			for {
-				select {
-				case p := <-retired:
-					if peers[p.source] == p.peer {
-						delete(peers, p.source)
-					}
-				default:
-					break drain
-				}
 			}
 			peer := peers[original]
 			if peer == nil && len(peers) < 64 {
@@ -218,7 +246,7 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 			}
 			packet.Release()
 		}
-		if err != nil || ctx.Err() != nil {
+		if len(peers) == 0 {
 			return
 		}
 	}

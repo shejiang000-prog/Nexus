@@ -77,7 +77,7 @@ def run(adb, package, fixture, runner, probe, phase, ld_shell=None):
         try:
             while proc.poll() is None:
                 if time.monotonic()>deadline:raise TimeoutError("M3 instrumentation watchdog")
-                if phase in ("blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"):
+                if phase in ("blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","udp-reclaim","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"):
                     # Let Android sleep without host polling the device. Only all/regression require coordination.
                     time.sleep(2)
                     continue
@@ -108,6 +108,6 @@ if __name__=="__main__":
     p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
     p.add_argument("--ld-shell",type=Path,help="LDPlayer's native ld.exe for instance 0; survives guest radio changes")
     p.add_argument("--probe",default="dev.nexus.vpnprobe/.Probe",choices=["dev.nexus.vpnprobe/.Probe","dev.nexus.lab.m31.probe/dev.nexus.vpnprobe.Probe"])
-    p.add_argument("--phase",choices=["all","switch","recovery","regression","expiry","blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"],default="all")
+    p.add_argument("--phase",choices=["all","switch","recovery","regression","expiry","blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","udp-reclaim","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"],default="all")
     opt=p.parse_args()
     run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe,opt.phase,opt.ld_shell)

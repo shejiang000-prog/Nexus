@@ -20,7 +20,7 @@ import org.json.JSONObject
 internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage: String) {
     val scenario = phase.removeSuffix("-sample")
     val sampleOnly = phase in setOf("loss-sample","healthy-download-sample")
-    require((phase == scenario || sampleOnly) && scenario in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download", "handover", "airplane", "offline", "soak", "ip-upgrade-before", "ip-upgrade-after"))
+    require((phase == scenario || sampleOnly) && scenario in setOf("all", "switch", "recovery", "regression", "blackhole", "rate", "loss", "idle-h2", "idle-h3", "healthy-download", "handover", "airplane", "offline", "soak", "udp-reclaim", "ip-upgrade-before", "ip-upgrade-after"))
     val ctx = targetContext
     check(VpnService.prepare(ctx) == null) { "missing VPN consent" }
     val dir = ctx.noBackupFilesDir
@@ -112,9 +112,24 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                 check(!savedKey.exists());savedKey.writeText(node.key);retainForUpgrade=true
             }
         }
-        if (phase in setOf("handover","airplane","offline","soak")) {
+        if (phase in setOf("handover","airplane","offline","soak","udp-reclaim")) {
             startV2();usable("h3",12000)
-            if(phase=="soak") {
+            if(phase=="udp-reclaim") {
+                val workers=Class.forName("mobile.Mobile").getMethod("labUDPWorkers")
+                fun count() = (workers.invoke(null) as Number).toInt()
+                val initial=count()
+                repeat(24) { connect().use(::echo); udp(); download() }
+                val busy=count()
+                check(busy >= initial+24) { "UDP dispatchers missing under load: $initial -> $busy" }
+                // Keep the VPN up through the node's 60 s UDP association timeout.
+                SystemClock.sleep(60000)
+                waitFor(30000) { Thread.sleep(250); count() <= initial+2 }
+                val idle=count()
+                repeat(8) { udp() }
+                stop()
+                waitFor(10000) { Thread.sleep(100); count()==0 }
+                result.putString("udp-workers","initial=$initial busy=$busy idle=$idle stopped=0")
+            } else if(phase=="soak") {
                 control("soak-start")
                 try {
                     soak(result, { connect().use(::echo); udp(); download() }, ::stop)
