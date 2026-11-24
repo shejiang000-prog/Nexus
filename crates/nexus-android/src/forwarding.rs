@@ -1,9 +1,7 @@
 use super::{
     split::{answers, directives, domestic_question, Rules},
-    Connector, Device,
+    Device, SETUP,
 };
-use nexus_protocol::Flow;
-use nexus_transport::{Channel, Mode, SETUP};
 use std::{
     io,
     net::{IpAddr, SocketAddr},
@@ -18,17 +16,10 @@ use tokio::{
     time::timeout,
 };
 
-pub(super) enum Backend {
-    Nexus(Arc<Connector>),
-    Xray {
-        packets: UnixDatagram,
-        dns_socket: PathBuf,
-    },
-}
-
 pub(super) struct Forwarding {
-    pub backend: Backend,
-    pub rules: Option<Rules>,
+    pub packets: UnixDatagram,
+    dns_socket: PathBuf,
+    pub rules: Rules,
     pub device: Arc<Device>,
     pub resolvers: Vec<SocketAddr>,
     /// VPN DNS addresses whose DoT port is refused, so opportunistic Private DNS
@@ -39,7 +30,6 @@ pub(super) struct Forwarding {
 pub(super) const DOT: u16 = 853;
 
 pub(super) enum Tcp {
-    Node(Channel),
     Direct(TcpStream),
     Resolver,
 }
@@ -59,18 +49,20 @@ async fn framed_query(
 }
 
 impl Forwarding {
-    pub fn new(backend: Backend, device: Arc<Device>, text: &str) -> io::Result<Self> {
+    pub fn new(
+        packets: UnixDatagram,
+        dns_socket: PathBuf,
+        device: Arc<Device>,
+        text: &str,
+    ) -> io::Result<Self> {
         let (resolvers, refuse_dot, text) = directives(text).ok_or(io::ErrorKind::InvalidData)?;
-        let rules = if text.is_empty() {
-            if matches!(backend, Backend::Xray { .. }) {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            None
-        } else {
-            Some(Rules::parse(text).ok_or(io::ErrorKind::InvalidData)?)
-        };
+        if text.is_empty() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let rules = Rules::parse(text).ok_or(io::ErrorKind::InvalidData)?;
         Ok(Self {
-            backend,
+            packets,
+            dns_socket,
             device,
             rules,
             resolvers,
@@ -108,25 +100,13 @@ impl Forwarding {
         Ok(stream)
     }
     pub async fn open_tcp(&self, remote: SocketAddr) -> io::Result<Tcp> {
-        if let Some(rules) = &self.rules {
-            if self.refused(remote) {
-                return Err(io::ErrorKind::ConnectionRefused.into());
-            }
-            if remote.port() == 53 {
-                return Ok(Tcp::Resolver);
-            }
-            if matches!(self.backend, Backend::Xray { .. })
-                || rules.direct(remote.ip(), Instant::now())
-            {
-                return self.tcp(remote).await.map(Tcp::Direct);
-            }
+        if self.refused(remote) {
+            return Err(io::ErrorKind::ConnectionRefused.into());
         }
-        match &self.backend {
-            Backend::Nexus(c) => nexus_client::open(c, &Mode::Auto, Flow::Tcp, remote)
-                .await
-                .map(Tcp::Node),
-            Backend::Xray { .. } => Err(io::ErrorKind::InvalidInput.into()),
+        if remote.port() == 53 {
+            return Ok(Tcp::Resolver);
         }
+        self.tcp(remote).await.map(Tcp::Direct)
     }
     async fn domestic(&self, query: &[u8], tcp: bool) -> io::Result<Vec<u8>> {
         for &addr in &self.resolvers {
@@ -145,12 +125,7 @@ impl Forwarding {
                 if reply[3] & 15 == 2 || reply[3] & 15 == 5 {
                     return Err(io::ErrorKind::Other.into());
                 }
-                if !self
-                    .rules
-                    .as_ref()
-                    .unwrap()
-                    .remember(records, Instant::now())
-                {
+                if !self.rules.remember(records, Instant::now()) {
                     // Never release an answer whose direct route cannot be retained.
                     return Err(io::ErrorKind::WouldBlock.into());
                 }
@@ -163,39 +138,23 @@ impl Forwarding {
         Err(io::ErrorKind::TimedOut.into())
     }
     pub async fn dns(&self, remote: SocketAddr, query: &[u8], tcp: bool) -> io::Result<Vec<u8>> {
-        if domestic_question(self.rules.as_ref().unwrap(), query) {
+        if domestic_question(&self.rules, query) {
             return self.domestic(query, tcp).await;
         }
-        match &self.backend {
-            Backend::Nexus(c) if tcp => {
-                let mut ch = nexus_client::open(c, &Mode::Auto, Flow::Tcp, remote).await?;
-                framed_query(&mut ch.stream, query).await
-            }
-            Backend::Nexus(c) => {
-                let ch = nexus_client::open(c, &Mode::Auto, Flow::Udp, remote).await?;
-                let (mut reader, mut writer) = ch.packets();
-                writer.send(query).await?;
-                reader.recv().await
-            }
-            Backend::Xray { dns_socket, .. } => {
-                // The Xray inbound lives in the app-private directory and routes only
-                // DNS through the selected node. Each query retains its original resolver.
-                let mut stream = UnixStream::connect(dns_socket).await?;
-                stream
-                    .write_all(
-                        format!("CONNECT {remote} HTTP/1.1\r\nHost: {remote}\r\n\r\n").as_bytes(),
-                    )
-                    .await?;
-                // This is a private, pinned in-process Xray HTTP inbound.
-                const RESPONSE: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
-                let mut header = [0; RESPONSE.len()];
-                stream.read_exact(&mut header).await?;
-                if header.as_slice() != RESPONSE {
-                    return Err(io::ErrorKind::ConnectionRefused.into());
-                }
-                framed_query(&mut stream, query).await
-            }
+        // The Xray inbound lives in the app-private directory and routes only
+        // DNS through the selected node. Each query retains its original resolver.
+        let mut stream = UnixStream::connect(&self.dns_socket).await?;
+        stream
+            .write_all(format!("CONNECT {remote} HTTP/1.1\r\nHost: {remote}\r\n\r\n").as_bytes())
+            .await?;
+        // This is a private, pinned in-process Xray HTTP inbound.
+        const RESPONSE: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+        let mut header = [0; RESPONSE.len()];
+        stream.read_exact(&mut header).await?;
+        if header.as_slice() != RESPONSE {
+            return Err(io::ErrorKind::ConnectionRefused.into());
         }
+        framed_query(&mut stream, query).await
     }
     pub async fn relay(
         &self,
@@ -204,10 +163,6 @@ impl Forwarding {
         stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     ) -> io::Result<()> {
         match channel {
-            Tcp::Node(mut ch) => {
-                copy_bidirectional(stream, &mut ch.stream).await?;
-                ch.drain().await;
-            }
             Tcp::Direct(mut peer) => {
                 copy_bidirectional(stream, &mut peer).await?;
             }

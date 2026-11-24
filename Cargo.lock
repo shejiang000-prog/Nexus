@@ -452,10 +452,6 @@ dependencies = [
  "futures-util",
  "jni",
  "netstack-smoltcp",
- "nexus-client",
- "nexus-protocol",
- "nexus-transport",
- "rustls",
  "tokio",
 ]
 

@@ -1,12 +1,7 @@
-use super::{
-    forwarding::{Backend, Forwarding},
-    split::domestic_question,
-};
+use super::{forwarding::Forwarding, split::domestic_question, SETUP};
 use etherparse::{NetSlice, PacketBuilder, SlicedPacket, TransportSlice};
 use futures_util::{SinkExt, StreamExt};
 use netstack_smoltcp::StackBuilder;
-use nexus_protocol::{Flow, MAX_PACKET};
-use nexus_transport::{Mode, LIFETIME, SETUP};
 use std::{
     collections::HashMap,
     fs::File,
@@ -28,8 +23,9 @@ type UdpFlow = (SocketAddr, SocketAddr);
 type TcpFlow = (SocketAddr, SocketAddr);
 
 // Browsers keep many idle keep-alive connections open. A low cap silently drops new SYNs
-// and shows up as pages that never load. Both caps stay below the server's per-connection
-// stream limit (nexus_transport::MAX_STREAMS).
+// and shows up as pages that never load.
+const MAX_PACKET: usize = 1472; // IPv4 UDP payload for a 1500-byte TUN MTU.
+const LIFETIME: Duration = Duration::from_secs(3600);
 const MAX_TCP_FLOWS: usize = 192;
 const MAX_UDP_FLOWS: usize = 64;
 // DNS uses a fresh source port per query; release those associations quickly.
@@ -87,9 +83,7 @@ fn native_packet(
         ),
         _ => return false,
     };
-    let Some(rules) = routing.rules.as_ref() else {
-        return false;
-    };
+    let rules = &routing.rules;
     let now = Instant::now();
     match p.transport {
         Some(TransportSlice::Tcp(t)) => {
@@ -165,57 +159,29 @@ async fn udp_flow(
     mut outgoing: mpsc::Receiver<Vec<u8>>,
     replies: mpsc::Sender<netstack_smoltcp::udp::UdpMsg>,
 ) -> io::Result<()> {
-    if let Some(rules) = &routing.rules {
-        if remote.port() == 53 {
-            while let Ok(Some(query)) = timeout(DNS_IDLE, outgoing.recv()).await {
-                if let Ok(Ok(reply)) = timeout(SETUP, routing.dns(remote, &query, false)).await {
-                    replies
-                        .send((reply, remote, local))
-                        .await
-                        .map_err(|_| io::ErrorKind::BrokenPipe)?;
-                }
-            }
-            return Ok(());
-        }
-        if matches!(routing.backend, Backend::Xray { .. })
-            || rules.direct(remote.ip(), Instant::now())
-        {
-            let socket = routing.udp(remote).await?;
-            let mut buf = vec![0; 65535];
-            loop {
-                tokio::select! {
-                    n = socket.recv(&mut buf) => {
-                        replies.send((buf[..n?].to_vec(), remote, local)).await.map_err(|_| io::ErrorKind::BrokenPipe)?;
-                    }
-                    packet = outgoing.recv() => {
-                        let Some(packet) = packet else {return Ok(())};
-                        socket.send(&packet).await?;
-                    }
-                    _ = tokio::time::sleep(UDP_IDLE) => return Ok(()),
-                }
+    if remote.port() == 53 {
+        while let Ok(Some(query)) = timeout(DNS_IDLE, outgoing.recv()).await {
+            if let Ok(Ok(reply)) = timeout(SETUP, routing.dns(remote, &query, false)).await {
+                replies
+                    .send((reply, remote, local))
+                    .await
+                    .map_err(|_| io::ErrorKind::BrokenPipe)?;
             }
         }
+        return Ok(());
     }
-    let Backend::Nexus(connector) = &routing.backend else {
-        return Err(io::ErrorKind::InvalidInput.into());
-    };
-    let channel = nexus_client::open(connector, &Mode::Auto, Flow::Udp, remote).await?;
-    let (mut reader, mut writer) = channel.packets();
-    let idle = if remote.port() == 53 {
-        DNS_IDLE
-    } else {
-        UDP_IDLE
-    };
+    let socket = routing.udp(remote).await?;
+    let mut buf = vec![0; 65535];
     loop {
         tokio::select! {
-            reply = reader.recv() => {
-                replies.send((reply?, remote, local)).await.map_err(|_| io::ErrorKind::BrokenPipe)?;
+            n = socket.recv(&mut buf) => {
+                replies.send((buf[..n?].to_vec(), remote, local)).await.map_err(|_| io::ErrorKind::BrokenPipe)?;
             }
-            payload = outgoing.recv() => {
-                let Some(payload) = payload else { return Ok(()) };
-                timeout(SETUP, writer.send(&payload)).await??;
+            packet = outgoing.recv() => {
+                let Some(packet) = packet else {return Ok(())};
+                socket.send(&packet).await?;
             }
-            _ = tokio::time::sleep(idle) => return Ok(()),
+            _ = tokio::time::sleep(UDP_IDLE) => return Ok(()),
         }
     }
 }
@@ -249,23 +215,17 @@ async fn udp_flows(
     }
 }
 
-pub(super) async fn forward(
-    fd: OwnedFd,
-    route: Option<IpAddr>,
-    target: SocketAddr,
-    routing: Arc<Forwarding>,
-) -> io::Result<()> {
+pub(super) async fn forward(fd: OwnedFd, routing: Arc<Forwarding>) -> io::Result<()> {
     // The file owns this nonblocking TUN descriptor exclusively until AsyncFd drops it.
     let tun = unsafe { AsyncFd::register(File::from(fd)) }.map_err(io::Error::from)?;
     let (stack, runner, udp, listener) = StackBuilder::default()
-        .enable_udp(route.is_none())
+        .enable_udp(true)
         .enable_tcp(true)
         .mtu(1500)
         .stack_buffer_size(64)
         .tcp_buffer_size(64)
         .tcp_recv_buffer_size(65536)
         .tcp_send_buffer_size(65536)
-        .add_ip_filter_fn(move |_, destination| route.is_none_or(|ip| ip == *destination))
         .build()?;
     let mut listener = listener.ok_or_else(|| io::Error::other("missing TCP listener"))?;
     let runner = runner.ok_or_else(|| io::Error::other("missing TCP runner"))?;
@@ -282,25 +242,19 @@ pub(super) async fn forward(
                 read = tun.async_io(Interest::READABLE, |mut file| file.read(&mut buf)) => {
                     let size = read?;
                     if size == 0 { return Err(io::ErrorKind::UnexpectedEof.into()); }
-                    if let Backend::Xray { packets, .. } = &routing.backend {
-                        if !native_packet(&buf[..size],&routing,|k| sessions.contains_key(&k),&mut udp_paths) {
-                            packets.send(&buf[..size]).await?;
-                            continue;
-                        }
+                    if !native_packet(&buf[..size],&routing,|k| sessions.contains_key(&k),&mut udp_paths) {
+                        routing.packets.send(&buf[..size]).await?;
+                        continue;
                     }
                     let packet = buf[..size].to_vec();
                     let Some((key, ack)) = initial_syn(&packet) else { sink.send(packet).await?; continue };
                     if sessions.contains_key(&key) || sessions.len() >= MAX_TCP_FLOWS { continue; }
-                    let destination = if let Some(alias) = route {
-                        if key.1 != SocketAddr::new(alias, target.port()) { continue; }
-                        target
-                    } else { key.1 };
                     sessions.insert(key,None);
                     let routing = routing.clone();
                     // smoltcp acknowledges a SYN immediately. Only give it the SYN after the
                     // node connects, so a browser can race IPv4 against unreachable IPv6.
                     opening.spawn(async move {
-                        let channel = routing.open_tcp(destination).await;
+                        let channel = routing.open_tcp(key.1).await;
                         (key,ack,packet,channel)
                     });
                 }
@@ -340,12 +294,9 @@ pub(super) async fn forward(
         Err(io::Error::from(io::ErrorKind::BrokenPipe))
     };
     let xray_replies = async {
-        let Backend::Xray { packets, .. } = &routing.backend else {
-            return std::future::pending().await;
-        };
         let mut packet = vec![0; 65535];
         loop {
-            let n = packets.recv(&mut packet).await?;
+            let n = routing.packets.recv(&mut packet).await?;
             if n == 0 {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }

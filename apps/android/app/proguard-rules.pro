@@ -4,10 +4,8 @@
 # Rust and shoes look up these binary names and callback descriptors through JNI.
 -keep class dev.nexus.localclient.Tunnel {
     native <methods>;
-    byte[] sign(byte[]);
     boolean protectTransport(int);
     void onReady(int);
-    void onPath(long,long,long);
 }
 -keep class com.shoesproxy.ShoesNative { native <methods>; }
 -keep interface com.shoesproxy.ShoesNative$SocketProtection { *; }
