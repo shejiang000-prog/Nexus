@@ -342,7 +342,12 @@ class TunnelService : VpnService() {
                     }
                     val session = plan.v2?.let { node ->
                         V2Session(node, this, net) { bearer ->
-                            main.post { if (serial == token) state.value = state.value.copy(bearer = bearer) }
+                            main.post {
+                                if (serial == token) {
+                                    DiagnosticExport.bearerChanged(this, state.value.bearer, bearer)
+                                    state.value = state.value.copy(bearer = bearer)
+                                }
+                            }
                         }
                     }
                     try { CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health,rules,session) {
@@ -374,6 +379,7 @@ class TunnelService : VpnService() {
                     cancel?.close()
                     cancel = null
                     failures = (failures + 1).coerceAtMost(32)
+                    if (plan.v2 != null) DiagnosticExport.recordError(this, result)
                     if (plan.v2 != null && result != 0 && !V2Connection.retry(result)) {
                         getSharedPreferences("local", 0).edit().remove(RESUME).apply()
                         disconnect()

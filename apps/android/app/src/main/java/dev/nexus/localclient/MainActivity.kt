@@ -332,6 +332,9 @@ class MainActivity : ComponentActivity() {
                                     UpdateSettings()
                                     SectionLabel("更多")
                                     ListRow("按应用代理与出口诊断","选择哪些应用走代理，检查出口与连通",GroupPlace.First) { page="诊断" }
+                                    ListRow("导出诊断信息","生成连接摘要，选择分享给谁",GroupPlace.Middle) {
+                                        DiagnosticExport.share(this@MainActivity, tunnel.physical)
+                                    }
                                     ListRow("高级","旧版配置文件、本机公钥、本地端口转发",GroupPlace.Middle) { page="高级" }
                                     ListRow("关于 Nexus","版本 "+BuildConfig.VERSION_NAME+" · 隐私与开源许可",GroupPlace.Last) { page="关于" }
                                 }

@@ -48,7 +48,7 @@ internal fun V2InviteConfirmation(invite:V2Invite, completed:(V2Node)->Unit, dis
             scope.launch {
                 try { completed(withContext(Dispatchers.IO) { V2Devices.enroll(ctx,invite) }) }
                 catch (e:CancellationException) { throw e }
-                catch (e:V2Failure) { error=V2Connection.error(e.code) }
+                catch (e:V2Failure) { DiagnosticExport.recordError(ctx,e.code); error=V2Connection.error(e.code) }
                 catch (_:Exception) { error="兑换未完成，请检查网络、节点证书和邀请有效期。" }
                 finally { busy=false }
             }
