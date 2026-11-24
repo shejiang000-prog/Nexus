@@ -313,7 +313,7 @@ func (c *Client) Confirm() error {
 	}
 	if resp.StatusCode == 200 && resp.Header.Get("Proxy-Authentication-Info") == "" {
 		// Older nodes serve a public file. Only an acknowledged CONNECT proves identity.
-		a, err := l.openUDP(ctx, "1.1.1.1:53", func() {})
+		a, err := l.openUDP(ctx, "1.1.1.1:53", false)
 		if err != nil {
 			return err
 		}
@@ -432,6 +432,7 @@ func (c *Client) DialTCP(ctx context.Context, target string, initial []byte) (io
 		}
 		return nil, networkError(e)
 	}
+	http3.NexusKeepTunnelAlive(ctx, resp.Body)
 	s := &stream{in: resp.Body, out: pw, l: l}
 	s.close = sync.OnceFunc(func() { cancel(); pw.Close(); pr.Close(); resp.Body.Close(); l.active.Add(-1) })
 	if len(initial) > 0 {
@@ -478,9 +479,14 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 		return nil, e
 	}
 	defer l.opening.Add(-1)
-	return l.openUDP(ctx, a, func() { l.active.Add(-1) })
+	return l.openUDP(ctx, a, true)
 }
-func (l *transportLane) openUDP(ctx context.Context, a string, release func()) (*Association, error) {
+func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*Association, error) {
+	release := func() {
+		if business {
+			l.active.Add(-1)
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	h, p, _ := net.SplitHostPort(a)
 	authority := l.authority
@@ -554,6 +560,9 @@ func (l *transportLane) openUDP(ctx context.Context, a string, release func()) (
 		closeStream()
 		release()
 		return nil, networkError(e)
+	}
+	if business {
+		http3.NexusKeepTunnelAlive(ctx, resp.Body)
 	}
 	channel := udp.New(ctx, r, w, d, func(e error) bool { var x *quic.DatagramTooLargeError; return errors.As(e, &x) }, func() { cancel(); closeStream(); release() })
 	return &Association{channel, l}, nil

@@ -1,0 +1,68 @@
+--- a/connection.go
++++ b/connection.go
+@@ -232,6 +232,7 @@
+ 	// It is reset as soon as we receive a packet from the peer.
+ 	keepAlivePingSent bool
+ 	keepAliveInterval time.Duration
++	nexusTunnels      atomic.Int64
+ 
+ 	datagramQueue *datagramQueue
+ 
+@@ -892,12 +893,36 @@
+ 
+ // Time when the next keep-alive packet should be sent.
+ // It returns a zero time if no keep-alive should be sent.
++// NexusKeepTunnelAlive uses the existing connection timer for an accepted CONNECT.
++// Closing the request or learning the peer's final size ends its keepalive. A local
++// write-side FIN still allows the tunnel to receive data.
++func (c *Conn) NexusKeepTunnelAlive(ctx context.Context, stream *Stream) {
++	if c.nexusTunnels.Add(1) == 1 {
++		c.scheduleSending()
++	}
++	lifetime, finish := context.WithCancel(ctx)
++	stopConn := context.AfterFunc(c.Context(), finish)
++	context.AfterFunc(lifetime, func() {
++		stopConn()
++		if c.nexusTunnels.Add(-1) == 0 {
++			c.scheduleSending()
++		}
++	})
++	stream.SetReceiveFinalSizeCallback(func(int64) { finish() })
++}
++
+ func (c *Conn) nextKeepAliveTime() monotime.Time {
+-	if c.config.KeepAlivePeriod == 0 || c.keepAlivePingSent {
++	if c.keepAlivePingSent {
+ 		return 0
+ 	}
+-	keepAliveInterval := max(c.keepAliveInterval, c.rttStats.PTO(true)*3/2)
+-	return c.lastPacketReceivedTime.Add(keepAliveInterval)
++	interval := c.keepAliveInterval
++	if c.config.KeepAlivePeriod == 0 {
++		if c.nexusTunnels.Load() == 0 {
++			return 0
++		}
++		interval = min(15*time.Second, c.idleTimeout/2)
++	}
++	return c.lastPacketReceivedTime.Add(max(interval, c.rttStats.PTO(true)*3/2))
+ }
+ 
+ func (c *Conn) maybeResetTimer() {
+--- a/http3/body.go
++++ b/http3/body.go
+@@ -118,6 +118,15 @@
+ 	}
+ }
+ 
++// NexusKeepTunnelAlive applies to a successful HTTP/3 CONNECT response.
++// Other transports do not use QUIC keepalive.
++func NexusKeepTunnelAlive(ctx context.Context, body io.ReadCloser) {
++	if b, ok := body.(*hijackableBody); ok {
++		s := b.body.str
++		s.conn.conn.NexusKeepTunnelAlive(ctx, s.QUICStream())
++	}
++}
++
+ func (r *hijackableBody) Read(b []byte) (int, error) {
+ 	n, err := r.body.Read(b)
+ 	if err != nil {
