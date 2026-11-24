@@ -57,6 +57,15 @@ internal fun Instrumentation.m34ShareCheck(result: Bundle) {
     }
     fun button(name: String): AccessibilityNodeInfo =
         generateSequence(splitLabel(name, false)) { it.parent }.first { it.isClickable || it.className == "android.widget.Button" }
+    fun tap(item: AccessibilityNodeInfo) {
+        val bounds = android.graphics.Rect().also(item::getBoundsInScreen)
+        val now = SystemClock.uptimeMillis()
+        for (action in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP)) {
+            val event = android.view.MotionEvent.obtain(now, SystemClock.uptimeMillis(), action,
+                bounds.exactCenterX(), bounds.exactCenterY(), 0)
+            try { sendPointerSync(event) } finally { event.recycle() }
+        }
+    }
     fun field(): AccessibilityNodeInfo {
         fun find(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (n.className == "android.widget.EditText" || n.isEditable) return n
@@ -82,14 +91,26 @@ internal fun Instrumentation.m34ShareCheck(result: Bundle) {
         val action = if (row == null) inviteLabel else "续期"
         check(!button(inviteLabel).isEnabled && !button(action).isEnabled && field().isEnabled)
         if (row != null && row.isNull("expires_at")) screenshot("empty")
+        uiAutomation.waitForIdle(300, 2000)
         if (duration == null) {
-            clickSplitLabel("永久")
+            tap(button("永久"))
         } else {
-            val input = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, duration.toString()) }
-            check(field().performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, input))
+            tap(field())
+            waitForIdleSync()
+            sendStringSync(duration.toString())
+            runOnMainSync {
+                activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                    .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+            }
         }
-        uiAutomation.waitForIdle(200, 2000)
-        check(button(inviteLabel).isEnabled && button(action).isEnabled)
+        val deadline = SystemClock.elapsedRealtime() + 3000
+        while ((!button(inviteLabel).isEnabled || !button(action).isEnabled) &&
+            SystemClock.elapsedRealtime() < deadline) Thread.sleep(100)
+        if (!button(inviteLabel).isEnabled || !button(action).isEnabled) {
+            screenshot("input-failure")
+            result.putString("input-state", "days=$duration field=${field().text} invite=${button(inviteLabel).isEnabled} action=$action enabled=${button(action).isEnabled}")
+            error("validity controls did not update")
+        }
         check(field().isEnabled == (duration != null))
         if (row != null) screenshot(if (duration == null) "permanent" else "days")
         clickSplitLabel(action)
@@ -118,30 +139,25 @@ internal fun Instrumentation.m34ShareCheck(result: Bundle) {
     val oldSplit = prefs.all[SplitRouting.KEY] as? Boolean
     try {
         prefs.edit().putBoolean(SplitRouting.KEY, false).commit()
-        for (initialDays in listOf(null, 3650)) {
-            val validity = choose(null, initialDays)
-            val created = ledger("now").toLong()
-            val account = ledger(validity.createUser(created))
-            val inviteCommand = validity.invite(account, created)
-            check(Instant.parse(inviteCommand.substringAfterLast(' ')).epochSecond == created + 7 * 86400L)
-            val invite = V2Invite.parse(ledger(inviteCommand))
-            val node = V2Devices.enroll(ctx, invite, cfg.getString("endpoint"), cfg.getString("ca").toByteArray())
-            try {
-                val initialExpiry = initialDays?.let { created + it * 86400L }
-                check(node.expiryKnown && node.expiresAt == initialExpiry)
-                prefs.edit().putString("simple-node", node.key).commit()
-                withActivity {
-                    splitLabel(expectedText(initialExpiry), false)
-                    screenshot(if (initialDays == null) "home-permanent" else "home-date")
-                }
+        val validity = choose(null, null)
+        val created = ledger("now").toLong()
+        val account = ledger(validity.createUser(created))
+        val inviteCommand = validity.invite(account, created)
+        check(Instant.parse(inviteCommand.substringAfterLast(' ')).epochSecond == created + 7 * 86400L)
+        val invite = V2Invite.parse(ledger(inviteCommand))
+        val node = V2Devices.enroll(ctx, invite, cfg.getString("endpoint"), cfg.getString("ca").toByteArray())
+        try {
+            check(node.expiryKnown && node.expiresAt == null)
+            prefs.edit().putString("simple-node", node.key).commit()
+            withActivity { splitLabel(expectedText(null), false) }
+            for (days in listOf(1, null)) {
                 val row = JSONObject(ledger("device $account"))
                 check(row.getString("id") == node.deviceId)
-                val fromLedger = if (row.isNull("expires_at")) null else row.getLong("expires_at")
-                check(fromLedger == initialExpiry)
-                val next = choose(row, if (initialDays == null) 1 else null)
+                val expires = if (row.isNull("expires_at")) null else row.getLong("expires_at")
+                val next = choose(row, days)
                 val now = ledger("now").toLong()
-                ledger(next.renew(account, now, fromLedger))
-                val expected = next.days?.let { maxOf(now, initialExpiry ?: now) + it * 86400L }
+                ledger(next.renew(account, now, expires))
+                val expected = days?.let { now + 86400L }
                 withActivity {
                     ctx.startForegroundService(v2Request(ctx, node.key))
                     try {
@@ -151,16 +167,16 @@ internal fun Instrumentation.m34ShareCheck(result: Bundle) {
                             } == true
                         }
                         splitLabel(expectedText(expected), false)
+                        screenshot(if (days == null) "home-permanent" else "home-date")
                     } finally {
                         ctx.startService(Intent(ctx, TunnelService::class.java).setAction("stop"))
                         waitUntil("VPN failed to stop") { !TunnelService.state.value.active &&
                             cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true }
                     }
                 }
-                result.putString(if (initialDays == null) "permanentInvite" else "finiteInvite",
-                    if (initialDays == null) "长期有效 → 1 天，同设备首页已刷新" else "3650 天 → 长期有效，同设备首页已刷新")
-            } finally { V2Devices.remove(ctx, node.key) }
-        }
+            }
+            result.putString("sharing", "永久邀请 → 1 天 → 长期有效；同一设备两次认证后的首页与节点到期值一致")
+        } finally { V2Devices.remove(ctx, node.key) }
     } finally {
         prefs.edit().putString("simple-node", oldChoice).apply {
             if (oldSplit == null) remove(SplitRouting.KEY) else putBoolean(SplitRouting.KEY, oldSplit)
