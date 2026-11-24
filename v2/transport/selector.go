@@ -139,12 +139,10 @@ func (s *selector) initial() (*transportLane, error) {
 
 // The controlled site serves a bounded zero-filled object independent of the target app.
 func (s *selector) capacity(l *transportLane) time.Duration {
-	return s.capacityContext(s.ctx, l, nil)
+	return s.capacityBatch(l, 1, nil)
 }
 
-func (s *selector) capacityContext(parent context.Context, l *transportLane, measured *packetCounters) time.Duration {
-	ctx, cancel := context.WithTimeout(parent, 850*time.Millisecond)
-	defer cancel()
+func (s *selector) capacityContext(ctx context.Context, l *transportLane, measured *packetCounters) time.Duration {
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
 	l.healthHeaders(req)
 	start := time.Now()
@@ -225,11 +223,11 @@ func (w *lossWindow) impaired(ctx context.Context, l *transportLane) bool {
 // Several equal, consecutive transfers put fast LAN measurements above coarse
 // clock resolution and average out the latency of a single lost packet.
 func (s *selector) capacityBatch(l *transportLane, count int, measured *packetCounters) time.Duration {
-	if count == 1 {
-		return s.capacityContext(s.ctx, l, measured)
-	}
 	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
 	defer cancel()
+	if count == 1 {
+		return s.capacityContext(ctx, l, measured)
+	}
 	start := time.Now()
 	for i := range count {
 		var snapshot *packetCounters
@@ -306,7 +304,10 @@ func (s *selector) recoverH3() (*transportLane, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return q, s.capacityContext(ctx, q, nil) > 0 && (!s.androidVPN || s.capacityContext(ctx, q, nil) > 0) && ctx.Err() == nil
+	// Active H2 remains available while both full authenticated objects arrive.
+	check, done := context.WithTimeout(ctx, 5*time.Second)
+	defer done()
+	return q, s.capacityContext(check, q, nil) > 0 && (!s.androidVPN || s.capacityContext(check, q, nil) > 0) && check.Err() == nil
 }
 
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {

@@ -335,7 +335,14 @@ func TestAndroidRecoveryActivityPowerAndBackoff(t *testing.T) {
 func TestRecoveryAllowsQUICRetransmission(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &transportLane{health: "https://node.test/health.bin", kind: "h3"}
-		l.round = func(*http.Request) (*http.Response, error) {
+		var reads int
+		l.round = func(r *http.Request) (*http.Response, error) {
+			select {
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			case <-time.After(time.Second):
+			}
+			reads++
 			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
 		}
 		s := selector{ctx: t.Context(), androidVPN: true, dial: func(ctx context.Context, _ string) (*transportLane, error) {
@@ -346,7 +353,7 @@ func TestRecoveryAllowsQUICRetransmission(t *testing.T) {
 				return nil, ctx.Err()
 			}
 		}}
-		if lane, ok := s.recoverH3(); lane != l || !ok {
+		if lane, ok := s.recoverH3(); lane != l || !ok || reads != 2 {
 			t.Fatal("recovery abandoned a healthy H3 handshake")
 		}
 	})
