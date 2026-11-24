@@ -2,8 +2,6 @@
 
 Nexus 是无需注册的 Android 代理客户端。你可以使用已有的第三方订阅，也可以一键部署自己的 V2 私人节点，通过邀请分享给亲友。两种方式都支持按应用代理和绕过大陆。
 
-<p><img src="docs/screenshots/light-connect.png" width="24%" alt="浅色主题 · 连接"> <img src="docs/screenshots/light-nodes.png" width="24%" alt="浅色主题 · 节点"> <img src="docs/screenshots/light-server.png" width="24%" alt="浅色主题 · 我的服务器"> <img src="docs/screenshots/light-settings.png" width="24%" alt="浅色主题 · 设置"> </p>
-<p><img src="docs/screenshots/dark-connect.png" width="24%" alt="深色主题 · 连接"> <img src="docs/screenshots/dark-nodes.png" width="24%" alt="深色主题 · 节点"> <img src="docs/screenshots/dark-server.png" width="24%" alt="深色主题 · 我的服务器"> <img src="docs/screenshots/dark-settings.png" width="24%" alt="深色主题 · 设置"> </p>
 
 ## 下载与安装
 
