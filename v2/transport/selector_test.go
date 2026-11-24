@@ -379,12 +379,17 @@ func TestAndroidFinalH3CheckAfterBusinessWentQuiet(t *testing.T) {
 				}
 				return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
 			}
-			go s.drainH3(old, &transportLane{usable: func() bool { return true }})
+			done := make(chan struct{})
+			go func() {
+				s.drainH3(old, &transportLane{usable: func() bool { return true }})
+				close(done)
+			}()
 			time.Sleep(5 * time.Second)
 			if closed.Load() == healthy || checks.Load() != 1 {
 				t.Fatalf("healthy=%t, closed=%t, final checks=%d", healthy, closed.Load(), checks.Load())
 			}
 			old.active.Store(0)
+			<-done
 		})
 	}
 }
