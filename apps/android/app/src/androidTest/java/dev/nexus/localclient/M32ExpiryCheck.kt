@@ -7,6 +7,11 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Bundle
 import android.os.SystemClock
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import org.json.JSONObject
 import java.io.File
 import java.net.InetSocketAddress
@@ -49,11 +54,13 @@ internal fun Instrumentation.m32ExpiryCheck(result: Bundle) {
         splitLabel(node.expiryText(),false)
         start()
         result.putString("clock","node accepted an account whose cached expiry was in the device's past")
-        physical.socketFactory.createSocket().use { s ->
+        val row = physical.socketFactory.createSocket().use { s ->
             s.soTimeout=3000
             s.connect(InetSocketAddress(cfg.getString("host"),cfg.getInt("controlPort")),1500)
             s.getOutputStream().write((cfg.getString("control")+" extend "+node.deviceId+"\n").toByteArray())
-            check(s.getInputStream().read()==1)
+            val response=s.getInputStream()
+            check(response.read()==1)
+            JSONObject(response.bufferedReader().readLine())
         }
         until {
             echo() && V2Devices.get(ctx,node.key)?.expiresAt == expires+86400
@@ -64,6 +71,26 @@ internal fun Instrumentation.m32ExpiryCheck(result: Bundle) {
         stop()
         start()
         result.putString("renewal","next authenticated flow updated the visible expiry; same device reconnected")
+        check(row.getString("id")==node.deviceId && row.getLong("expires_at")==updated.expiresAt)
+        runOnMainSync { (activity as MainActivity).setContent { NexusTheme {
+            Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().statusBarsPadding().padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Text("已授权设备",style=MaterialTheme.typography.titleMedium)
+                    V2ManagedDeviceRow(row,GroupPlace.Single,false,true,{},{})
+                }
+            }
+        } } }
+        splitLabel(row.optString("name").ifBlank { node.deviceId.take(8) },false)
+        splitLabel(updated.expiryText(),false)
+        splitLabel("续期",false)
+        splitLabel("撤销",false)
+        uiAutomation.waitForIdle(250,2000)
+        val shot=requireNotNull(uiAutomation.takeScreenshot())
+        try {
+            File(ctx.noBackupFilesDir,"m33-renew-row.png").outputStream().use {
+                check(shot.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))
+            }
+        } finally { shot.recycle() }
     } finally {
         stop()
         V2Devices.remove(ctx,node.key)

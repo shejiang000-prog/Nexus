@@ -141,26 +141,17 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             if (rows==null || rows.length()==0) Text(if(rows==null) "正在读取设备…" else "还没有已授权设备",color=MaterialTheme.colorScheme.onSurfaceVariant)
             else repeat(rows.length()) { i ->
                 val row=rows.getJSONObject(i)
-                val active=row.isNull("revoked_at")
-                val expires = if(row.isNull("expires_at")) null else row.getLong("expires_at")
-                val expiry = v2ExpiryText(expires, row.has("expires_at"))
-                ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
-                    if(active) expiry else "已撤销 · $expiry",groupPlace(i,rows.length()-1,false,false),
-                    enabled=active,trailing={
-                        if (active) Row {
-                            if (expires!=null) TextButton({
-                                if (validDays!=null) work {
-                                    devices=withContext(Dispatchers.IO) {
-                                        val manager=access.manager(host)
-                                        manager.v2Renew(row.getString("user_id"),expires,validDays)
-                                        manager.v2Devices()
-                                    }
-                                    status="账号已续期"
-                                }
-                            },enabled=!busy && validDays!=null) { Text("续期") }
-                            TextButton({revoke=row},enabled=!busy) { Text("撤销") }
+                V2ManagedDeviceRow(row,groupPlace(i,rows.length()-1,false,false),busy,validDays!=null,
+                    renew={ expires ->
+                        if (validDays!=null) work {
+                            devices=withContext(Dispatchers.IO) {
+                                val manager=access.manager(host)
+                                manager.v2Renew(row.getString("user_id"),expires,validDays)
+                                manager.v2Devices()
+                            }
+                            status="账号已续期"
                         }
-                    })
+                    }, revoke={ revoke=row })
             }
             access.hosts.filter { it!=host }.forEach { other ->
                 ListRow(other,"切换服务器",GroupPlace.Single) { host=other;access.current=other;devices=null;status="" }
@@ -242,6 +233,20 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
                 if (access.isV2(host)) { m.v2Revoke(row.getString("id")); m.v2Devices() }
                 else { m.owner("revoke",JSONObject().put("id",row.getString("id"))); JSONArray(m.owner("devices")) } } }
         }) {Text("确认撤销")}},dismissButton={SecondaryAction({revoke=null}) {Text("取消")}}) }
+}
+
+@Composable
+internal fun V2ManagedDeviceRow(row:JSONObject,place:GroupPlace,busy:Boolean,validDays:Boolean,renew:(Long)->Unit,revoke:()->Unit) {
+    val active=row.isNull("revoked_at")
+    val expires=if(row.isNull("expires_at")) null else row.getLong("expires_at")
+    val expiry=v2ExpiryText(expires,row.has("expires_at"))
+    ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
+        if(active) expiry else "已撤销 · $expiry",place,enabled=active,trailing={
+            if (active) Row {
+                if (expires!=null) TextButton({renew(expires)},enabled=!busy && validDays) { Text("续期") }
+                TextButton(revoke,enabled=!busy) { Text("撤销") }
+            }
+        })
 }
 
 internal fun usageAmount(bytes: Long) = java.lang.String.format(java.util.Locale.ROOT,

@@ -217,7 +217,10 @@ def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
                                 if device["id"] == words[2]:
                                     until = datetime.datetime.fromtimestamp(device["expires_at"] + 86400, datetime.timezone.utc)
                                     ledger("renew", device["user_id"], until.isoformat())
-                                    break
+                                    updated = next(row for row in map(json.loads, ledger("devices").splitlines())
+                                                   if row["id"] == device["id"])
+                                    self.wfile.write(b"\x01" + json.dumps(updated).encode() + b"\n")
+                                    return
                             else:return
                         else:return
                     self.wfile.write(b"\x01")
