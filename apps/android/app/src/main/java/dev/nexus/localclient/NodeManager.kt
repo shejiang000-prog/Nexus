@@ -244,7 +244,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
     fun owner(action: String, args: JSONObject = JSONObject()): String {
         require(action in setOf("invite","devices","revoke","edit","audit","owner","backup","restore"))
         val sudo = if (user == "root") "" else "sudo -n "
-        return session { run(it, "${sudo}runuser -u nexus-node -- python3 -I /opt/nexus-node/node_admin.py /var/lib/nexus-node/identity $action", args) }
+        return session { run(it, "${sudo}runuser -u nexus-node -- python3 -I /opt/nexus-node/node_admin.py /var/lib/nexus-node/identity $action", args.toString()) }
     }
 }
 
