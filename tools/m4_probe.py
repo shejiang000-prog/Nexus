@@ -61,7 +61,7 @@ class Device:
         return r.stdout.decode().strip() if not r.returncode else ""
 
     def signal(self,value):
-        if not re.fullmatch(r"(arm-drop|arm-unblock|arm-restart|node-up|(blocked|restored) [0-9]+)",value):
+        if not re.fullmatch(r"(arm-drop|arm-cold-drop|arm-unblock|arm-restart|node-up|(blocked|cold-blocked|restored) [0-9]+)",value):
             raise ValueError("unknown control signal")
         self.write("no_backup/m4-signal",value)
 
@@ -160,13 +160,20 @@ class Device:
             self.wait(proc,"armed-drop")
             armed=True
             applied=self.rule_marker(drop,"blocked")
+            self.wait(proc,"ready-cold-drop",160)  # Hot measurement finished and VPN is down.
+            restore()
+            armed=False
+            self.signal("arm-cold-drop")
+            self.wait(proc,"armed-cold-drop")
+            armed=True
+            cold_applied=self.rule_marker(drop,"cold-blocked")
             self.wait(proc,"ready-unblock",160)
             self.signal("arm-unblock")
             self.wait(proc,"armed-unblock")
             removed=self.rule_marker(restore,"restored")
             armed=False
             out=self.finish(proc,335)
-            out.update({"deny":applied,"restore":removed})
+            out.update({"deny":applied,"coldDeny":cold_applied,"restore":removed})
             for name in ("hot","cold","recover"):
                 if name in out: out[name]=json.loads(out[name])
             return out
@@ -190,7 +197,7 @@ if __name__=="__main__":
     q.add_argument("--protocol",choices=["reality","hysteria2","h2"])
     q.add_argument("--recovery",choices=["true","false"])
     sub.add_parser("stage")
-    s=sub.add_parser("signal"); s.add_argument("value",help="arm-drop, arm-unblock, arm-restart, node-up, or stamped blocked/restored event")
+    s=sub.add_parser("signal"); s.add_argument("value",help="arm-drop, arm-cold-drop, arm-unblock, arm-restart, node-up, or stamped blocked/cold-blocked/restored event")
     a=p.parse_args()
     device=Device(a.adb,a.serial,a.package,a.runner)
     if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,probeText=a.probe_text,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")

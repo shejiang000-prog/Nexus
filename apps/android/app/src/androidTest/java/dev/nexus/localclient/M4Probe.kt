@@ -27,11 +27,11 @@ import org.json.JSONObject
 
 private fun now() = SystemClock.elapsedRealtime()
 
-private fun until(ms: Long, condition: () -> Boolean) {
+private fun until(ms: Long, pollMs: Long = 50, condition: () -> Boolean) {
     val end = now() + ms
     do {
         if (condition()) return
-        SystemClock.sleep(50)
+        SystemClock.sleep(pollMs)
     } while (now() < end)
     error("timeout")
 }
@@ -366,9 +366,9 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                 } finally { observer.cancel() }
             }
             "block" -> {
-                fun origin(expected: String): Long {
+                fun origin(expected: String, pollMs: Long = 50): Long {
                     var stamp: Long? = null
-                    until(180000) {
+                    until(180000,pollMs) {
                         val value = signal.takeIf { it.isFile }?.readText()?.trim().orEmpty()
                         if (value.startsWith("$expected ")) stamp = value.substringAfter(' ').toLongOrNull()
                         stamp != null
@@ -418,9 +418,15 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     }
                     trace("hot")
                     stop()
-                    val cold = now()
-                    start("v2")
-                    result.putString("cold",traffic.measure("cold","h2",cold,cold+60000).toString())
+                    val coldRequest = v2Request(ctx,v2().key)
+                    marker("ready-cold-drop"); awaitSignal("arm-cold-drop")
+                    marker("armed-cold-drop")
+                    val cold = origin("cold-blocked",5)
+                    val launch = now()
+                    ctx.startForegroundService(coldRequest)
+                    val measured = traffic.measure("cold","h2",cold,cold+60000)
+                    measured.put("launchBootMs",launch).put("launchDelayMs",launch-cold)
+                    result.putString("cold",measured.toString())
                     trace("cold")
                     val firstH3 = java.util.concurrent.atomic.AtomicLong(-1)
                     val observer = observeSelection("h3",firstH3)
