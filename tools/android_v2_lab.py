@@ -199,6 +199,27 @@ def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
                       f"add rule inet {TABLE} output ip saddr {host} udp sport {port} counter drop"]
             subprocess.run(["nft","-f","-"],input="\n".join(batch)+"\n",text=True,check=True)
             has_drop=True
+        # Only accounts created by this check may be read or changed by its controller.
+        share_accounts = set()
+        def share_command(args):
+            if args == ["now"]:
+                return str(int(time.time()))
+            stamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+            if args == ["create-user"] or (len(args) == 2 and args[0] == "create-user" and re.fullmatch(stamp, args[1])):
+                account = ledger(*args)
+                share_accounts.add(account)
+                return account
+            if len(args) == 2 and args[0] == "device" and args[1] in share_accounts:
+                return next(line for line in ledger("devices").splitlines() if json.loads(line)["user_id"] == args[1])
+            if len(args) == 3 and args[0] == "renew" and args[1] in share_accounts and (args[2] == "never" or re.fullmatch(stamp, args[2])):
+                return ledger(*args)
+            if len(args) == 4 and args[:2] == ["invite", "--link"] and args[2] in share_accounts and re.fullmatch(stamp, args[3]):
+                if installed_port is not None:
+                    return ledger(*args)
+                # A standalone test node has no installer manifest for --link.
+                token = ledger("invite", *args[2:])
+                return "nexus://invite/v2#" + b64url(json.dumps(dict(v=2, host="nexus.test", port=port, invite=token)).encode())
+            raise ValueError("unsupported sharing command")
         class Control(socketserver.StreamRequestHandler):
             def handle(self):
                 self.request.settimeout(3)
@@ -206,6 +227,10 @@ def serve(node, xray_zip, host, work, installed_port=None, echo_ip=TARGET):
                     words=self.rfile.readline(128).decode("ascii").strip().split(" ")
                     if len(words)<2 or not hmac.compare_digest(ctl,words[0]):return
                     with lock:
+                        if words[1] == "share":
+                            value = share_command(words[2:])
+                            self.wfile.write(b"\x01" + value.encode() + b"\n")
+                            return
                         if len(words)==2 and words[1] in ("clear","drop","rate","loss"):switch(words[1])
                         elif len(words)==2 and words[1] in ("capture-h2","capture-h3"):capture.start(words[1][-2:])
                         elif words[1:] == ["capture-stop"]:capture.finish()

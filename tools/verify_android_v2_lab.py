@@ -65,7 +65,7 @@ def run(adb, package, fixture, runner, probe, phase, ld_shell=None):
     if int(shell("run-as",package,"stat","-c","%s",private_file,check=True).stdout) != len(data):
         raise RuntimeError("incomplete private instrumentation configuration")
     shell("run-as",package,"rm","-f","no_backup/m3-stage","no_backup/m3-probe-ok",check=True)
-    mode = "m32-expiry" if phase == "expiry" else "m3"
+    mode = {"expiry": "m32-expiry", "share": "m34-share"}.get(phase, "m3")
     with (advanced_clock(shell) if phase == "expiry" else contextlib.nullcontext()), tempfile.TemporaryFile() as log:
         args=["am","instrument","-w","-e","mode",mode,"-e","phase",phase,"-e","probePackage",probe.split("/")[0],runner]
         if phase in ("handover","airplane","offline") and ld_shell is None:
@@ -108,6 +108,6 @@ if __name__=="__main__":
     p.add_argument("--runner",help="installed instrumentation component; auto-detected for the target package")
     p.add_argument("--ld-shell",type=Path,help="LDPlayer's native ld.exe for instance 0; survives guest radio changes")
     p.add_argument("--probe",default="dev.nexus.vpnprobe/.Probe",choices=["dev.nexus.vpnprobe/.Probe","dev.nexus.lab.m31.probe/dev.nexus.vpnprobe.Probe"])
-    p.add_argument("--phase",choices=["all","switch","recovery","regression","expiry","blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","udp-reclaim","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"],default="all")
+    p.add_argument("--phase",choices=["all","switch","recovery","regression","expiry","share","blackhole","rate","loss","healthy-download","idle-h2","idle-h3","loss-sample","healthy-download-sample","udp-reclaim","soak","handover","airplane","offline","ip-upgrade-before","ip-upgrade-after"],default="all")
     opt=p.parse_args()
     run(opt.adb,opt.package,opt.fixture,opt.runner,opt.probe,opt.phase,opt.ld_shell)

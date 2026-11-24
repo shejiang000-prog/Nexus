@@ -446,6 +446,7 @@ class CatalogCheck : Instrumentation() {
                 }
                 "m3-ui" -> m3UiCheck(result)
                 "m32-expiry" -> m32ExpiryCheck(result)
+                "m34-share" -> m34ShareCheck(result)
                 "split-lab", "split-public" -> splitCheck(args,result)
                 // QA transfer of a saved source between the owner's devices. The link stays in app-private
                 // storage on each side and is never printed.
