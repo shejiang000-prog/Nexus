@@ -315,6 +315,56 @@ func TestAndroidRecoveryActivityPowerAndBackoff(t *testing.T) {
 	})
 }
 
+func TestRecoveryAllowsQUICRetransmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &transportLane{health: "https://node.test/health.bin", kind: "h3"}
+		l.round = func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+		}
+		s := selector{ctx: t.Context(), androidVPN: true, dial: func(ctx context.Context, _ string) (*transportLane, error) {
+			select {
+			case <-time.After(1200 * time.Millisecond):
+				return l, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}}
+		if lane, ok := s.recoverH3(); lane != l || !ok {
+			t.Fatal("recovery abandoned a healthy H3 handshake")
+		}
+	})
+}
+
+func TestAndroidFinalH3CheckAfterBusinessWentQuiet(t *testing.T) {
+	for _, healthy := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			s := selector{ctx: ctx, androidVPN: true}
+			old := &transportLane{health: "https://node.test/health.bin", kind: "h3", stats: func() uint64 { return 1024 }}
+			old.active.Store(1)
+			old.last.Store(time.Now().Add(-2500 * time.Millisecond).UnixNano())
+			var checks atomic.Int32
+			var closed atomic.Bool
+			old.close = func() { closed.Store(true) }
+			old.round = func(req *http.Request) (*http.Response, error) {
+				checks.Add(1)
+				if !healthy {
+					<-req.Context().Done()
+					return nil, req.Context().Err()
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, 32768)))}, nil
+			}
+			go s.drainH3(old, &transportLane{usable: func() bool { return true }})
+			time.Sleep(5 * time.Second)
+			if closed.Load() == healthy || checks.Load() != 1 {
+				t.Fatalf("healthy=%t, closed=%t, final checks=%d", healthy, closed.Load(), checks.Load())
+			}
+			old.active.Store(0)
+		})
+	}
+}
+
 func TestLossWindowIgnoresUnverifiedCounters(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		for _, tc := range []struct{ proof, sent, lost string }{

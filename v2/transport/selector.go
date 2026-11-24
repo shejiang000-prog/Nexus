@@ -298,7 +298,11 @@ func (s *selector) recoverH3() (*transportLane, bool) {
 		s.cancelRecovery = nil
 		s.recoveryMu.Unlock()
 	}()
-	q, err := s.probeH3(ctx)
+	// H2 is still serving traffic. Give the replacement the same handshake
+	// budget as a cold dial, including a lost initial QUIC packet.
+	handshake, finish := context.WithTimeout(ctx, 5*time.Second)
+	q, err := s.dial(handshake, "h3")
+	finish()
 	if err != nil {
 		return nil, false
 	}
@@ -556,16 +560,18 @@ func terminalDialError(e error) bool {
 }
 func (s *selector) drainH3(old, backup *transportLane) {
 	prev, since := old.stats(), time.Now()
+	firstCheck := true
 	for s.ctx.Err() == nil && old.active.Load() > 0 {
 		time.Sleep(500 * time.Millisecond)
 		if n := old.stats(); n != prev {
 			prev, since = n, time.Now()
 			continue
 		}
-		if time.Since(since) >= time.Second && backup.usable() && (!s.androidVPN || time.Since(time.Unix(0, old.last.Load())) <= 3*time.Second || old.opening.Load() > 0) {
-			// Idle applications can still have an open stream. Elicit traffic before closing it.
-			s.capacity(old)
-			if silentForTwoWindows(old, prev, since) && backup.usable() {
+		if time.Since(since) >= time.Second && backup.usable() && (firstCheck || !s.androidVPN || time.Since(time.Unix(0, old.last.Load())) <= 3*time.Second || old.opening.Load() > 0) {
+			// A blocked response can outlive the three-second activity window.
+			// Verify once even then. A healthy idle flow needs no repeated probes.
+			firstCheck = false
+			if s.capacity(old) == 0 && silentForTwoWindows(old, prev, since) && backup.usable() {
 				old.close()
 				trace("old_closed", old.kind, "")
 				return
