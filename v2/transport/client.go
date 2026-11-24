@@ -248,7 +248,13 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		l.close = sync.OnceFunc(func() { sock.Close() })
 		state := sock.ConnectionState()
 		export = state.ExportKeyingMaterial
-		tr, e := http2.ConfigureTransports(&http.Transport{MaxResponseHeaderBytes: 262144, HTTP2: &http.HTTP2Config{MaxEncoderHeaderTableSize: 1, MaxDecoderHeaderTableSize: 65536, MaxReceiveBufferPerStream: 6291456, MaxReceiveBufferPerConnection: 15663105}})
+		base := &http.Transport{MaxResponseHeaderBytes: 262144, HTTP2: &http.HTTP2Config{MaxEncoderHeaderTableSize: 1, MaxDecoderHeaderTableSize: 65536, MaxReceiveBufferPerStream: 6291456, MaxReceiveBufferPerConnection: 15663105}}
+		if runtime.GOOS == "android" {
+			// Release unused sockets before peer keepalives can keep waking the radio.
+			// acquire reconnects on demand; open streams never start the idle timer.
+			base.IdleConnTimeout = 30 * time.Second
+		}
+		tr, e := http2.ConfigureTransports(base)
 		if e != nil {
 			return nil, e
 		}

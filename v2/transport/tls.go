@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -117,7 +118,11 @@ func dialTCP(ctx context.Context, addr, name string, raw []byte, roots *x509.Cer
 		}
 	}
 	spec.Extensions = utls.ShuffleChromeTLSExtensions(spec.Extensions)
-	sock, e := (&net.Dialer{Control: socketControl(protect)}).DialContext(ctx, "tcp", addr)
+	dialer := net.Dialer{Control: socketControl(protect)}
+	if runtime.GOOS == "android" {
+		dialer.KeepAlive = -1
+	}
+	sock, e := dialer.DialContext(ctx, "tcp", addr)
 	if e != nil {
 		return nil, e
 	}
