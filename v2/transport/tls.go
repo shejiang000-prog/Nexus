@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -154,7 +155,11 @@ func dialQUIC(ctx context.Context, peer *net.UDPAddr, name string, roots *x509.C
 	tr := &quic.Transport{Conn: sock, ConnectionIDGenerator: quic.ZeroLengthConnectionIDGenerator{}}
 	closeAll := func() { tr.Close(); sock.Close() }
 	pinnedIP, verify := pinVerifier(name, pin)
-	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, InsecureSkipVerify: pinnedIP, VerifyPeerCertificate: verify, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true, ChromeParrot: true})
+	config := &quic.Config{EnableDatagrams: true, ChromeParrot: true}
+	if progress, ok := ctx.Value(coldH3ProgressKey{}).(*atomic.Bool); ok {
+		config.NexusHandshakeProgress = func() { progress.Store(true) }
+	}
+	c, e := tr.Dial(ctx, peer, &tls.Config{RootCAs: roots, ServerName: name, InsecureSkipVerify: pinnedIP, VerifyPeerCertificate: verify, NextProtos: []string{"h3"}}, config)
 	if e != nil {
 		closeAll()
 		return nil, nil, nil, e

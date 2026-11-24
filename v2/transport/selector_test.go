@@ -30,6 +30,54 @@ func TestAutoColdStart(t *testing.T) {
 	}
 }
 
+func TestAndroidColdPreference(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		android       bool
+		h2, hello, h3 int
+		want          string
+		ready         int
+	}{
+		{"blocked WAN", true, 850, 0, 0, "h2", 850},
+		{"late fast H3", true, 30, 180, 215, "h3", 215},
+		{"progressing WAN", true, 850, 400, 1000, "h3", 1000},
+		{"stalled after hello", true, 850, 400, 0, "h2", 1100},
+		{"blocked desktop", false, 850, 0, 0, "h2", 1100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				var closed atomic.Int32
+				s := selector{ctx: t.Context(), mode: "auto", androidVPN: tc.android}
+				s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
+					finish := tc.h2
+					if kind == "h3" {
+						if tc.hello > 0 {
+							time.Sleep(time.Duration(tc.hello) * time.Millisecond)
+							ctx.Value(coldH3ProgressKey{}).(*atomic.Bool).Store(true)
+						}
+						if tc.h3 == 0 {
+							<-ctx.Done()
+							return nil, ctx.Err()
+						}
+						finish = tc.h3 - tc.hello
+					}
+					time.Sleep(time.Duration(finish) * time.Millisecond)
+					return &transportLane{kind: kind, close: func() { closed.Add(1) }}, nil
+				}
+				lane, err := s.initial()
+				if err != nil || lane == nil || lane.kind != tc.want || time.Since(start) != time.Duration(tc.ready)*time.Millisecond {
+					t.Fatalf("selected %v at %v: %v", lane, time.Since(start), err)
+				}
+				synctest.Wait()
+				if tc.want == "h3" && closed.Load() != 1 {
+					t.Fatal("unused H2 was not closed")
+				}
+			})
+		})
+	}
+}
+
 func TestAndroidOneWayH3Failure(t *testing.T) {
 	for _, scenario := range []string{"control-only", "second-head-succeeds", "business-reply", "reply-during-selection"} {
 		t.Run(scenario, func(t *testing.T) {

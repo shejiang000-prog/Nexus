@@ -90,6 +90,9 @@ func (s *selector) set(old, l *transportLane) bool {
 	}
 	return true
 }
+
+type coldH3ProgressKey struct{}
+
 func (s *selector) initial() (*transportLane, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
@@ -100,16 +103,38 @@ func (s *selector) initial() (*transportLane, error) {
 		l *transportLane
 		e error
 	}
-	ch := make(chan result)
-	attempt := func(kind string, delay time.Duration) {
-		if delay > 0 {
+	const preference = 250 * time.Millisecond
+	start := time.Now()
+	coldAndroid := s.androidVPN && s.lane == nil
+	var progress atomic.Bool
+	if coldAndroid {
+		ctx = context.WithValue(ctx, coldH3ProgressKey{}, &progress)
+	}
+	waitUntil := func(deadline time.Time) bool {
+		if d := time.Until(deadline); d > 0 {
 			select {
 			case <-ctx.Done():
-				return
-			case <-time.After(delay):
+				return false
+			case <-time.After(d):
 			}
 		}
+		return ctx.Err() == nil
+	}
+	ch := make(chan result)
+	attempt := func(kind string) {
+		if kind == "h2" && !coldAndroid && !waitUntil(start.Add(preference)) {
+			return
+		}
 		l, e := s.dial(ctx, kind)
+		if kind == "h2" && e == nil && coldAndroid {
+			// Keep the old head start on fast links. A progressing H3 handshake
+			// also keeps the original lead over an already-complete H2 dial.
+			ready := time.Now()
+			if !waitUntil(start.Add(preference)) || (progress.Load() && !waitUntil(ready.Add(preference))) {
+				l.close()
+				return
+			}
+		}
 		select {
 		case ch <- result{l, e}:
 		case <-ctx.Done():
@@ -118,8 +143,8 @@ func (s *selector) initial() (*transportLane, error) {
 			}
 		}
 	}
-	go attempt("h3", 0)
-	go attempt("h2", 250*time.Millisecond)
+	go attempt("h3")
+	go attempt("h2")
 	var last error
 	for range 2 {
 		select {

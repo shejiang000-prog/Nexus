@@ -2,14 +2,55 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	quic "github.com/apernet/quic-go"
 )
+
+// Receiving keys after ServerHello is useful for scheduling, even when the
+// handshake subsequently fails pin verification. Only a completed dial may win.
+func TestRealColdHandshakeProgress(t *testing.T) {
+	fixture := httptest.NewTLSServer(nil)
+	pin := sha256.Sum256(fixture.Certificate().RawSubjectPublicKeyInfo)
+	listener, err := quic.ListenAddr("127.0.0.1:0", &tls.Config{Certificates: fixture.TLS.Certificates, NextProtos: []string{"h3"}}, nil)
+	fixture.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	peer := listener.Addr().(*net.UDPAddr)
+	for _, valid := range []bool{true, false} {
+		leaf := pin
+		if !valid {
+			leaf[0] ^= 0xff
+		}
+		var progress atomic.Bool
+		ctx := context.WithValue(t.Context(), coldH3ProgressKey{}, &progress)
+		_, closeAll, _, err := dialQUIC(ctx, peer, "127.0.0.1", nil, nil, leaf[:])
+		if closeAll != nil {
+			closeAll()
+		}
+		if valid && (!progress.Load() || err != nil) {
+			t.Fatalf("no verified QUIC progress: %v", err)
+		}
+		if !valid {
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Code != Certificate {
+				t.Fatalf("invalid peer accepted: %v", err)
+			}
+		}
+	}
+}
 
 func TestProtectBeforeAttempts(t *testing.T) {
 	var calls atomic.Int32
