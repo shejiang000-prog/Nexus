@@ -180,7 +180,7 @@ def stageLinuxNodes = tasks.register('stageLinuxNodes', Sync) {
     }
 }
 android.sourceSets.debug.assets.srcDir(nodeBinaries)
-tasks.named('preDebugBuild').configure { dependsOn stageLinuxNodes }
+tasks.matching { it.name == 'preDebugBuild' }.configureEach { dependsOn stageLinuxNodes }
 
 def releasePins = layout.buildDirectory.dir('releaseNodePins')
 def pinLinuxNodes = tasks.register('pinLinuxNodes') {
@@ -199,7 +199,7 @@ def pinLinuxNodes = tasks.register('pinLinuxNodes') {
     }
 }
 android.sourceSets.release.assets.srcDir(releasePins)
-tasks.named('preReleaseBuild').configure { dependsOn pinLinuxNodes }
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn pinLinuxNodes }
 
 def splitScript = new File(rootProject.projectDir.parentFile.parentFile, 'tools/generate_split_rules.py')
 def splitAssets = layout.buildDirectory.dir('splitAssets')
