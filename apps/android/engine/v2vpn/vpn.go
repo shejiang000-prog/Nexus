@@ -235,13 +235,19 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 				original = out.Target
 			}
 			peer := peers[original]
+			firstDNS := false
 			if peer == nil && len(peers) < 64 {
 				dest := original
 				if original == out.OriginalTarget {
 					dest = out.Target
 				}
 				var openErr error
-				peer, openErr = h.client.OpenUDP(dest.NetAddr())
+				firstDNS = dest.Port == 53 && !packet.IsEmpty()
+				if firstDNS {
+					peer, openErr = mobile.OpenTunnelDNS(ctx, h.client, dest.NetAddr(), packet.Bytes())
+				} else {
+					peer, openErr = h.client.OpenUDP(dest.NetAddr())
+				}
 				if openErr != nil {
 					h.dialError(openErr)
 				} else {
@@ -271,7 +277,7 @@ func (h *handler) udp(ctx context.Context, link *transport.Link, out *session.Ou
 					}(peer, original)
 				}
 			}
-			if peer != nil {
+			if peer != nil && !firstDNS {
 				if e := peer.WritePacket(packet.Bytes()); e != nil {
 					peer.Close()
 					delete(peers, original)

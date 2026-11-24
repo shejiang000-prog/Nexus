@@ -2,6 +2,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -318,7 +319,7 @@ func (c *Client) Confirm() error {
 	}
 	if resp.StatusCode == 200 && resp.Header.Get("Proxy-Authentication-Info") == "" {
 		// Older nodes serve a public file. Only an acknowledged CONNECT proves identity.
-		a, err := l.openUDP(ctx, "1.1.1.1:53", false)
+		a, err := l.openUDP(ctx, "1.1.1.1:53", false, nil)
 		if err != nil {
 			return err
 		}
@@ -488,6 +489,10 @@ func (a *Association) WritePacket(p []byte) error {
 }
 func (a *Association) Close() error { return a.a.Close() }
 func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, error) {
+	return c.openUDP(ctx, target, nil)
+}
+
+func (c *Client) openUDP(ctx context.Context, target string, frame []byte) (*Association, error) {
 	a, e := proof.Authority(target)
 	if e != nil {
 		return nil, &Error{Configuration, e}
@@ -497,9 +502,9 @@ func (c *Client) OpenUDP(ctx context.Context, target string) (*Association, erro
 		return nil, e
 	}
 	defer l.opening.Add(-1)
-	return l.openUDP(ctx, a, true)
+	return l.openUDP(ctx, a, true, frame)
 }
-func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*Association, error) {
+func (l *transportLane) openUDP(ctx context.Context, a string, business bool, frame []byte) (*Association, error) {
 	release := func() {
 		if business {
 			l.active.Add(-1)
@@ -537,6 +542,12 @@ func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*
 				closeStream = func() { s.CancelRead(0); s.Close() }
 				req.Proto = "connect-udp"
 				e = s.SendRequestHeader(req)
+				if e == nil && frame != nil {
+					stop := context.AfterFunc(ctx, func() { s.CancelRead(0); s.CancelWrite(0) })
+					defer stop()
+					trace("dns_first_submit", l.kind, p)
+					_, e = s.Write(frame)
+				}
 				if e == nil {
 					resp, e = s.ReadResponse()
 				}
@@ -550,6 +561,13 @@ func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*
 	} else {
 		pr, pw := io.Pipe()
 		req.Body = pr
+		if frame != nil {
+			trace("dns_first_submit", l.kind, p)
+			req.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(frame), pr), pr}
+		}
 		req.ContentLength = -1
 		req.Host = a
 		req.URL = &url.URL{Scheme: "https", Host: a}
@@ -577,11 +595,17 @@ func (l *transportLane) openUDP(ctx context.Context, a string, business bool) (*
 		cancel()
 		closeStream()
 		release()
+		if frame != nil && resp == nil {
+			return nil, &Error{OutcomeUnknown, e}
+		}
 		return nil, networkError(e)
 	}
 	if business {
 		http3.NexusKeepTunnelAlive(ctx, resp.Body)
 		trace("udp_open", l.kind, p)
+		if frame != nil {
+			trace("dns_write_accepted", l.kind, p)
+		}
 	}
 	channel := udp.New(ctx, r, w, d, func(e error) bool { var x *quic.DatagramTooLargeError; return errors.As(e, &x) }, func() { cancel(); closeStream(); release() })
 	return &Association{channel, l, labTrace && p == "53"}, nil

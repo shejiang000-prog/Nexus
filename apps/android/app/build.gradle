@@ -94,7 +94,7 @@ def buildEngine = tasks.register('buildV2Engine', Exec) {
         fileTree(new File(repoRoot, 'v2')) {
             include 'patches/*.patch', 'internal/congestion/**', 'udp/**', 'transport/**', 'proof/**', 'mobile/**', 'enrollment/**'
             exclude '**/*_test.go', '**/testdata/**'
-        }, fileTree(new File(repoRoot, 'apps/android/engine/v2vpn')))
+        }, fileTree(new File(repoRoot, 'apps/android/engine')))
     outputs.file(engineAar)
     def source = providers.environmentVariable('NEXUS_LIBXRAY_SOURCE').getOrElse(new File(repoRoot, 'target/libXray').absolutePath)
     environment 'ANDROID_NDK_HOME', android.ndkDirectory.absolutePath

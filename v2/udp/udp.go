@@ -78,9 +78,20 @@ func sendUDP(w io.Writer, d Datagrams, p []byte, tooLarge func(error) bool) (str
 			return "", e
 		}
 	}
-	hdr := quicvarint.Append([]byte{0}, uint64(len(data)))
-	_, e := w.Write(append(hdr, data...))
+	_, e := w.Write(capsule(data))
 	return "capsule", e
+}
+
+// DatagramCapsule encodes a single UDP payload on an ordered CONNECT stream.
+func DatagramCapsule(p []byte) ([]byte, error) {
+	if len(p) > maxUDP {
+		return nil, errors.New("oversized UDP")
+	}
+	return capsule(append([]byte{0}, p...)), nil
+}
+
+func capsule(data []byte) []byte {
+	return append(quicvarint.Append([]byte{0}, uint64(len(data))), data...)
 }
 
 type packet struct {

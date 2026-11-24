@@ -66,6 +66,8 @@ with build_workspace() as tmp:
         for f in dest.rglob("*.go"):
             f.write_bytes(f.read_bytes().replace(b"github.com/shejiang000-prog/Nexus/v2/", b"github.com/xtls/libxray/internal/nexusv2/"))
     shutil.copytree(ROOT / "apps/android/engine/v2vpn", lib / "v2vpn", ignore=shutil.ignore_patterns("*_test.go"))
+    shutil.copyfile(ROOT / "apps/android/engine/transport/dns.go", lib / "internal/nexusv2/transport/dns.go")
+    shutil.copyfile(ROOT / "apps/android/engine/mobile/dns.go", lib / "nexusmobile/dns.go")
     for flag in ["-require=" + "@".join(QUIC),
                  "-replace=" + QUIC[0] + "=" + (a.patched.resolve()/"aper").as_posix(),
                  "-replace=" + XRAY[0] + "=" + (a.patched.resolve()/"xray").as_posix()]:
