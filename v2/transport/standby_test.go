@@ -3,12 +3,108 @@ package transport
 import (
 	"context"
 	"crypto/sha256"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestFallbackAfterCapacityBodyTimeout(t *testing.T) {
+	for _, scenario := range []string{"verified-headers", "missing-proof", "no-headers", "switch-revoked", "h3-answered"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				start := time.Now()
+				var h3Heads, h2Heads, dials atomic.Int32
+				h3 := &transportLane{kind: "h3", health: "https://node.test/health.bin",
+					stats: func() uint64 { return uint64(time.Since(start).Milliseconds()) * 100 }, close: func() {}}
+				h3.active.Store(1)
+				h3.opening.Store(1)
+				h3.round = func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodHead {
+						h3Heads.Add(1)
+					} else if scenario == "h3-answered" {
+						reader, writer := io.Pipe()
+						go func() { <-r.Context().Done(); writer.CloseWithError(r.Context().Err()) }()
+						return &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: reader}, nil
+					}
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				}
+				closed := make(chan struct{}, 1)
+				kept := make(chan struct{}, 1)
+				s := selector{ctx: ctx, lane: h3, events: make(chan string, 1), androidVPN: true}
+				s.dial = func(_ context.Context, kind string) (*transportLane, error) {
+					dials.Add(1)
+					l := &transportLane{kind: kind, health: h3.health, usable: func() bool {
+						select {
+						case kept <- struct{}{}:
+						default:
+						}
+						return true
+					}, close: func() { closed <- struct{}{} }}
+					l.round = func(r *http.Request) (*http.Response, error) {
+						resp := &http.Response{StatusCode: 200, Header: http.Header{"Proxy-Authentication-Info": {"Nexus2"}}, Body: http.NoBody}
+						if r.Method == http.MethodHead {
+							h2Heads.Add(1)
+							if scenario == "switch-revoked" {
+								resp.StatusCode = http.StatusProxyAuthRequired
+							}
+							return resp, nil
+						}
+						switch scenario {
+						case "no-headers":
+							<-r.Context().Done()
+							return nil, r.Context().Err()
+						case "missing-proof":
+							resp.Header.Del("Proxy-Authentication-Info")
+						default:
+							reader, writer := io.Pipe()
+							resp.Body = reader
+							go func() { <-r.Context().Done(); writer.CloseWithError(r.Context().Err()) }()
+						}
+						return resp, nil
+					}
+					return l, nil
+				}
+				done := make(chan struct{})
+				go func() { s.watch(); close(done) }()
+				select {
+				case <-s.events:
+					if scenario != "verified-headers" {
+						t.Fatal("selected H2 without valid current authentication")
+					}
+				case <-closed:
+					if scenario == "verified-headers" || scenario == "h3-answered" {
+						t.Fatal("discarded H2 on its capacity read deadline")
+					}
+				case <-kept:
+					if scenario != "h3-answered" || h3Heads.Load() != 0 {
+						t.Fatal("unexpected fallback probe or retention")
+					}
+				case <-time.After(6 * time.Second):
+					t.Fatal("no fallback decision")
+				}
+				cancel()
+				<-done
+				if dials.Load() != 1 {
+					t.Fatalf("H2 dials %d", dials.Load())
+				}
+				if scenario == "verified-headers" || scenario == "switch-revoked" {
+					if h3Heads.Load() != 2 || h2Heads.Load() != 1 {
+						t.Fatal("fresh liveness checks missing")
+					}
+				} else if h2Heads.Load() != 0 {
+					t.Fatal("retained candidate without authenticated GET headers")
+				}
+			})
+		})
+	}
+}
 
 func TestReuseAuthenticatedH2WithoutReusingAuthorization(t *testing.T) {
 	for _, scenario := range []string{"authorized", "revoked", "idle", "expired"} {

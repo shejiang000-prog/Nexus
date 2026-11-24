@@ -143,21 +143,32 @@ func (s *selector) capacity(l *transportLane) time.Duration {
 	return s.capacityBatch(l, 1, nil)
 }
 
-func (s *selector) capacityContext(ctx context.Context, l *transportLane, measured *packetCounters) time.Duration {
+func (s *selector) capacityContext(ctx context.Context, l *transportLane, measured *packetCounters, authenticated *bool) time.Duration {
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.health, nil)
 	l.healthHeaders(req)
 	start := time.Now()
 	resp, e := l.round(req)
 	if e != nil {
+		trace("health_no_headers", l.kind, "")
 		trace("health_fail", l.kind, "")
 		return 0
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || l.accepted(resp) != nil {
+		l.ack.Store(false)
+		trace("health_headers_rejected", l.kind, "")
+		trace("health_fail", l.kind, "")
+		return 0
+	}
+	trace("health_headers_ok", l.kind, "")
+	if authenticated != nil {
+		*authenticated = true
+	}
 	n, e := io.Copy(io.Discard, io.LimitReader(resp.Body, 32769))
-	if e != nil || resp.StatusCode != 200 || n != 32768 || l.accepted(resp) != nil {
-		// A rejected or malformed complete response invalidates a parked
-		// candidate. A capacity read deadline alone says nothing about identity.
-		if resp.StatusCode != 200 || e == nil {
+	if e != nil || n != 32768 {
+		// The authenticated headers qualify the socket for short standby.
+		// Only the entire, exact object qualifies as a capacity measurement.
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) || e == nil {
 			l.ack.Store(false)
 		}
 		trace("health_fail", l.kind, "")
@@ -232,7 +243,7 @@ func (s *selector) capacityBatch(l *transportLane, count int, measured *packetCo
 	ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
 	defer cancel()
 	if count == 1 {
-		return s.capacityContext(ctx, l, measured)
+		return s.capacityContext(ctx, l, measured, nil)
 	}
 	start := time.Now()
 	for i := range count {
@@ -240,7 +251,7 @@ func (s *selector) capacityBatch(l *transportLane, count int, measured *packetCo
 		if i == count-1 {
 			snapshot = measured
 		}
-		if s.capacityContext(ctx, l, snapshot) == 0 {
+		if s.capacityContext(ctx, l, snapshot, nil) == 0 {
 			return 0
 		}
 	}
@@ -300,6 +311,18 @@ func authenticatedHead(parent context.Context, l *transportLane, timeout time.Du
 	return ok
 }
 
+func (s *selector) checkStalledH3(l *transportLane, delivered uint64) <-chan bool {
+	reachable := make(chan bool, 1)
+	go func() {
+		ok := authenticatedHead(s.ctx, l, 850*time.Millisecond)
+		if !ok && l.active.Load() > 0 && l.delivered.Load() == delivered {
+			ok = authenticatedHead(s.ctx, l, 1700*time.Millisecond)
+		}
+		reachable <- ok
+	}()
+	return reachable
+}
+
 func (s *selector) recoverH3() (*transportLane, bool) {
 	s.recoveryMu.Lock()
 	if s.recoveryBlocked.Load() {
@@ -326,7 +349,7 @@ func (s *selector) recoverH3() (*transportLane, bool) {
 	// Active H2 remains available while both full authenticated objects arrive.
 	check, done := context.WithTimeout(ctx, 5*time.Second)
 	defer done()
-	return q, s.capacityContext(check, q, nil) > 0 && (!s.androidVPN || s.capacityContext(check, q, nil) > 0) && check.Err() == nil
+	return q, s.capacityContext(check, q, nil, nil) > 0 && (!s.androidVPN || s.capacityContext(check, q, nil, nil) > 0) && check.Err() == nil
 }
 
 func (s *selector) prebuildH2() (<-chan *transportLane, context.CancelFunc) {
@@ -504,20 +527,18 @@ func (s *selector) watch() {
 			continue
 		}
 		sample := make(chan time.Duration, 1)
-		var reachable chan bool
+		var h3Answered bool
+		var reachable <-chan bool
 		if businessStalled {
 			// A one-way block can still deliver QUIC ACKs and retransmissions.
 			// Test new round trips while the authenticated fallback is being built.
-			reachable = make(chan bool, 1)
-			go func() {
-				ok := authenticatedHead(s.ctx, l, 850*time.Millisecond)
-				if !ok && l.active.Load() > 0 && l.delivered.Load() == delivered {
-					ok = authenticatedHead(s.ctx, l, 1700*time.Millisecond)
-				}
-				reachable <- ok
-			}()
+			reachable = s.checkStalledH3(l, delivered)
 		} else if !bursty {
-			go func() { sample <- s.capacity(l) }()
+			go func() {
+				ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
+				defer cancel()
+				sample <- s.capacityContext(ctx, l, nil, &h3Answered)
+			}()
 		}
 		var alt *transportLane
 		reused := standby != nil
@@ -539,19 +560,13 @@ func (s *selector) watch() {
 			continue
 		}
 		var degraded bool
-		keep := reused
-		if businessStalled {
-			verified := authenticatedHead(s.ctx, alt, 2*time.Second)
-			keep = verified
-			responsive := <-reachable
-			degraded = verified && !responsive && l.active.Load() > 0 && l.delivered.Load() == delivered
-		} else if bursty {
+		if bursty {
 			var lossy bool
 			degraded, lossy = s.slowerOnFreshH3(alt)
 			if !lossy {
 				losses.next = time.Now().Add(3 * time.Second)
 			}
-		} else {
+		} else if !businessStalled {
 			h2time := s.capacity(alt)
 			h3time := <-sample
 			degraded = h2time > 0 && (h3time == 0 || h3time > 4*h2time)
@@ -563,7 +578,21 @@ func (s *selector) watch() {
 					h3time = <-sample
 					degraded = slowAndroidSample(h3time, h2time)
 				}
+				// The previous window may contain the final business reply.
+				// If neither capacity sample finished and no further reply arrived,
+				// challenge the current H3 now, using this same verified H2.
+				if h2time == 0 && h3time == 0 && !h3Answered && alt.ack.Load() && l.active.Load() > 0 && l.delivered.Load() == delivered {
+					businessStalled = true
+					reachable = s.checkStalledH3(l, delivered)
+				}
 			}
+		}
+		keep := s.androidVPN && alt.ack.Load()
+		if businessStalled {
+			verified := authenticatedHead(s.ctx, alt, 2*time.Second)
+			keep = verified
+			responsive := <-reachable
+			degraded = verified && !responsive && l.active.Load() > 0 && l.delivered.Load() == delivered
 		}
 		if degraded {
 			if labTrace {
