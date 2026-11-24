@@ -16,15 +16,20 @@ PHASES = {"invite","links","bench","block","v2","manage","restart"}
 
 
 class Device:
-    def __init__(self, adb, serial, package):
+    def __init__(self, adb, serial, package, runner=None):
         if not re.fullmatch(r"[a-zA-Z0-9_.]+",package):
             raise ValueError("invalid package")
         self.adb = [str(adb),"-s",serial]
         self.package = package
         self.prefix = ["run-as",package]
         listing = self.shell("pm","list","instrumentation",package).decode().splitlines()
-        self.runner, = [line.split()[0][len("instrumentation:"):] for line in listing
-                        if ".CatalogCheck " in line and line.endswith("(target="+package+")")]
+        runners = [line.split()[0][len("instrumentation:"):] for line in listing
+                   if ".CatalogCheck " in line and line.endswith("(target="+package+")")]
+        if runner is None and len(runners) == 1:
+            runner = runners[0]
+        if runner not in runners:
+            raise RuntimeError("missing or ambiguous M4 test runner; select the installed runner")
+        self.runner = runner
         self.shell(*self.prefix,"mkdir","-p","no_backup")
 
     def shell(self,*args):
@@ -103,7 +108,11 @@ class Device:
             self.wait(proc,"ready-restart")
             self.signal("arm-restart")
             self.wait(proc,"armed-restart")
-            reboot()
+            # A reboot can close SSH before an exit status reaches its caller.
+            try:
+                reboot()
+            except (ConnectionError, TimeoutError, EOFError):
+                pass
             wait_new_boot()
             self.signal("node-up")
             return self.finish(proc,430)
@@ -160,6 +169,7 @@ class Device:
 if __name__=="__main__":
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("serial"); p.add_argument("package"); p.add_argument("--adb",default="adb")
+    p.add_argument("--runner",help="installed CatalogCheck component for this package")
     sub=p.add_subparsers(dest="action",required=True)
     c=sub.add_parser("config"); c.add_argument("--host","--owner-host",dest="host"); c.add_argument("--v2-host"); c.add_argument("--probe-url",default=FIXED_FILE["probeUrl"])
     q=sub.add_parser("run"); q.add_argument("phase",choices=sorted(PHASES)); q.add_argument("--pairs",type=int)
@@ -167,7 +177,7 @@ if __name__=="__main__":
     sub.add_parser("stage")
     s=sub.add_parser("signal"); s.add_argument("value",choices=["arm-drop","blocked","arm-unblock","arm-restart","node-up"])
     a=p.parse_args()
-    device=Device(a.adb,a.serial,a.package)
+    device=Device(a.adb,a.serial,a.package,a.runner)
     if a.action=="config": device.config(a.host,probeUrl=a.probe_url,v2Host=a.v2_host or a.host or "")
     elif a.action=="run":
         print(json.dumps(device.run(a.phase,**{k:v for k,v in vars(a).items() if k in ("pairs","protocol") and v is not None}),ensure_ascii=False))

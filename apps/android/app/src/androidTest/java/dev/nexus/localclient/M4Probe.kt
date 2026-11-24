@@ -130,6 +130,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
     fun fresh() = HeldHttps(vpn(),endpoint(),2000).use { it.ping() }
     fun available(kind: String): Boolean {
         val s = state()
+        if (kind == "v2") return s.connectedAt > 0 && s.vpn && bearer() in setOf("h2","h3")
         return s.connectedAt > 0 && s.vpn && (if (kind == "h2" || kind == "h3") bearer() == kind
             else s.subscription.isNotBlank() && !s.shoes)
     }
@@ -218,8 +219,24 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                 }
             }
             "v2" -> {
-                start("v2"); usable("h3",30000)
-                result.putString("https","verified on VPN")
+                start("v2"); usable("v2",30000)
+                val loaded = java.util.concurrent.CountDownLatch(1)
+                lateinit var page: android.webkit.WebView
+                runOnMainSync {
+                    page = android.webkit.WebView(home)
+                    home.setContentView(page)
+                    page.webViewClient = object : android.webkit.WebViewClient() {
+                        override fun onPageFinished(view: android.webkit.WebView, url: String) {
+                            if (view.title == "Example Domain" && url == "https://example.com/") loaded.countDown()
+                        }
+                    }
+                    page.loadUrl("https://example.com/")
+                }
+                try {
+                    check(loaded.await(25,java.util.concurrent.TimeUnit.SECONDS))
+                    check(available("v2"))
+                    result.putString("https","Example Domain rendered over " + bearer())
+                } finally { runOnMainSync { home.setContentView(android.widget.FrameLayout(home)); page.destroy() } }
             }
             "manage" -> {
                 val owner = v2()
@@ -240,6 +257,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                 marker("one-day")
                 start("v2"); usable("h3",30000)
                 until(6000) { v2().expiryKnown && v2().expiresAt == expiry }
+                splitLabel(v2().expiryText(),false)
                 result.putLong("one-day-ssh-and-device-expiry",expiry)
                 stop()
                 admin.v2Renew(account,V2ShareValidity(null))
@@ -247,6 +265,8 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                 marker("permanent-again")
                 start("v2"); usable("h3",30000)
                 until(6000) { v2().expiryKnown && v2().expiresAt == null }
+                splitLabel(v2().expiryText(),false)
+                result.putBoolean("home-displayed-both-expiries",true)
                 result.putString("permanent-ssh-and-device","verified")
                 stop()
                 marker("revoke-peer")
@@ -260,7 +280,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                 temporary = null
             }
             "restart" -> {
-                start("v2"); usable("h3",30000)
+                start("v2"); usable("v2",30000)
                 val initialNetwork = vpn()
                 val originalPid = android.os.Process.myPid()
                 val originalLost = java.util.concurrent.atomic.AtomicBoolean()
@@ -286,7 +306,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                             latestFailure = now()-began
                             resumed = -1
                         } else if (firstFailure >= 0 && resumed < 0) resumed = now()-began
-                        val done = resumed >= 0 && available("h3") && signal.takeIf { it.exists() }?.readText()?.trim()=="node-up"
+                        val done = resumed >= 0 && available("v2") && signal.takeIf { it.exists() }?.readText()?.trim()=="node-up"
                         if (!done) SystemClock.sleep(150)
                         done
                     }
@@ -296,6 +316,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     result.putLong("restart-first-recovered-https-ms-from-arm",resumed)
                     result.putBoolean("same-android-vpn-network",!originalLost.get() && vpn()==initialNetwork)
                     result.putBoolean("same-app-process",true)
+                    result.putString("recovered-bearer",bearer())
                 } finally { cm.unregisterNetworkCallback(cb) }
             }
             "block" -> {
