@@ -65,7 +65,7 @@ go version
 go env GOMODCACHE
 ```
 
-Debug 将两个架构的 V2 与旧版 Linux 节点放入 APK，可通过 SSH 离线部署。Release 包对每个节点程序只内置 SHA-256。目标服务器需要 curl、sha256sum 和到 GitHub Releases 的 HTTPS 连接。App 根据本机版本和远端架构选择同版本标签的程序，下载到私有临时目录，校验后才执行。切回上次已安装的旧版程序时使用服务器上的副本。
+Debug 将两个架构的 V2 与旧版 Linux 节点放入 APK，可通过 SSH 离线部署。Release 包对每个节点程序只内置 SHA-256。目标服务器需要 curl 或 GNU Wget、系统自带的 timeout 与 sha256sum，以及到 GitHub Releases 的 HTTPS 连接。App 根据本机版本和远端架构选择同版本标签的程序。优先使用 curl，缺少 curl 时使用 wget。初始请求和每次重定向都须使用 HTTPS。连接超时 15 秒，整次下载限时 300 秒。程序下载到私有临时目录，校验通过后才执行。切回上次已安装的旧版程序时使用服务器上的副本。
 
 Release 准备脚本从 Gradle 的 `app/build/nodeBinaries/linux` 取同一次构建的节点文件，核对两个 APK 中的摘要，作为 `nexus-node-linux-{amd64,arm64}` 和 `nexus-server-linux-{amd64,arm64}` 随对应 `vX.Y.Z` 的 APK 发布。正式发布须使用新的版本标签。在该标签具有匹配资产前，Release 一键部署会报告失败。
 

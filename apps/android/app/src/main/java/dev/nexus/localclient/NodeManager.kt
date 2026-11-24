@@ -78,11 +78,11 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
 
     fun isV2(): Boolean = session(::installedV2)
 
-    private fun run(ssh: Session, cmd: String, data: JSONObject? = null, limit: Int = 131072): String {
+    private fun run(ssh: Session, cmd: String, data: String = "", limit: Int = 131072): String {
         val channel = ssh.openChannel("exec") as ChannelExec
         try {
             channel.setCommand(cmd)
-            channel.setInputStream((data?.toString() ?: "").byteInputStream())
+            channel.setInputStream(data.byteInputStream())
             val output = channel.inputStream
             channel.connect(8000)
             val result = output.bounded(limit).toString(Charsets.UTF_8)
@@ -122,8 +122,8 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             val cpu = if (arch == "x86_64") "amd64" else "arm64"
             val url = "https://github.com/shejiang000-prog/Nexus/releases/download/v${BuildConfig.VERSION_NAME}/$name-linux-$cpu"
             try {
-                run(ssh, "curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location " +
-                        "--connect-timeout 15 --max-time 300 --output '$destination' '$url'")
+                val fetch = context.assets.open("download_node.sh").bufferedReader().use { it.readText().replace("\r\n", "\n") }
+                run(ssh, "timeout 300 sh -s -- '$url' '$destination'", fetch)
             } catch (e: Exception) {
                 throw IllegalStateException("服务器下载节点程序失败，请检查服务器网络及对应版本的发布文件", e)
             }
@@ -219,7 +219,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             check(run(ssh,"sha256sum $dir/install_node.py").substringBefore(' ')==hashes.getString("install_node.py"))
             config.put("arch",arch).put("sha256",hashes)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "${sudo}python3 -I $dir/install_node.py", config, if (config.optString("action")=="migration-export") 4*1024*1024+1 else 131072)
+            run(ssh, "${sudo}python3 -I $dir/install_node.py", config.toString(), if (config.optString("action")=="migration-export") 4*1024*1024+1 else 131072)
         } finally { runCatching { run(ssh, "rm -f -- $dir/install_node.py $dir/node_admin.py $dir/nexus-server && rmdir -- $dir") } }
     }
     fun service(restart: Boolean): String = session { ssh ->
