@@ -9,8 +9,6 @@ import java.util.UUID
 import java.io.File
 import org.json.JSONObject
 import org.json.JSONArray
-import com.jcraft.jsch.JSch
-import com.jcraft.jsch.KeyPair
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
@@ -138,59 +136,6 @@ class CatalogCheck : Instrumentation() {
         }
     }
 
-    private fun checkFailover(result: Bundle) {
-        val ctx = targetContext
-        val good = requireNotNull(Profile.load(ctx))
-        require(good.dns != null && android.net.VpnService.prepare(ctx) == null)
-        val port = requireNotNull(args.getString("offlinePort")).toInt()
-        require(port in 1..65535 && port != good.server.substringAfterLast(':').toInt())
-        val offline = good.copy(server = good.server.substringBeforeLast(':') + ":" + port)
-        val prefs = ctx.getSharedPreferences("local", 0)
-        val prior = prefs.all
-        val keys = listOf("profile", "servers", "pinned", "failover")
-        val home = startActivitySync(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        fun action(name: String) = ctx.startService(Intent(ctx, TunnelService::class.java).setAction(name))
-        fun until(predicate: (TunnelState) -> Boolean) = runBlocking {
-            withTimeout(60000) { TunnelService.state.first(predicate) }
-        }
-        try {
-            check(!TunnelService.state.value.active)
-            val setup = prefs.edit()
-            keys.forEach { setup.remove(it) }
-            check(setup.putBoolean("failover", true).commit())
-            good.save(ctx)
-            offline.save(ctx)
-            check(prefs.edit().putString("pinned", offline.server + "/" + offline.fingerprint).commit())
-            action("vpn")
-            repeat(3) {
-                until { it.starting || it.connectedAt != 0L }.also { check(it.connectedAt == 0L) }
-                until { it.error.isNotEmpty() || it.connectedAt != 0L }.also { check(it.vpn && it.connectedAt == 0L) }
-            }
-            result.putString("pinned", "three failed attempts kept the VPN on its unavailable pinned node")
-            action("stop")
-            until { !it.active }
-            check(prefs.edit().remove("pinned").commit())
-            action("vpn")
-            val ready = until { it.connectedAt != 0L }
-            check(ready.vpn && ready.activeProfile?.server == good.server)
-            result.putString("failover", "authenticated with the alternate private node")
-        } finally {
-            try {
-                action("stop")
-                until { !it.active }
-            } finally {
-                val restore = prefs.edit()
-                for (key in keys) when (val value = prior[key]) {
-                    is String -> restore.putString(key, value)
-                    is Boolean -> restore.putBoolean(key, value)
-                    else -> restore.remove(key)
-                }
-                check(restore.commit())
-                runOnMainSync { home.finish() }
-            }
-        }
-    }
-    /** Clash/mihomo YAML, sing-box JSON and Base64 links through the real parser and libXray. */
     private fun checkFormats(result: Bundle) {
         val store = Subscriptions(targetContext)
         val prefix = "Nexus-QA-" + UUID.randomUUID().toString().take(8)
@@ -354,11 +299,38 @@ class CatalogCheck : Instrumentation() {
     private fun nodeCheck() {
         val result = Bundle()
         val root = targetContext.noBackupFilesDir
-        val privateKey = File(root, "qa-temporary-ssh")
-        val pub = File(root,"qa-temporary-ssh.pub")
         var status = Activity.RESULT_CANCELED
         try {
             when (args.getString("mode")) {
+                "legacy-cleanup" -> {
+                    check(BuildConfig.DEBUG && targetContext.packageName != "dev.nexus.android")
+                    val ctx = object : android.content.ContextWrapper(targetContext) {
+                        override fun getSharedPreferences(name: String, mode: Int) =
+                            baseContext.getSharedPreferences("qa-v2-upgrade-$name", mode)
+                    }
+                    val local = ctx.getSharedPreferences("local",0)
+                    val owners = ctx.getSharedPreferences("owner-access",0)
+                    val legacyKey = "192.0.2.1:443/"+List(32) { "AB" }.joinToString(":")
+                    val subscription = Intent("subscription").toUri(0)
+                    try {
+                        check(local.edit().clear().putString("profile","sample").putString("servers","{}")
+                            .putString("pinned",legacyKey).putStringSet("apps/$legacyKey", setOf("test.app"))
+                            .putString("simple-node","private").putString("exit/$legacyKey","sample")
+                            .putString(TunnelService.LAST,Intent("vpn").toUri(0))
+                            .putString(TunnelService.RESUME,subscription).putStringSet("apps/v2:sample",setOf("test.app")).commit())
+                        check(owners.edit().clear().putBoolean("ready/old",true).putString("key/old","sample")
+                            .putBoolean("v2/new",true).putBoolean("ready/new",true).putString("key/new","retained")
+                            .putString("current","old").commit())
+                        clearLegacyData(ctx)
+                        check(local.all.keys == setOf(TunnelService.RESUME,"apps/v2:sample","v1-cleared"))
+                        check(local.getString(TunnelService.RESUME,null) == subscription)
+                        check(owners.all.keys == setOf("v2/new","ready/new","key/new"))
+                        result.putString("upgrade","V1 records cleared, V2 binding, app scope and subscription resume retained")
+                    } finally {
+                        local.edit().clear().commit()
+                        owners.edit().clear().commit()
+                    }
+                }
                 "security" -> {
                     val store=Subscriptions(targetContext)
                     val expired=java.util.concurrent.CountDownLatch(1)
@@ -417,8 +389,8 @@ class CatalogCheck : Instrumentation() {
                     check(toggles==2)
                     result.putString("security","input bounds, ambiguous encoding, control characters, literals and local endpoints checked")
                 }
-                "release-icons","release-import","release-update","release-key","release-private","release-boot","release-state","release-stop" -> releaseCheck(args,result)
-                "simple", "simple-owner", "simple-bind", "simple-host", "simple-guest", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
+                "release-icons","release-import","release-update","release-boot","release-state","release-stop" -> releaseCheck(args,result)
+                "simple", "simple-shots", "simple-frames", "simple-motion", "simple-overview", "simple-overview-actual" -> simpleCheck(args,result)
                 "m0-key", "m0-udp", "m0-handshakes" -> Class.forName("dev.nexus.localclient.M0Check")
                     .getMethod("run", Instrumentation::class.java, Bundle::class.java, Bundle::class.java)
                     .invoke(null, this, args, result)
@@ -434,7 +406,6 @@ class CatalogCheck : Instrumentation() {
                         val admin = NodeManager(targetContext, ssh.getString("host"), ssh.getInt("port"),
                             "root", "", ssh.getString("pin"), key)
                         admin.installV2("")
-                        check(admin.isV2())
                         admin.v2Devices()
                         check(V2Invite.parse(admin.v2Invite(1)).pin.size == 32)
                         result.putString("deployment", "Signed APK node uploaded, checksum verified, default IP deployment and invite succeeded")
@@ -466,7 +437,7 @@ class CatalogCheck : Instrumentation() {
                     while (android.os.SystemClock.elapsedRealtime() < deadline && TunnelService.state.value.connectedAt == 0L) Thread.sleep(250)
                     val s = TunnelService.state.value
                     check(s.connectedAt > 0 && s.error.isEmpty()) { "not resumed: " + s.error }
-                    result.putString("resume", "resumed " + (if (s.node != null) "subscription node" else "private node") +
+                    result.putString("resume", "resumed " + (if (s.node?.startsWith("v2:") == true) "V2 node" else "subscription node") +
                         " after " + Intent.parseUri(saved, 0).action + " request")
                     targetContext.startService(Intent(targetContext, TunnelService::class.java).setAction("stop"))
                     Thread.sleep(2000)
@@ -477,19 +448,6 @@ class CatalogCheck : Instrumentation() {
                         val source = Subscriptions(targetContext).import(requireNotNull(args.getString("source")), file.readText().trim())
                         result.putString("import", "${source.nodes.length()} nodes")
                     } finally { file.delete() }
-                }
-                "migration-crypto" -> {
-                    val data = JSONObject().put("format","nexus-migration/1").put("probe",UUID.randomUUID().toString())
-                    val secret = UUID.randomUUID().toString()
-                    val output = java.io.ByteArrayOutputStream()
-                    writeMigration(secret.toCharArray(),output) { data.toString().toByteArray() }
-                    val sealed = output.toByteArray()
-                    check(!sealed.toString(Charsets.ISO_8859_1).contains(data.getString("probe")))
-                    check(readMigration(sealed.inputStream(),secret.toCharArray()).getString("probe") == data.getString("probe"))
-                    check(runCatching { readMigration(sealed.inputStream(),UUID.randomUUID().toString().toCharArray()) }.isFailure)
-                    sealed[sealed.lastIndex] = (sealed.last().toInt() xor 1).toByte()
-                    check(runCatching { readMigration(sealed.inputStream(),secret.toCharArray()) }.isFailure)
-                    result.putString("migration","round trip, incorrect password and modified ciphertext checked")
                 }
                 "remove-qa-source" -> {
                     val label = requireNotNull(args.getString("source"))
@@ -544,7 +502,6 @@ class CatalogCheck : Instrumentation() {
                         runOnMainSync { home.finish() }
                     }
                 }
-                "failover" -> checkFailover(result)
                 "formats" -> {
                     checkFormats(result)
                     fun names(vararg names: String) = JSONArray().apply { names.forEach { put(JSONObject().put("name",it)) } }
@@ -575,180 +532,6 @@ class CatalogCheck : Instrumentation() {
                     val store = Subscriptions(targetContext)
                     store.all().filter { it.label.matches(Regex("Nexus-QA-[0-9a-f]{8}-(clash|singbox|links)")) }
                         .forEach { store.remove(it.id) }
-                }
-                "key" -> {
-                    require(!privateKey.exists())
-                    val kp = KeyPair.genKeyPair(JSch(),KeyPair.ECDSA,256)
-                    try {
-                        privateKey.outputStream().use { kp.writePrivateKey(it) }
-                        pub.outputStream().use { kp.writePublicKey(it,"emulator-qa") }
-                    } finally { kp.dispose() }
-                }
-                "migration-ssh" -> {
-                    val host = requireNotNull(args.getString("host"))
-                    fun peer(key: String) = NodeManager(targetContext,host,args.getString(key+"Port")!!.toInt(),
-                        "root","",args.getString(key+"Pin")!!,privateKey.readBytes())
-                    val src = peer("src")
-                    val dst = peer("dst")
-                    val dns = requireNotNull(args.getString("dns"))
-                    val before = src.deploy("Nexus migration QA",dns,28741,28742)
-                    val link = JSONObject(src.owner("invite",JSONObject().put("name","QA migration guest").put("device_seconds",3600)
-                        .put("valid_seconds",180).put("quota",123456))).getString("link")
-                    Invitation.parse(link).claim("QA migration guest")
-                    val devices = JSONArray(src.owner("devices"))
-                    val guest = (0 until devices.length()).map(devices::getJSONObject).single { it.getString("name")=="QA migration guest" }
-                    src.owner("revoke",JSONObject().put("id",guest.getString("id")))
-                    val secret = UUID.randomUUID().toString()
-                    val buffer = java.io.ByteArrayOutputStream()
-                    src.exportMigration(secret.toCharArray(),buffer)
-                    val restored = dst.deploy("Nexus migration QA",dns,28751,28752,readMigration(buffer.toByteArray().inputStream(),secret.toCharArray()))
-                    check(before.fingerprint==restored.fingerprint && before.server!=restored.server)
-                    val after = JSONArray(dst.owner("devices"))
-                    val transferred=(0 until after.length()).map(after::getJSONObject).single { it.getString("id")==guest.getString("id") }
-                    check(transferred.getInt("revoked")==1 && transferred.getLong("quota")==123456L)
-                    val statusText=dst.service(false)
-                    check("nexus-server 0.1.0" in statusText && "CPU 使用率" in statusText && "状态  active" in statusText)
-                    result.putString("migration","pinned SSH deployment, encrypted migration, CA, revoked guest, quota and active services")
-                    val ctx=targetContext
-                    require(android.net.VpnService.prepare(ctx)==null && !TunnelService.state.value.active)
-                    val prefs=ctx.getSharedPreferences("local",0)
-                    val key=restored.server+"/"+restored.fingerprint
-                    val saved=listOf("profile","servers","pinned").associateWith { prefs.getString(it,null) }
-                    val home=startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    try {
-                        check(prefs.edit().remove("pinned").putBoolean("monitor/$key",true).putBoolean("hold/$key",true)
-                            .putString("exit/$key","192.0.2.253").commit())
-                        restored.save(ctx)
-                        ctx.startForegroundService(Intent(ctx,TunnelService::class.java).setAction("vpn"))
-                        runBlocking { withTimeout(65000) { TunnelService.state.first { it.vpn && it.error.contains("出口 IP 已变化") } } }
-                        check(prefs.getString("exit/$key","192.0.2.253")!="192.0.2.253")
-                        result.putString("exit","real HTTPS exit lookup held the VPN after a seeded baseline change")
-                    } finally {
-                        ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
-                        runBlocking { withTimeout(10000) { TunnelService.state.first { !it.active } } }
-                        val edit=prefs.edit().remove("monitor/$key").remove("hold/$key").remove("exit/$key")
-                        saved.forEach { (k,v) -> edit.putString(k,v) }
-                        check(edit.commit())
-                        runOnMainSync { home.finish() }
-                    }
-                }
-                "deploy" -> {
-                    val host = args.getString("host")!!
-                    val manager = NodeManager(targetContext,host,args.getString("ssh")!!.toInt(),"root","",args.getString("pin")!!,privateKey.readBytes())
-                    val p = manager.deploy("Nexus QA",args.getString("dns")!!,args.getString("nodePort")?.toInt() ?: 28443,args.getString("claimPort")?.toInt() ?: 28444)
-                    p.save(targetContext)
-                    val rows = JSONArray(manager.owner("devices"))
-                    check(rows.length()==1 && rows.getJSONObject(0).getInt("revoked")==0)
-                    val invitation = JSONObject(manager.owner("invite",JSONObject().put("name","QA Guest").put("device_seconds",86400)
-                        .put("valid_seconds",600).put("quota",1048576))).getString("link")
-                    File(root,"qa-invitation").writeText(invitation)
-                    result.putString("node","SSH pin, SFTP binaries, systemd, owner profile + device registry, invite")
-                }
-                "claim" -> {
-                    val path = File(root,"qa-invitation")
-                    val invite = Invitation.parse(path.readText())
-                    val p = invite.claim("QA independent device")
-                    check(p.device.contentEquals(invite.claim("QA independent device").device))
-                    p.save(targetContext)
-                    path.delete()
-                    result.putString("claim","independent Android Keystore P-256, pinned TLS, idempotent enrollment")
-                }
-                "cleanup" -> { privateKey.delete(); pub.delete(); File(root,"qa-invitation").delete() }
-                "rotate" -> {
-                    val profile=requireNotNull(Profile.load(targetContext))
-                    val old=Identity.publicKey()
-                    val new=Identity.rotate()
-                    check(!old.contentEquals(new) && Identity.publicKey().contentEquals(new))
-                    val data=byteArrayOf(7,3,5)
-                    val cert=java.security.cert.CertificateFactory.getInstance("X.509")
-                        .generateCertificate(profile.device.inputStream())
-                    val verifier=java.security.Signature.getInstance("SHA256withECDSA")
-                    verifier.initVerify(cert.publicKey);verifier.update(data)
-                    check(verifier.verify(Identity.sign(data,profile.signingAlias)))
-                    check(Profile.load(targetContext)?.signingAlias==profile.signingAlias)
-                    result.putString("rotation","new public key; existing profile still signs with its original non-exportable key")
-                    if(args.getString("restore")=="yes") {
-                        val alias=requireNotNull(Identity.owner(new));check(alias.startsWith("nexus-device-v1-"))
-                        java.security.KeyStore.getInstance("AndroidKeyStore").apply {load(null);deleteEntry(alias)}
-                    }
-                }
-                "packets" -> {
-                    val p = requireNotNull(Profile.load(targetContext))
-                    val dns = requireNotNull(p.dns)
-                    val pair = android.os.ParcelFileDescriptor.createSocketPair()
-                    val cancel = android.os.ParcelFileDescriptor.createSocketPair()
-                    android.system.Os.fcntlInt(pair[0].fileDescriptor,android.system.OsConstants.F_SETFL,android.system.OsConstants.O_NONBLOCK)
-                    val ready = java.util.concurrent.CompletableFuture<Int>()
-                    val end = java.util.concurrent.CompletableFuture<Int>()
-                    Thread {
-                        try {
-                            val relay = Tunnel(p.signingAlias,{ true }) { ready.complete(it) }
-                            end.complete(relay.run(cancel[0].detachFd(),pair[0].detachFd(),0L,"",dns,p.server,p.tlsName,p.target,p.ca,p.device))
-                        } catch (e:Throwable) { end.completeExceptionally(e) }
-                    }.start()
-                    try {
-                        check(ready.get(20,java.util.concurrent.TimeUnit.SECONDS)==0)
-                        val query=byteArrayOf(0x6e,0x78,1,0,0,1,0,0,0,0,0,0,7,101,120,97,109,112,108,101,3,99,111,109,0,0,1,0,1)
-                        val ip=java.nio.ByteBuffer.allocate(28+query.size)
-                        ip.put(0x45).put(0).putShort(ip.capacity().toShort()).putInt(0).put(64).put(17).putShort(0)
-                            .put(byteArrayOf(192.toByte(),0,2,2)).put(java.net.InetAddress.getByName(dns).address)
-                        var sum=(0 until 20 step 2).sumOf { ip.getShort(it).toInt() and 65535 }
-                        while (sum>65535) sum=(sum and 65535)+(sum ushr 16)
-                        ip.putShort(10,sum.inv().toShort())
-                        ip.putShort(40533.toShort()).putShort(53).putShort((8+query.size).toShort()).putShort(0).put(query)
-                        android.system.Os.write(pair[1].fileDescriptor,ip.array(),0,ip.capacity())
-                        val poll=android.system.StructPollfd().apply {fd=pair[1].fileDescriptor;events=android.system.OsConstants.POLLIN.toShort()}
-                        check(android.system.Os.poll(arrayOf(poll),15000)>0)
-                        val data=ByteArray(1500)
-                        val size=android.system.Os.read(pair[1].fileDescriptor,data,0,data.size)
-                        val msg=java.nio.ByteBuffer.wrap(data,0,size)
-                        val udp=(data[0].toInt() and 15)*4
-                        check(size>=udp+20 && msg.getShort(udp).toInt()==53 && (msg.getShort(udp+2).toInt() and 65535)==40533)
-                        check(msg.getShort(udp+8).toInt()==0x6e78 && data[udp+10].toInt() and 128!=0 &&
-                            data[udp+11].toInt() and 15==0 && msg.getShort(udp+14)>0)
-                        result.putString("packets","Android Rust packet path: DNS response from deployed resolver, transaction and answers verified")
-                    } finally { cancel[1].close();pair[1].close();cancel[0].close();pair[0].close() }
-                    end.get(10,java.util.concurrent.TimeUnit.SECONDS)
-                }
-                "private" -> {
-                    val p = requireNotNull(Profile.load(targetContext))
-                    val host = "example.com"
-                    val ip = java.net.InetAddress.getAllByName(host).first { it is java.net.Inet4Address }.hostAddress
-                    val pipe = android.os.ParcelFileDescriptor.createSocketPair()
-                    val ready = java.util.concurrent.CompletableFuture<Int>()
-                    val outcome = java.util.concurrent.CompletableFuture<Int>()
-                    val native = Tunnel(p.signingAlias,{ true }) { ready.complete(it) }
-                    Thread {
-                        try { outcome.complete(native.run(pipe[0].detachFd(),-1,0L,"","",p.server,p.tlsName,"$ip:443",p.ca,p.device)) }
-                        catch (e: Throwable) { outcome.completeExceptionally(e) }
-                    }.start()
-                    val seconds = java.util.concurrent.TimeUnit.SECONDS
-                    try {
-                        if (args.getString("deny")=="yes") {
-                            check(outcome.get(25,seconds)!=0 && !ready.isDone)
-                            result.putString("private","revoked Android device denied before port opened")
-                        } else {
-                            val local = ready.get(25,seconds)
-                            val factory = javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
-                            java.net.Socket("127.0.0.1",local).use { socket ->
-                                (factory.createSocket(socket,host,443,false) as javax.net.ssl.SSLSocket).use { tls ->
-                                    tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-                                    tls.soTimeout = 10000
-                                    tls.startHandshake()
-                                    tls.outputStream.write("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n".toByteArray())
-                                    check(tls.inputStream.bufferedReader().readLine().contains(" 200 "))
-                                }
-                            }
-                            result.putString("private","device authenticated on deployed Debian and received verified HTTPS 200")
-                        }
-                    } finally { pipe[1].close(); pipe[0].close() }
-                    outcome.get(15,seconds)
-                    if (ready.isDone) {
-                        val local=ready.get()
-                        val declined=runCatching { java.net.Socket("127.0.0.1",local).close() }.exceptionOrNull()
-                        check(declined is java.net.ConnectException)
-                        result.putString("disconnect","old loopback port refused a fresh connection")
-                    }
                 }
                 "interop" -> {
                     val file = File(root,"qa-interop")

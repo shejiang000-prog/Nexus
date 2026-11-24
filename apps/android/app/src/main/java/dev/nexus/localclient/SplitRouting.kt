@@ -47,7 +47,7 @@ internal object SplitRouting {
             val stop = ParcelFileDescriptor.createSocketPair()
             val ready = CountDownLatch(1)
             val dns = File(context.cacheDir, "split-dns.sock")
-            val native = Tunnel("", protect) { ready.countDown() }
+            val native = Tunnel(protect) { ready.countDown() }
             val worker = thread(name = "Nexus split TUN") {
                 try {
                     native.split(stop[0].detachFd(), ParcelFileDescriptor.dup(tun.fileDescriptor).detachFd(),

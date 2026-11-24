@@ -102,7 +102,7 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
     val cm = ctx.getSystemService(ConnectivityManager::class.java)
     val prefs = ctx.getSharedPreferences("local",0)
     val store = Subscriptions(ctx)
-    val engine = requireNotNull(args.getString("engine"))
+    val engine = requireNotNull(args.getString("engine")).also { require(it in setOf("v2","xray","shoes")) }
     val fixture = if (args.getString("mode")=="split-lab") JSONObject(File(ctx.noBackupFilesDir,"split-nodes.json").readText()) else null
     val override = File(ctx.filesDir,"split-routing-test.txt")
     check(!override.exists() && !TunnelService.state.value.active && VpnService.prepare(ctx)==null)
@@ -131,10 +131,6 @@ internal fun Instrumentation.splitCheck(args: Bundle, result: Bundle) {
             v2Key = node.key
             Intent(ctx,TunnelService::class.java).setAction("v2").putExtra("v2-key",node.key)
                 .putExtra("dns",fixture.getString("proxy"))
-        } else if (engine=="private") {
-            val p=requireNotNull(Profile.load(ctx))
-            check(p.tlsName=="nexus.test" && InetAddress.getByName(p.server.substringBefore(':')).isSiteLocalAddress)
-            Intent(ctx,TunnelService::class.java).setAction("vpn")
         } else {
             val label = if (fixture!=null) "Nexus-QA-split" else "Airport-Test"
             if (fixture!=null) {

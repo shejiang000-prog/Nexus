@@ -14,26 +14,21 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.*
 import org.json.JSONObject
 
-private data class Plan(val profile: Profile?, val outbound: JSONObject?, val name: String, val dns: String?, val checkKey: String? = null, val node: String? = checkKey, val v2: V2Node? = null)
+private data class Plan(val outbound: JSONObject, val name: String, val dns: String, val checkKey: String? = null, val node: String? = checkKey, val v2: V2Node? = null)
 
-class Tunnel(private val signingAlias: String, private val protectSocket: (Int) -> Boolean, private val ready: (Int) -> Unit) {
-    var path: (Long,Long,Long) -> Unit = { _,_,_ -> }
-    fun onPath(rtt: Long,lost: Long,sent: Long) = path(rtt,lost,sent)
+class Tunnel(private val protectSocket: (Int) -> Boolean, private val ready: (Int) -> Unit) {
     companion object { init { System.loadLibrary("nexus_android") } }
     fun onReady(port: Int) = ready(port)
     fun protectTransport(fd: Int) = protectSocket(fd)
-    fun sign(message: ByteArray): ByteArray = Identity.sign(message, signingAlias)
-    external fun run(cancelFd: Int, tunFd: Int, netHandle: Long, route: String, dns: String, server: String, name: String, target: String, ca: ByteArray, device: ByteArray, split: ByteArray = byteArrayOf()): Int
     external fun split(cancelFd: Int, tunFd: Int, engineFd: Int, dnsSocket: String, rules: ByteArray): Int
 }
 
-data class TunnelState(val starting: Boolean = false, val port: Int = 0, val error: String = "", val subscription: String = "",
-                       val vpn: Boolean = false, val waiting: Boolean = false, val activeProfile: Profile? = null,
-                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val path: String = "", val shoes: Boolean = false, val bearer: String = "") {
-    val active get() = starting || port != 0 || vpn
+data class TunnelState(val starting: Boolean = false, val error: String = "", val subscription: String = "",
+                       val vpn: Boolean = false, val waiting: Boolean = false,
+                       val connectedAt: Long = 0, val node: String? = null, val physical: Network? = null, val shoes: Boolean = false, val bearer: String = "") {
+    val active get() = starting || vpn
 }
 
 class TunnelService : VpnService() {
@@ -52,8 +47,6 @@ class TunnelService : VpnService() {
     private var selected: Plan? = null
     private val alternates = ArrayDeque<JSONObject>()
     private var failures = 0
-    private var exitMonitor: Job? = null
-    private var exitHeld = false
     private var callback: ConnectivityManager.NetworkCallback? = null
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private val channelId = "local_forward"
@@ -78,11 +71,11 @@ class TunnelService : VpnService() {
         val resumed = if (boot || intent == null || intent.action == SERVICE_INTERFACE) prefs.getString(RESUME, null)?.let {
             runCatching { Intent.parseUri(it, 0).setClass(this, TunnelService::class.java) }.getOrNull()
         } else null
-        if(boot && resumed?.action !in setOf("vpn","subscription","v2")) {stopSelf(startId);return START_NOT_STICKY}
+        if(boot && resumed?.action !in setOf("subscription","v2")) {stopSelf(startId);return START_NOT_STICKY}
         val request = resumed ?: intent
         handle(request)
         val running = tun != null
-        if (running && request?.action in setOf("vpn", "subscription", "v2")) request!!.toUri(0).let {
+        if (running && request?.action in setOf("subscription", "v2")) request!!.toUri(0).let {
             prefs.edit().putString(RESUME, it).putString(LAST, it).apply()
             ConnectTile.refresh(this)
         }
@@ -90,35 +83,30 @@ class TunnelService : VpnService() {
     }
 
     private fun handle(intent: Intent?): Int {
-        if (intent?.action in setOf("vpn", "subscription", "v2", "connect") && tun == null && cancel == null) SubscriptionRefresh.stopTests(this)
+        if (intent?.action in setOf("subscription", "v2") && tun == null && cancel == null) SubscriptionRefresh.stopTests(this)
         if (intent?.action == "split-mode") {
             val plan = selected
-            if (plan != null && tun != null && network != null && !exitHeld) {
+            if (plan != null && tun != null && network != null) {
                 cancelWorker()
                 failures = 0
                 startWorker(plan)
             }
             return START_NOT_STICKY
         }
-        val systemStart = intent?.action == SERVICE_INTERFACE || intent?.action == null
         val compat = intent?.action == "subscription"
         val v2 = intent?.action == "v2"
-        val vpn = intent?.action == "vpn" || compat || v2 || systemStart
-        if (!vpn && intent?.action != "connect") { disconnect(); return START_NOT_STICKY }
+        if (!compat && !v2) { disconnect(); return START_NOT_STICKY }
         if (cancel != null || tun != null) return START_NOT_STICKY
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(channelId, "本地转发", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(channelId, "VPN 连接", NotificationManager.IMPORTANCE_LOW))
         startForeground(1, notification("正在验证服务器和设备"))
         val plan = runCatching {
             if (v2) {
                 val key = requireNotNull(intent!!.getStringExtra("v2-key"))
                 val node = requireNotNull(V2Devices.get(this, key))
-                val prefs = getSharedPreferences("local", 0)
-                require(!prefs.contains("pinned") || prefs.getString("pinned", null) == key)
-                Plan(null, JSONObject().put("protocol", "blackhole").put("tag", "selected"), node.authority,
+                Plan(JSONObject().put("protocol", "blackhole").put("tag", "selected"), node.authority,
                     intent.getStringExtra("dns") ?: "1.1.1.1", node = key, v2 = node)
-            } else if (compat) {
-                check(!getSharedPreferences("local",0).contains("pinned"))
+            } else {
                 val index = intent!!.getIntExtra("index",-1)
                 val refs = intent.getStringExtra("alternates")?.let { org.json.JSONArray(it) }
                 require((refs?.length() ?: 0) <= 7)
@@ -137,21 +125,13 @@ class TunnelService : VpnService() {
                     for (i in 0 until refs.length()) alternates.addLast(refs.getJSONObject(i))
                     alternates.addLast(JSONObject().put("source",source.id).put("updated",source.updated).put("index",index))
                 }
-                Plan(null, CompatEngine.outbound(node), source.label + " · " + node.getString("name"), dns,
+                Plan(CompatEngine.outbound(node), source.label + " · " + node.getString("name"), dns,
                     if (refs==null) null else nodeKey(source.id,node),nodeKey(source.id,node))
-            } else {
-                val p = requireNotNull(Profile.load(this))
-                if (systemStart) require(p.dns != null)
-                Plan(p,null,p.name,p.dns)
             }
         }.getOrElse { failure ->
             state.value = TunnelState(error = (failure as? UnsupportedNode)?.let { "无法连接此节点：" + it.message }
-                ?: "节点配置无法使用，请检查参数及固定出口设置")
+                ?: "节点配置无法使用，请检查节点参数")
             disconnect()
-            return START_NOT_STICKY
-        }
-        if (!vpn) {
-            startWorker(plan)
             return START_NOT_STICKY
         }
         try {
@@ -167,7 +147,7 @@ class TunnelService : VpnService() {
                 private val candidates = linkedMapOf<Network, Int>()
                 private fun selectNetwork() {
                     val next = candidates.maxByOrNull { it.value }?.key
-                    if (callback !== this || next == network || exitHeld) return
+                    if (callback !== this || next == network) return
                     cancelWorker()
                     failures = 0
                     network = next
@@ -202,71 +182,24 @@ class TunnelService : VpnService() {
 
     private fun cancelWorker() {
         serial++
-        exitMonitor?.cancel()
-        exitMonitor = null
         cancel?.close()
         cancel = null
     }
 
-    private fun monitorExit(plan: Plan, token: Int) {
-        val profile = plan.profile ?: return
-        val key = profile.server+"/"+profile.fingerprint
-        val prefs = getSharedPreferences("local",0)
-        if (profile.dns==null || !prefs.getBoolean("monitor/"+key,false)) return
-        exitMonitor?.cancel()
-        exitMonitor = CoroutineScope(Dispatchers.IO).launch {
-            while (isActive) {
-                val active = connectivity.activeNetwork
-                if (active != null && connectivity.getNetworkCapabilities(active)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true) {
-                    val ip = runCatching {
-                        val c = active.openConnection(java.net.URL("https://ipinfo.io/json")) as javax.net.ssl.HttpsURLConnection
-                        try {
-                            c.instanceFollowRedirects=false; c.connectTimeout=6000; c.readTimeout=6000; c.useCaches=false
-                            check(c.responseCode==200)
-                            JSONObject(c.inputStream.bounded(32768).toString(Charsets.UTF_8)).getString("ip")
-                                .also { require(it.matches(Regex("[0-9a-fA-F:.]{2,45}"))) }
-                        } finally { c.disconnect() }
-                    }.getOrNull()
-                    // Failed requests (including non-200 responses) leave the saved exit untouched.
-                    if (ip != null) main.post {
-                        if (serial==token && prefs.getBoolean("monitor/"+key,false)) {
-                            val prior = prefs.getString("exit/"+key,null)
-                            prefs.edit().putString("exit/"+key,ip).apply()
-                            if (prior!=null && prior!=ip) {
-                                val hold = prefs.getBoolean("hold/"+key,false)
-                                if (hold) {
-                                    exitHeld=true
-                                    cancelWorker()
-                                    state.value=TunnelState(vpn=true,error="出口 IP 已变化，业务流量已暂停。请核对后断开并重新连接。")
-                                }
-                                getSystemService(NotificationManager::class.java).notify(1,notification(if (hold) "出口已变化，流量已暂停" else "私人节点出口 IP 已变化"))
-                            }
-                        }
-                    }
-                }
-                delay(300_000)
-            }
-        }
-    }
-
     private fun establishFor(plan: Plan): ParcelFileDescriptor {
         val builder = Builder().setSession(plan.name).setMtu(1500).addAddress("192.0.2.2", 32).setBlocking(false)
-        if (plan.dns != null) {
-            builder.addRoute("0.0.0.0", 0).addAddress("fd42:6e78::2", 128).addRoute("::", 0).addDnsServer(plan.dns)
-            val appKey = plan.v2?.key ?: plan.profile?.let { it.server + "/" + it.fingerprint }
-            appKey?.let { key ->
-                val apps = getSharedPreferences("local",0).getStringSet("apps/$key",emptySet()).orEmpty()
-                for (name in apps) builder.addAllowedApplication(name)
-            }
-        } else builder.addRoute(requireNotNull(plan.profile).vpnHost, 32).allowFamily(android.system.OsConstants.AF_INET6)
+        builder.addRoute("0.0.0.0", 0).addAddress("fd42:6e78::2", 128).addRoute("::", 0).addDnsServer(plan.dns)
+        plan.v2?.key?.let { key ->
+            val apps = getSharedPreferences("local",0).getStringSet("apps/$key",emptySet()).orEmpty()
+            for (name in apps) builder.addAllowedApplication(name)
+        }
         return checkNotNull(builder.establish()).also { fd ->
             interfaceName = runCatching { java.io.File("/proc/self/fdinfo/"+fd.fd).readLines().firstOrNull { it.startsWith("iff:") }?.substringAfter(':')?.trim() }.getOrNull()
         }
     }
 
     private fun nextPlan(plan: Plan): Plan {
-        val prefs = getSharedPreferences("local",0)
-        if (plan.checkKey!=null && !prefs.contains("pinned")) {
+        if (plan.checkKey!=null) {
             val store=Subscriptions(this)
             repeat(alternates.size) {
                 val ref=alternates.removeFirst()
@@ -274,7 +207,7 @@ class TunnelService : VpnService() {
                     val source=store.get(ref.getString("source"))
                     require(source.updated==ref.getLong("updated") && source.hasAllowance() && store.appearance.getBoolean("auto/"+source.id,true))
                     val node=source.nodes.getJSONObject(ref.getInt("index"))
-                    Plan(null,CompatEngine.outbound(node),source.label+" · "+node.getString("name"),plan.dns,nodeKey(source.id,node))
+                    Plan(CompatEngine.outbound(node),source.label+" · "+node.getString("name"),plan.dns,nodeKey(source.id,node))
                 }.getOrNull()
                 if (next!=null) {
                     alternates.addLast(ref)
@@ -282,97 +215,63 @@ class TunnelService : VpnService() {
                 }
             }
         }
-        if (plan.profile == null || plan.dns == null || prefs.contains("pinned") || !prefs.getBoolean("failover",false)) return plan
-        if (!prefs.getStringSet("apps/"+plan.profile.server+"/"+plan.profile.fingerprint,emptySet()).isNullOrEmpty()) return plan
-        val nodes = Profile.servers(this).filter { it.dns != null && prefs.getStringSet("apps/"+it.server+"/"+it.fingerprint,emptySet()).isNullOrEmpty() }
-        val index = nodes.indexOfFirst { it.server == plan.profile.server && it.fingerprint == plan.profile.fingerprint }
-        if (nodes.size < 2 || index < 0) return plan
-        val next = nodes[(index + 1) % nodes.size]
-        val candidate = Plan(next,null,next.name,next.dns)
-        val replacement = establishFor(candidate)
-        val previous = tun
-        tun = replacement
-        previous?.close()
-        selected = candidate
-        return candidate
+        return plan
     }
 
     private fun startWorker(plan: Plan, attempt: Int = 0) {
-        val vpn = tun != null
-        val bypass = vpn && plan.dns != null && SplitRouting.enabled(this)
-        val netHandle = network?.networkHandle ?: 0L
+        val bypass = SplitRouting.enabled(this)
         val physical = network
         val token = ++serial
         val pipe = ParcelFileDescriptor.createSocketPair()
-        val workerTun = tun?.let { ParcelFileDescriptor.dup(it.fileDescriptor) }
+        val workerTun = ParcelFileDescriptor.dup(requireNotNull(tun).fileDescriptor)
         cancel = pipe[1]
-        state.value = TunnelState(starting = true, vpn = vpn, node = plan.node, shoes = plan.outbound?.has("shoesClient") == true)
+        state.value = TunnelState(starting = true, vpn = true, node = plan.node, shoes = plan.outbound.has("shoesClient"))
         Thread {
             val result = runCatching {
-                val ready: (Int) -> Unit = { port -> main.post {
+                val ready = { main.post {
                     if (token == serial) {
                         failures = 0
-                        state.value = TunnelState(port = port, vpn = vpn, subscription = if (plan.outbound != null) plan.name else "",
-                            activeProfile = plan.profile, bearer = state.value.bearer, shoes = plan.outbound?.has("shoesClient") == true, node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
-                        val label = if (vpn) "VPN" else "本机端口 $port"
-                        getSystemService(NotificationManager::class.java).notify(1, notification(label + " · " + plan.name))
-                        if (vpn) monitorExit(plan,token)
+                        state.value = TunnelState(vpn = true, subscription = plan.name,
+                            bearer = state.value.bearer, shoes = plan.outbound.has("shoesClient"), node = plan.node, physical = physical, connectedAt = android.os.SystemClock.elapsedRealtime())
+                        getSystemService(NotificationManager::class.java).notify(1, notification("VPN · " + plan.name))
                     }
                 }; Unit }
-                val rules = if (bypass && plan.outbound?.has("shoesClient") != true)
+                val rules = if (bypass && !plan.outbound.has("shoesClient"))
                     SplitRouting.data(this, plan.dns, physical?.let { connectivity.getLinkProperties(it) }) else byteArrayOf()
-                if (plan.outbound != null) {
-                    val net = requireNotNull(physical)
-                    val dns = requireNotNull(connectivity.getLinkProperties(net)?.dnsServers?.firstOrNull()?.hostAddress)
-                    val health = plan.checkKey?.let { key -> {
-                            val vpnNet = connectivity.activeNetwork
-                            val start=android.os.SystemClock.elapsedRealtime()
-                            val passed=runCatching {
-                                check(vpnNet != null && connectivity.getNetworkCapabilities(vpnNet)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true)
-                                val conn=vpnNet.openConnection(java.net.URL("https://example.com/")) as javax.net.ssl.HttpsURLConnection
-                                try {
-                                    conn.setRequestProperty("Connection","close")
-                                    conn.connectTimeout=6000;conn.readTimeout=6000;conn.useCaches=false;conn.instanceFollowRedirects=false
-                                    check(conn.responseCode==200 && conn.inputStream.bounded(32768).toString(Charsets.UTF_8).contains("Example Domain"))
-                                } finally { conn.disconnect() }
-                            }.isSuccess
-                            NodeQuality(this,net).record(key,passed,android.os.SystemClock.elapsedRealtime()-start)
-                            passed
-                        }
+                val net = requireNotNull(physical)
+                val dns = requireNotNull(connectivity.getLinkProperties(net)?.dnsServers?.firstOrNull()?.hostAddress)
+                val health = plan.checkKey?.let { key -> {
+                        val vpnNet = connectivity.activeNetwork
+                        val start=android.os.SystemClock.elapsedRealtime()
+                        val passed=runCatching {
+                            check(vpnNet != null && connectivity.getNetworkCapabilities(vpnNet)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true)
+                            val conn=vpnNet.openConnection(java.net.URL("https://example.com/")) as javax.net.ssl.HttpsURLConnection
+                            try {
+                                conn.setRequestProperty("Connection","close")
+                                conn.connectTimeout=6000;conn.readTimeout=6000;conn.useCaches=false;conn.instanceFollowRedirects=false
+                                check(conn.responseCode==200 && conn.inputStream.bounded(32768).toString(Charsets.UTF_8).contains("Example Domain"))
+                            } finally { conn.disconnect() }
+                        }.isSuccess
+                        NodeQuality(this,net).record(key,passed,android.os.SystemClock.elapsedRealtime()-start)
+                        passed
                     }
-                    val session = plan.v2?.let { node ->
-                        V2Session(node, this, net) { bearer ->
-                            main.post {
-                                if (serial == token) {
-                                    DiagnosticExport.bearerChanged(this, state.value.bearer, bearer)
-                                    state.value = state.value.copy(bearer = bearer)
-                                }
+                }
+                val session = plan.v2?.let { node ->
+                    V2Session(node, this, net) { bearer ->
+                        main.post {
+                            if (serial == token) {
+                                DiagnosticExport.bearerChanged(this, state.value.bearer, bearer)
+                                state.value = state.value.copy(bearer = bearer)
                             }
                         }
                     }
-                    try { CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,requireNotNull(workerTun),pipe[0],health,rules,session) {
-                        check(health?.invoke() != false)
-                        ready(0)
-                    } } finally { session?.close() }
-                } else {
-                    val profile = requireNotNull(plan.profile)
-                    val native = Tunnel(profile.signingAlias, { fd ->
-                        runCatching {
-                            check(protect(fd))
-                            if (bypass) ParcelFileDescriptor.fromFd(fd).use { requireNotNull(physical).bindSocket(it.fileDescriptor) }
-                            true
-                        }.getOrDefault(false)
-                    }, ready)
-                    native.path = { rtt,lost,sent -> main.post {
-                        if (serial==token && state.value.connectedAt!=0L) state.value=state.value.copy(
-                            path=if (rtt>=0 && sent>0) "QUIC RTT $rtt ms · 丢失 $lost / $sent 包" else "")
-                    }; Unit }
-                    native.run(pipe[0].detachFd(), workerTun?.detachFd() ?: -1, netHandle,
-                        if (profile.dns == null) profile.vpnHost else "", profile.dns.orEmpty(),
-                        profile.server, profile.tlsName, profile.target, profile.ca, profile.device, rules)
                 }
+                try { CompatEngine.run(this,net,if (':' in dns) "[$dns]:53" else "$dns:53",plan.outbound,workerTun,pipe[0],health,rules,session) {
+                    check(health?.invoke() != false)
+                    ready()
+                } } finally { session?.close() }
             }.getOrElse { (it as? V2Failure)?.code ?: if (plan.v2 != null) 6 else 1 }
-            workerTun?.close()
+            workerTun.close()
             pipe[0].close()
             main.post {
                 if (token == serial) {
@@ -384,7 +283,7 @@ class TunnelService : VpnService() {
                         getSharedPreferences("local", 0).edit().remove(RESUME).apply()
                         disconnect()
                         state.value = TunnelState(node = plan.node, error = V2Connection.error(result))
-                    } else if (vpn && result != 0 && network != null && (failures <= 8 || plan.checkKey != null || plan.v2 != null)) {
+                    } else if (result != 0 && network != null && (failures <= 8 || plan.checkKey != null || plan.v2 != null)) {
                         state.value = TunnelState(vpn = true, node = plan.node, error = if (plan.v2 != null) V2Connection.error(result) else "节点不可用，正在等待重试")
                         main.postDelayed({
                             if (token == serial) {
@@ -392,12 +291,9 @@ class TunnelService : VpnService() {
                                 startWorker(next, if (next === plan) minOf(attempt + 1,5) else 0)
                             }
                         }, 1000L shl maxOf(attempt, if (plan.checkKey==null) 0 else (failures / 4).coerceAtMost(5)))
-                    } else if (vpn) {
-                        state.value = TunnelState(vpn = true, error = "私人节点不可用，请检查设备授权及目标许可后重新连接")
-                        getSystemService(NotificationManager::class.java).notify(1, notification("私人节点不可用"))
                     } else {
-                        state.value = TunnelState(error = if (result == 0) "" else "连接失败，请检查服务器地址、设备授权及目标许可")
-                        disconnect()
+                        state.value = TunnelState(vpn = true, error = "节点不可用，请检查配置后重新连接")
+                        getSystemService(NotificationManager::class.java).notify(1, notification("节点不可用"))
                     }
                 }
             }
@@ -414,7 +310,6 @@ class TunnelService : VpnService() {
         callback = null
         selected = null
         alternates.clear()
-        exitHeld = false
         network = null
         cancelWorker()
         tun?.close()

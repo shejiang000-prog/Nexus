@@ -15,7 +15,7 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="nexus" android:host="invite" android:pathPrefix="/"/>
+                <data android:scheme="nexus" android:host="invite" android:path="/v2"/>
             </intent-filter>
         </activity>
         <!-- The scanner library ships CaptureActivity locked to landscape; follow the phone instead. -->
@@ -32,7 +32,7 @@
         <service android:name=".TunnelService" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE" android:foregroundServiceType="specialUse">
             <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="true" />
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated private node VPN or loopback TCP forwarding"/>
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated private node VPN"/>
         </service>
     </application>
 </manifest>

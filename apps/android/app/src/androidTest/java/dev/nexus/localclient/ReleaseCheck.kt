@@ -3,12 +3,10 @@ package dev.nexus.localclient
 import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
 import android.os.Bundle
 import android.util.Base64
 import androidx.activity.compose.setContent
 import kotlinx.coroutines.runBlocking
-import org.json.JSONObject
 
 internal fun Instrumentation.releaseCheck(args:Bundle,result:Bundle){
     val ctx=targetContext
@@ -54,7 +52,6 @@ internal fun Instrumentation.releaseCheck(args:Bundle,result:Bundle){
             fill(true,source.url)
             result.putString("input","filled local masked import form")
         }
-        "release-key"->result.putString("public",Base64.encodeToString(Identity.publicKey(),Base64.NO_WRAP))
         "release-update"->{
             val prefs=ctx.getSharedPreferences("release-check",0)
             val original=prefs.all.toMap()
@@ -67,10 +64,10 @@ internal fun Instrumentation.releaseCheck(args:Bundle,result:Bundle){
                     runBlocking {ReleaseUpdates.check(ctx,true){repeated=true;raw.orEmpty()}}
                     check(!repeated)
                 }
-                checkResponse("""{"tag_name":"v2.0.0","body":"更新测试"}""",true,true)
+                checkResponse("""{"tag_name":"v2.0.1","body":"更新测试"}""",true,true)
                 prefs.edit().putBoolean("automatic",false).commit()
                 val home=startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
-                try{splitLabel("有新版本 2.0.0",false);splitLabel("更新测试",false);splitLabel("去下载",false)}
+                try{splitLabel("有新版本 2.0.1",false);splitLabel("更新测试",false);splitLabel("去下载",false)}
                 finally{runOnMainSync{home.finish()}}
                 checkResponse("""{"tag_name":"v1.0.0"}""",true,false)
                 checkResponse(null,false,false)
@@ -83,44 +80,6 @@ internal fun Instrumentation.releaseCheck(args:Bundle,result:Bundle){
                 val edit=prefs.edit().clear()
                 original.forEach{(key,v)->when(v){is String->edit.putString(key,v);is Boolean->edit.putBoolean(key,v);is Long->edit.putLong(key,v)}}
                 edit.commit();ReleaseUpdates.available.value=null
-            }
-        }
-        "release-private"->{
-            check(VpnService.prepare(ctx)==null)
-            val json=JSONObject(String(Base64.decode(args.getString("profile64"),Base64.DEFAULT)))
-            check(json.getString("tls_name")=="nexus.test" && json.getString("server").substringBefore(':')=="127.0.0.1")
-            val saved=Profile.load(ctx)
-            check(saved==null || saved.tlsName=="nexus.test")
-            val original=listOf("servers","profile","simple-node").associateWith {p.getString(it,null)}
-            Profile.parse(json.toString()).save(ctx)
-            p.edit().putString("simple-node","private").commit()
-            // Allow the activity foreground-start exemption to apply on retail devices.
-            val home=startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            try{
-                ctx.startForegroundService(Intent(ctx,TunnelService::class.java).setAction("vpn"))
-                val end=android.os.SystemClock.elapsedRealtime()+45000
-                while(TunnelService.state.value.connectedAt==0L && android.os.SystemClock.elapsedRealtime()<end)Thread.sleep(250)
-                check(TunnelService.state.value.connectedAt>0 && p.contains(TunnelService.RESUME))
-                val cm=ctx.getSystemService(android.net.ConnectivityManager::class.java)
-                val vpn=cm.allNetworks.first {cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)==true}
-                val profile=Profile.parse(json.toString())
-                check(profile.dns==null)
-                vpn.socketFactory.createSocket().use {socket->
-                    socket.soTimeout=16000
-                    socket.connect(java.net.InetSocketAddress(profile.vpnHost,json.getString("target").substringAfterLast(':').toInt()),16000)
-                    socket.getOutputStream().write("GET /vpn/aced1234 HTTP/1.0\r\nHost: nexus.test\r\n\r\n".toByteArray())
-                    val page=socket.getInputStream().bounded(8192).decodeToString()
-                    check(page.contains(" 200 ") && page.contains("Debian receipt: "))
-                }
-                result.putString("private","private VPN authenticated; HTTP 200 + temporary Debian receipt; resume request saved")
-            }finally{
-                ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
-                val end=android.os.SystemClock.elapsedRealtime()+6000
-                while(TunnelService.state.value.active && android.os.SystemClock.elapsedRealtime()<end)Thread.sleep(100)
-                val restore=p.edit()
-                original.forEach { (k,v)->restore.putString(k,v) }
-                restore.commit()
-                runOnMainSync{home.finish()}
             }
         }
         "release-boot"->{check(p.contains(TunnelService.RESUME));p.edit().putBoolean("boot-connect",true).commit();result.putString("boot","armed")}

@@ -33,7 +33,7 @@ internal fun pageDepth(page:String)=when(page) {
 }
 
 /** Sub-pages whose name sits in the top bar instead of a heading in the page body. */
-internal fun pageTitle(page:String)=page.takeIf { it=="设置" || it=="高级" }
+internal fun pageTitle(page:String)=page.takeIf { it=="设置" }
 
 @Composable
 internal fun SimpleShell(page:String,navigate:(String)->Unit,back:()->Unit,content:@Composable (String)->Unit) {
@@ -197,7 +197,7 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
     val link=state.link()
     val on=link==Link.On
     val status=when {state.waiting->"等待网络";state.starting->"正在连接…";state.error.isNotBlank() && state.vpn->"节点不可用"
-        !state.vpn && state.port>0->"本地转发已开启";on->"已连接 · 网络受保护";state.vpn->"正在连接…";else->"未连接"}
+        on->"已连接 · 网络受保护";state.vpn->"正在连接…";else->"未连接"}
     val traffic=rememberTraffic(state)
     val motion=LocalMotion.current
     val dial:@Composable (Dp)->Unit={ diameter ->
@@ -223,7 +223,6 @@ internal fun ConnectionHome(state:TunnelState,first:Boolean,enabled:Boolean,node
         }
         AnimatedVisibility(on,enter=fadeIn(motionTween(Motion.emphasized))+expandVertically(motionTween(Motion.emphasized)),
             exit=fadeOut(motionTween(Motion.exit,Motion.leave))+shrinkVertically(motionTween(Motion.exit,Motion.leave))) { RateTiles(short) { traffic.value } }
-        if(state.port>0 && !state.vpn)Text("本地端口 "+state.port,style=numberStyle)
         // Keep the last message while the notice collapses, so it does not blank out mid-animation.
         val failed=state.error.isNotEmpty()
         var lastNotice by remember { mutableStateOf(notice to failed) }

@@ -8,7 +8,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.*
 import com.google.zxing.*
@@ -56,44 +55,24 @@ internal fun InvitationCode(link:String) {
 }
 
 @Composable
-internal fun ClaimArt(done:Boolean) {
+internal fun ClaimArt() {
     val c=MaterialTheme.colorScheme
     val motion=LocalMotion.current
     val active=LocalForeground.current
-    val selected=signal
     var phase by remember{mutableFloatStateOf(0f)}
-    LaunchedEffect(done,motion,active){
+    LaunchedEffect(motion,active){
         if(!active)return@LaunchedEffect
-        if(done)frameProgress(if(motion)450 else 150){phase=it}
-        else if(motion) {val start=withFrameNanos{it};while(true)withFrameNanos{phase=((it-start)%1_200_000_000L)/1.2e9f}}
+        if(motion) {val start=withFrameNanos{it};while(true)withFrameNanos{phase=((it-start)%1_200_000_000L)/1.2e9f}}
     }
     Box(Modifier.fillMaxWidth().height(100.dp),contentAlignment=Alignment.Center){
         Canvas(Modifier.size(240.dp,88.dp)){
             val mid=size.height/2
             val offset=24.dp.toPx()
-            drawLine(if(done)selected else c.outline,Offset(offset,mid),Offset(size.width-offset,mid),2.dp.toPx(),
-                pathEffect=if(done)null else PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(),5.dp.toPx()),if(motion)-phase*10.dp.toPx() else 0f))
+            drawLine(c.outline,Offset(offset,mid),Offset(size.width-offset,mid),2.dp.toPx(),
+                pathEffect=PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(),5.dp.toPx()),if(motion)-phase*10.dp.toPx() else 0f))
         }
         Row(Modifier.width(240.dp),horizontalArrangement=Arrangement.SpaceBetween){listOf(2,3).forEach{ i->
             Box(Modifier.size(56.dp).background(c.surface,RoundedCornerShape(16.dp)),contentAlignment=Alignment.Center){SectionIcon(i,28.dp)}
         }}
-        if(done)Box(Modifier.size(36.dp).graphicsLayer{if(motion){scaleX=enterCurve.transform(phase);scaleY=scaleX};alpha=phase}
-            .background(selected,CircleShape),contentAlignment=Alignment.Center){GlyphIcon(Glyph.Check,size=18.dp,tint=palette.onSignal)}
-    }
-}
-
-@Composable
-internal fun ClaimButton(done:Boolean,busy:Boolean,onClick:()->Unit) {
-    val motion=LocalMotion.current
-    val green=signal
-    var p by remember{mutableFloatStateOf(0f)}
-    LaunchedEffect(done){if(done)frameProgress(if(motion)650 else 150){p=it}}
-    Box(contentAlignment=Alignment.Center){
-        PrimaryAction(onClick,Modifier.fillMaxWidth(),enabled=!busy && !done){Text(if(done)"已接受邀请" else if(busy)"正在加入…" else "接受并连接")}
-        if(done && motion)Canvas(Modifier.matchParentSize()){
-            drawRoundRect(green.copy(alpha=1-p),cornerRadius=CornerRadius(17.dp.toPx()),style=Stroke((1+4*p).dp.toPx()))
-            repeat(10){i->val angle=2*PI*i/10;drawCircle(green.copy(alpha=1-p),2.dp.toPx(),Offset(center.x+(size.width*.45f+p*6.dp.toPx())*cos(angle).toFloat(),
-                center.y+(size.height*.42f+p*12.dp.toPx())*sin(angle).toFloat()))}
-        }
     }
 }

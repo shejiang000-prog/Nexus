@@ -123,7 +123,7 @@ internal fun rememberDefaultPhysical(connectivity: ConnectivityManager): Network
 }
 
 @Composable
-internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAutomatic:(Boolean,List<NodeRow>)->Unit={_,_->}, addInitially: Boolean = false, manageSource: String? = null, onManageOpened: () -> Unit = {}, onInvite: (Invitation?) -> Unit, onV2Link:(String)->Boolean={false}, onSelected: (NodeRow) -> Unit = {}, onImported: () -> Unit = {}, onPick: (NodeRow,List<NodeRow>) -> Unit = { _,_ -> }, home: @Composable (List<NodeRow>) -> Unit) {
+internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAutomatic:(Boolean,List<NodeRow>)->Unit={_,_->}, addInitially: Boolean = false, manageSource: String? = null, onManageOpened: () -> Unit = {}, onInvite: () -> Unit, onV2Link:(String)->Boolean={false}, onSelected: (NodeRow) -> Unit = {}, onImported: () -> Unit = {}, onPick: (NodeRow,List<NodeRow>) -> Unit = { _,_ -> }, home: @Composable (List<NodeRow>) -> Unit) {
     val context = LocalContext.current
     val store = remember { Subscriptions(context) }
     val scope = rememberCoroutineScope()
@@ -250,8 +250,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     }
     val scan = rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) {
         it.contents?.let { value ->
-            val invite=sharedInvitation(value)
-            if(invite==null) importAndTest(value) else { adding=false;onInvite(invite) }
+            if (onV2Link(value)) adding=false else importAndTest(value)
         }
     }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -300,7 +299,6 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
     val motion = LocalMotion.current
     // One read per composition instead of one per row.
     val chosenNode = local.getString("simple-node",null)
-    val pinned = local.contains("pinned")
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = Space.page),
         state = scroll, contentPadding = PaddingValues(top = Space.xs, bottom = Space.lg)) {
         item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
@@ -353,8 +351,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
             Segment(listOf("节点列表","订阅管理"),if(showSources)1 else 0){showSources=it==1}
         }}
         if(!showSources && allRows.isNotEmpty())item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
-            AutoSelection(automatic,enabled=!pinned,onChange={value->onAutomatic(value,allRows)})
-            if(pinned)Text("请先在设置中解除固定出口",style=MaterialTheme.typography.bodyMedium)
+            AutoSelection(automatic,enabled=true,onChange={value->onAutomatic(value,allRows)})
         }}
         if(!showSources)item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) { home(allRows) } }
         if (showSources && sources.isNotEmpty()) item { Column(Modifier.fillMaxWidth().padding(bottom = Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
@@ -448,12 +445,9 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
                         SecondaryAction(enabled=!tunnel.active && !busy && visible.isNotEmpty(),modifier=Modifier.weight(1f),onClick={
-                            if (local.contains("pinned")) message="请先解除固定出口"
-                            else {
                                 val best=rankedNodes(context,visible).firstOrNull()
                                 if (best==null) message="请在可用订阅的管理页启用「参与自动选择」"
                                 else { smart=true; chosen=best }
-                            }
                         }) { Text("选质量最好的", maxLines = 1) }
                         if (probeJob != null) SecondaryAction(modifier=Modifier.weight(1f),onClick = { probeJob?.cancel() }) { Text("取消测试", maxLines = 1) }
                         else PrimaryAction(enabled = !tunnel.active && physical != null && !busy && eligible.isNotEmpty(), modifier=Modifier.weight(1f),
@@ -488,7 +482,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
                 SignalNode(row.region,row.title,if(grouped) type.uppercase() else type.uppercase()+" · "+row.source.label,
                     metric?.takeIf {it.ok}?.ms,chosenNode==row.favorite,info,{detail=row},
                     if(!busy && usable) ({
-                        if(local.contains("pinned"))message="请先在设置中解除固定出口" else onPick(row,allRows)
+                        onPick(row,allRows)
                     }) else null,
                     groupPlace(index,visible.lastIndex,starts,ends),testing=row.favorite in probing)
             } } }
@@ -520,8 +514,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
         confirmButton = {
             if(problems!=null && problems?.get(row.favorite)==null) PrimaryAction({
                 detail=null
-                if(context.getSharedPreferences("local",0).contains("pinned")) message="请先在设置中解除固定出口"
-                else onPick(row,allRows)
+                onPick(row,allRows)
             }) { Text("设为当前节点") }
         },dismissButton={SecondaryAction({detail=null}) {Text("关闭")}}) }
     chosen?.let { row -> AlertDialog(onDismissRequest = { chosen = null }, title = { Text("使用订阅节点连接 VPN？") },
@@ -539,9 +532,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
             PrimaryAction(onClick={
                 val clipboard=context.getSystemService(android.content.ClipboardManager::class.java)
                 val clip=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text?.toString()?.trim()
-                val invite=clip?.let(::sharedInvitation)
                 if(clip!=null && onV2Link(clip)) { adding=false;input="" }
-                else if(invite!=null) { adding=false;onInvite(invite) }
                 else if(clip!=null && clip.startsWith("https://") && clip.length<=8192) importAndTest(clip)
                 else errorMessage="请复制订阅链接，或选择手动输入"
             },modifier=Modifier.fillMaxWidth()) { Text("粘贴并添加") }
@@ -551,7 +542,7 @@ internal fun SubscriptionScreen(bypass: Boolean, automatic:Boolean=false, onAuto
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
                 TextButton({manualInput=!manualInput}) { Text("手动输入") }
-                TextButton({adding=false;onInvite(null)}) { Text("导入设备邀请") }
+                TextButton({adding=false;onInvite()}) { Text("导入设备邀请") }
             }
             androidx.compose.animation.AnimatedVisibility(manualInput) {
                 Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {

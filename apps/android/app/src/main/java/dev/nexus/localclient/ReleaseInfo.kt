@@ -93,6 +93,7 @@ class NexusApp:Application(){
     }
     override fun onCreate(){
         super.onCreate()
+        clearLegacyData(this)
         val next=Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler {thread,problem->
             try {CrashReports.write(this,problem)}catch(_:Throwable){}finally {next?.uncaughtException(thread,problem)}

@@ -17,13 +17,11 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.InetAddress
-import java.security.KeyStore
 
 private fun sampleInvite():String {
-    val sample=JSONObject().put("v",1).put("name","家庭网络").put("url","https://invite.test/claim")
-        .put("pin","0".repeat(64)).put("token","X".repeat(43))
-    return "nexus://invite/"+Base64.encodeToString(sample.toString().toByteArray(),Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
+    val sample=JSONObject().put("v",2).put("host","friend.example").put("port",443)
+        .put("invite", Base64.encodeToString(ByteArray(32), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING))
+    return "nexus://invite/v2#"+Base64.encodeToString(sample.toString().toByteArray(),Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
 }
 
 internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
@@ -31,15 +29,10 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
     val mode=args.getString("mode")
     if (mode=="simple") {
         val good=sampleInvite()
-        check(sharedInvitation(good)!=null && sharedInvitation(INVITE_MESSAGE+"\n"+good)!=null)
-        check(listOf("nexus://invite/?test",good+"?x",good.replaceFirst("nexus:","https:"),"https://example.test/",good+"\n"+good).none { sharedInvitation(it)!=null })
         check(invitationMatrix(good)?.second==true)
         check(invitationMatrix("a".repeat(1800))?.second==false)
         check(invitationMatrix("a".repeat(4000))==null)
         result.putString("qr","standard branded, long unbranded and oversize share-only checked")
-        val limits=invitationLimits()
-        check(limits.getInt("valid_seconds")==604800 && limits.getInt("device_seconds")==604800 && limits.getInt("max_devices")==1 && limits.isNull("quota"))
-        check(usageAmount(0)=="0.00 MB" && usageAmount(1500000)=="1.50 MB" && usageAmount(1000000000)=="1.00 GB")
         // Clipboard subscription prompt: only clear subscription addresses qualify.
         check(listOf("https://panel.example/api/v1/client/subscribe?token=abc","https://a.example/link/AbC?sub=3",
             "https://b.example/sub/xyz","https://c.example/s?flag=clash&token=1","https://d.example/feed/a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
@@ -65,7 +58,7 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
         } finally {
             owners.edit().clear().apply { saved.forEach { (k,v) -> when(v) { is String -> putString(k,v); is Boolean -> putBoolean(k,v) } } }.commit()
         }
-        result.putString("simple","clipboard accepts 2 forms, rejects 5; 7 days / 1 device / unlimited; decimal MB and GB")
+        result.putString("simple","clipboard recognition, invitation QR and owner identity removal checked")
         return
     }
     if(mode=="simple-overview" || mode=="simple-overview-actual") {
@@ -205,28 +198,14 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
             clickSplitLabel("添加节点");clickSplitLabel("导入设备邀请",true);splitLabel("粘贴邀请消息",false)
             clickSplitLabel("返回")
             clickSplitLabel("我的服务器")
-            splitLabel(if(OwnerAccess(ctx).current==null)"服务器 IP" else "已用本机密钥绑定，管理时不用再输密码",true)
-            val sampleDevices=JSONArray().put(JSONObject().put("name","我的手机").put("used",375000000L).put("quota",1000000000L).put("revoked",0))
-            @androidx.compose.runtime.Composable fun serverSample(){
-                SimpleShell("我的服务器",{},{}){
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-                        ServerSummary("家庭网络",sampleDevices){}
-                        PrimaryAction({},Modifier.fillMaxWidth()){Text("邀请朋友或我的设备")}
-                        Text("已授权设备");DeviceCard(sampleDevices.getJSONObject(0),false){}
-                        SecondaryAction({}){Text("高级")}
-                    }
-                }
-            }
-            runOnMainSync {home.setContent { NexusTheme {serverSample()} }}
-            shot("server","已用本机密钥绑定，管理时不用再输密码")
+            shot("server", if(OwnerAccess(ctx).current==null) "服务器 IP" else "已授权设备")
             // The receiving page is the real deep-link entry. Never redeem the synthetic invitation.
             val link=sampleInvite()
             val receiver=startActivitySync(Intent(Intent.ACTION_VIEW,android.net.Uri.parse(link),ctx,MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
             try {
                 runOnMainSync {receiver.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)}
-                shot("receive","收到一个邀请")
-                runOnMainSync { receiver.setContent { NexusTheme { Surface(Modifier.fillMaxSize()) { serverSample();ShareInvite(link,listOf("7 天","1 台","不限")) {} } } } }
+                runOnMainSync { receiver.setContent { NexusTheme { ShareInvite(link,listOf("7 天","一次领取")) {} } } }
                 shot("invite","发送邀请")
                 fun connectionSample(first:Boolean,state:TunnelState=TunnelState()) = runOnMainSync { receiver.setContent { NexusTheme {
                     SimpleShell("连接",{}, {}) {
@@ -258,47 +237,4 @@ internal fun Instrumentation.simpleCheck(args:Bundle,result:Bundle) {
         } finally { runOnMainSync { home.finish() } }
         return
     }
-    val host=requireNotNull(args.getString("host"))
-    require(android.util.Patterns.IP_ADDRESS.matcher(host).matches() && InetAddress.getByName(host).isSiteLocalAddress)
-    val access=OwnerAccess(ctx)
-    val inbox=File(ctx.noBackupFilesDir,"simple-lab-invite")
-    if(mode=="simple-host") {
-        check(runCatching { access.manager(host).owner("devices") }.exceptionOrNull() is ChangedServer)
-        result.putString("pin",friendlyError(ChangedServer()));return
-    }
-    if(mode=="simple-guest") {
-        check(!TunnelService.state.value.active && android.net.VpnService.prepare(ctx)==null)
-        val keys=KeyStore.getInstance("AndroidKeyStore").apply {load(null)}
-        val guest=Identity.rotate();val alias=requireNotNull(Identity.owner(guest))
-        check(alias.startsWith("nexus-device-v1-"))
-        try {
-            val home=startActivitySync(Intent(Intent.ACTION_VIEW,android.net.Uri.parse(inbox.readText()),ctx,MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            try {
-                clickSplitLabel("接受并连接",true)
-                runBlocking { withTimeout(45000) { TunnelService.state.first { it.connectedAt>0L } } }
-                val m=access.manager(host)
-                val devices=JSONArray(m.owner("devices"))
-                val row=devices.getJSONObject(0)
-                check(row.getString("name")==android.os.Build.MODEL)
-                m.owner("revoke",JSONObject().put("id",row.getString("id")))
-                runBlocking { withTimeout(95000) { TunnelService.state.first { it.connectedAt==0L } } }
-                result.putString("guest","second identity claimed, saved, connected, then lost authenticated connection after revoke")
-            } finally { ctx.startService(Intent(ctx,TunnelService::class.java).setAction("stop"))
-                runBlocking {withTimeout(10000){TunnelService.state.first { !it.active }}}
-                runOnMainSync { home.finish() } }
-        } finally { keys.deleteEntry(alias) }
-        return
-    }
-    val secret=File(ctx.noBackupFilesDir,"simple-lab-secret")
-    val pass=try { secret.readText() } finally { secret.delete() }
-    val create=mode=="simple-owner"
-    val pin=access.checkHost(host)
-    val p=access.enroll(host,pin,pass,create,requireNotNull(args.getString("dns")),8443,8444)
-    if(create) requireNotNull(p).save(ctx)
-    val reopened=OwnerAccess(ctx)
-    val m=reopened.manager(host)
-    check(JSONArray(m.owner("devices")).length()>0)
-    if(create) inbox.writeText(JSONObject(m.owner("invite",invitationLimits())).getString("link"))
-    result.putString("owner",if(create) "deployed, invited, reopened with local key" else "bound existing installation and listed devices using local key")
 }

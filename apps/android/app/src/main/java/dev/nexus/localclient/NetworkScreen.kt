@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.net.InetSocketAddress
 import java.net.URL
 import java.text.DateFormat
 import java.util.Date
@@ -51,53 +50,28 @@ internal fun diagnosticResponse(site: String, status: Int, content: String?, ela
 }
 
 @Composable
-fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, onSelect: (Profile) -> Unit, close: () -> Unit, selectedV2Key: String? = null) {
+fun NetworkScreen(tunnel: TunnelState, bypass: Boolean, changeMode: (Boolean) -> Unit, close: () -> Unit, selectedV2Key: String? = null) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("local", 0) }
     val scope = rememberCoroutineScope()
-    var servers by remember { mutableStateOf(emptyList<Profile>()) }
-    var pinned by remember { mutableStateOf(prefs.getString("pinned", null)) }
-    var failover by remember { mutableStateOf(prefs.getBoolean("failover",false)) }
     var result by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var newAddress by remember { mutableStateOf<String?>(null) }
     var ipConsent by remember { mutableStateOf(false) }
     var pickApps by remember { mutableStateOf(false) }
     val v2Key = (if (tunnel.active) tunnel.node else selectedV2Key)?.takeIf { it.startsWith("v2:") }
-    val selected = (tunnel.activeProfile ?: current).takeIf { v2Key == null }
     val subscription = v2Key == null && tunnel.subscription.isNotEmpty()
-    val key = v2Key ?: if (subscription) tunnel.subscription else selected?.let { it.server + "/" + it.fingerprint }
+    val key = v2Key ?: tunnel.subscription.takeIf { subscription }
     var apps by remember(key) { mutableStateOf(prefs.getStringSet("apps/$key",emptySet()).orEmpty().toSet()) }
-    var monitoring by remember(key) { mutableStateOf(prefs.getBoolean("monitor/$key",false)) }
-    var hold by remember(key) { mutableStateOf(prefs.getBoolean("hold/$key",false)) }
-    var monitorConsent by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { servers = withContext(Dispatchers.IO) { Profile.servers(context) } }
     LaunchedEffect(tunnel.connectedAt,tunnel.waiting,tunnel.error,key) { result = "" }
     fun diagnose(exit: Boolean) {
-        val profile = selected
         busy = true
         scope.launch {
             result = withContext(Dispatchers.IO) {
                 val cm = context.getSystemService(ConnectivityManager::class.java)
                 val lines = mutableListOf(DateFormat.getDateTimeInstance().format(Date()))
-                if (!exit && !subscription && profile != null) {
-                    val physical = cm.allNetworks.firstOrNull {
-                        val caps = cm.getNetworkCapabilities(it)
-                        caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true &&
-                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    }
-                    val start = SystemClock.elapsedRealtime()
-                    val tcp = runCatching {
-                        requireNotNull(physical).socketFactory.createSocket().use {
-                            val host = profile.server.substringBeforeLast(':').removeSurrounding("[", "]")
-                            it.connect(InetSocketAddress(host, profile.server.substringAfterLast(':').toInt()), 3000)
-                        }
-                    }.isSuccess
-                    lines += if (tcp) "节点 TCP 端口可达 · ${SystemClock.elapsedRealtime() - start} ms" else "节点 TCP 端口检测失败"
-                }
                 val network = cm.activeNetwork
                 if (network == null || cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true ||
-                    (v2Key == null && !subscription && profile?.dns == null) || !tunnel.vpn || tunnel.starting || tunnel.waiting || tunnel.error.isNotEmpty()) {
+                    (v2Key == null && !subscription) || !tunnel.vpn || tunnel.starting || tunnel.waiting || tunnel.error.isNotEmpty()) {
                     lines += if (tunnel.vpn && apps.isNotEmpty() && context.packageName !in apps) "当前策略只接管所选应用。要在 Nexus 内检测，请将 Nexus 加入业务应用。" else "请连接全设备 VPN 后验证网页和出口"
                 } else {
                     lines += if (subscription) "订阅节点 · ${tunnel.subscription}" else "设备认证和节点 OPEN 已完成"
@@ -119,7 +93,7 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
                             if (ip != null) {
                                 val previous = prefs.getString("exit/$key", null)
                                 if (previous != null && previous != ip) lines += "出口已变化 · 上次 $previous"
-                                if (!prefs.getBoolean("monitor/$key",false)) prefs.edit().putString("exit/$key", ip).apply()
+                                prefs.edit().putString("exit/$key", ip).apply()
                             }
                             lines += message
                         } finally { c.disconnect() }
@@ -132,70 +106,21 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
     }
     BackHandler(onBack = close)
     val theme = MaterialTheme.colorScheme
-    @Composable fun toggle(checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) =
-        Switch(checked, change, enabled = enabled, colors = switchColors())
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp)) {
         Text("出口与诊断", style = MaterialTheme.typography.headlineMedium)
         SectionLabel("分流模式")
         ModeSwitch(bypass, changeMode)
-        if (servers.isNotEmpty()) {
-            SectionLabel("私人节点出口")
-            servers.forEachIndexed { i, server ->
-                val chosen = v2Key == null && server.server == current?.server && server.fingerprint == current.fingerprint
-                val open = !chosen && !tunnel.active && pinned == null
-                ListRow(server.name, server.server, groupPlace(i, servers.lastIndex, false, false),
-                    trailing = { Text(if (chosen) "当前出口" else "选择", color = if (chosen) theme.onSurfaceVariant else theme.primary,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) },
-                    onClick = if (open) ({ runCatching { server.save(context) }.onSuccess { onSelect(server) }.onFailure { result = "切换失败" } }) else null)
-            }
-        }
         if (v2Key != null) {
             SectionLabel("V2 节点设置")
             val scopeLabel = if (apps.isEmpty()) "全设备都走代理" else "只有选中的 ${apps.size} 个应用走代理"
             ListRow("应用范围", if (tunnel.active) "$scopeLabel · 断开后可修改" else scopeLabel,
                 enabled = !tunnel.active) { pickApps = true }
-        } else if (current != null) {
-            SectionLabel("私人节点设置")
-            val rows = buildList<Pair<String, @Composable (GroupPlace) -> Unit>> {
-                if (current.dns != null) {
-                    add("lock" to { place -> ListRow("锁定当前私人节点", "固定使用这台服务器，网络中断时保留 VPN 路由", place,
-                        trailing = { toggle(pinned != null, !tunnel.active) { lock ->
-                            val next = if (lock) key else null
-                            if (prefs.edit().putString("pinned", next).commit()) pinned = next
-                        } }) })
-                    add("apps" to { place -> ListRow("应用范围", if (apps.isEmpty()) "全设备都走代理" else "只有选中的 ${apps.size} 个应用走代理", place,
-                        enabled = !tunnel.active) { pickApps = true } })
-                    add("monitor" to { place -> ListRow("持续检查出口 IP", "每五分钟经 VPN 查询一次，出口变化时通知", place,
-                        trailing = { toggle(monitoring, !tunnel.active) {
-                            if (it) monitorConsent = true else if (prefs.edit().putBoolean("monitor/$key", false).commit()) monitoring = false
-                        } }) })
-                    if (monitoring) add("hold" to { place -> ListRow("出口变化时暂停业务流量", "", place,
-                        trailing = { toggle(hold, !tunnel.active) { if (prefs.edit().putBoolean("hold/$key", it).commit()) hold = it } }) })
-                    add("failover" to { place -> ListRow("失败时切换到其他私人节点", if (pinned != null || apps.isNotEmpty()) "锁定或限定应用时不可用" else "", place,
-                        trailing = { toggle(failover && pinned == null && apps.isEmpty(), !tunnel.active && pinned == null && apps.isEmpty()) {
-                            if (prefs.edit().putBoolean("failover", it).commit()) failover = it
-                        } }) })
-                }
-                add("move" to { place -> ListRow("更新迁移后的服务器地址", "服务器换了 IP 或端口时在这里修改", place,
-                    enabled = !tunnel.active && pinned == null) { newAddress = current.server } })
-            }
-            rows.forEachIndexed { i, (_, row) -> row(groupPlace(i, rows.lastIndex, false, false)) }
-            newAddress?.let { address ->
-                AlertDialog(onDismissRequest={newAddress=null},title={Text("更新私人节点地址")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                    Text("向拥有者确认新地址及端口。下次连接继续校验原 CA 和本机设备证书。")
-                    OutlinedTextField(address,{newAddress=it.take(96)},singleLine=true,label={Text("新 IP:端口")})
-                }},confirmButton={ PrimaryAction(onClick={
-                    runCatching { current.moveEndpoint(context,address.trim()) }.onSuccess {
-                        onSelect(it); servers=Profile.servers(context);newAddress=null
-                    }.onFailure { result="地址无效、已存在或节点已锁定";newAddress=null }
-                }) { Text("更新地址") } },dismissButton={SecondaryAction(onClick={newAddress=null}) { Text("取消") }})
-            }
         }
         SectionLabel("检测")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PrimaryAction(enabled = !busy && (v2Key != null || current != null || subscription), modifier = Modifier.fillMaxWidth(), onClick = { diagnose(false) }) {
-                Text(if (v2Key != null || subscription) "检测 DNS 和网页" else "检测端口、DNS 和网页") }
-            SecondaryAction(enabled = !busy && (v2Key != null || selected?.dns != null || subscription) && tunnel.vpn, modifier = Modifier.fillMaxWidth(), onClick = { ipConsent = true }) {
+            PrimaryAction(enabled = !busy && (v2Key != null || subscription), modifier = Modifier.fillMaxWidth(), onClick = { diagnose(false) }) {
+                Text("检测 DNS 和网页") }
+            SecondaryAction(enabled = !busy && (v2Key != null || subscription) && tunnel.vpn, modifier = Modifier.fillMaxWidth(), onClick = { ipConsent = true }) {
                 Text("查询公网出口") }
             if (!tunnel.vpn) Text("连接 VPN 后可以检测连通性、查询公网出口", color = theme.onSurfaceVariant, fontSize = 13.sp)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -203,10 +128,6 @@ fun NetworkScreen(current: Profile?, tunnel: TunnelState, bypass: Boolean, chang
         }
         Spacer(Modifier.height(16.dp))
     }
-    if (monitorConsent) AlertDialog(onDismissRequest={monitorConsent=false},title={Text("允许定期查询公网出口？")},
-        text={Text("连接此节点时，Nexus 每五分钟通过 VPN 向 ipinfo.io 查询一次公网 IP，地址变化时发出通知。业务应用模式需把 Nexus 加入所选应用。")},
-        confirmButton={TextButton(onClick={monitoring=prefs.edit().putBoolean("monitor/$key",true).commit();monitorConsent=false}){Text("启用")}},
-        dismissButton={TextButton(onClick={monitorConsent=false}){Text("取消")}})
     if (pickApps) {
         var draft by remember(key) { mutableStateOf(apps) }
         var launchers by remember { mutableStateOf(emptyList<Pair<String,String>>()) }
