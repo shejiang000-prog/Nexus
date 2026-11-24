@@ -4,7 +4,7 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 // Isolated laboratory builds accept a locally built, untracked AAR.
 def labAar = providers.gradleProperty('nexusV2Aar').orNull
-def publicVersion = '1.0.1'
+def publicVersion = '2.0.0'
 def components = publicVersion.tokenize('.').collect { Integer.parseInt(it) }
 assert components.size() == 3 && components[1] < 100 && components[2] < 100
 def numericVersion = components[0] * 10000 + components[1] * 100 + components[2]
@@ -40,7 +40,8 @@ android {
             minifyEnabled true
             shrinkResources true
             signingConfig signingConfigs.release
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'proguard-test-api.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (providers.gradleProperty('nexusTestRelease').isPresent()) proguardFiles 'proguard-test-api.pro'
         }
     }
     // GitHub downloads are slow from mainland China; compressing the ~66 MB of native code
@@ -155,7 +156,6 @@ def buildNodeAssets = tasks.register('buildV2LinuxNodes', Exec) {
 def adminAssets = tasks.register('prepareNodeAssets', Sync) {
     from(new File(rootProject.projectDir.parentFile.parentFile, 'PRIVACY.md'))
     from(new File(rootProject.projectDir.parentFile.parentFile, 'LICENSE')) { into 'licenses/Nexus' }
-    from(new File(rootProject.projectDir.parentFile.parentFile, 'tools')) { include 'node_admin.py', 'install_node.py' }
     into layout.buildDirectory.dir('nodeAssets')
 }
 android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('nodeAssets'))
@@ -166,23 +166,17 @@ def stageLinuxNodes = tasks.register('stageLinuxNodes', Sync) {
     dependsOn buildNodeAssets
     into nodeBinaries
     from(v2NodeAssets) { into 'linux'; include 'x86_64/nexus-node', 'aarch64/nexus-node' }
-    from(providers.environmentVariable('NEXUS_LINUX_BINARIES').orElse(layout.buildDirectory.dir('linuxNodes').map { it.asFile.absolutePath })) {
-        into 'linux'
-        include 'x86_64/nexus-server', 'aarch64/nexus-server'
-    }
     doLast {
         for (arch in ['x86_64', 'aarch64']) {
-            for (name in ['nexus-node', 'nexus-server']) {
-                if (!new File(destinationDir, "linux/$arch/$name").isFile())
-                    throw new GradleException("Missing $name for $arch. See docs/ANDROID.md")
-            }
+            if (!new File(destinationDir, "linux/$arch/nexus-node").isFile())
+                throw new GradleException("Missing nexus-node for $arch. See docs/ANDROID.md")
         }
     }
 }
 android.sourceSets.debug.assets.srcDir(nodeBinaries)
 tasks.matching { it.name == 'preDebugBuild' }.configureEach { dependsOn stageLinuxNodes }
 
-def releasePins = layout.buildDirectory.dir('releaseNodePins')
+def releasePins = layout.buildDirectory.dir('v2ReleaseNodePins')
 def pinLinuxNodes = tasks.register('pinLinuxNodes') {
     dependsOn stageLinuxNodes
     inputs.dir(nodeBinaries)
@@ -191,10 +185,8 @@ def pinLinuxNodes = tasks.register('pinLinuxNodes') {
         for (arch in ['x86_64', 'aarch64']) {
             def destination = releasePins.get().dir("linux/$arch").asFile
             destination.mkdirs()
-            for (name in ['nexus-node', 'nexus-server']) {
-                ant.checksum(file: nodeBinaries.get().file("linux/$arch/$name").asFile,
-                    algorithm: 'SHA-256', todir: destination, fileext: '.sha256', forceOverwrite: true)
-            }
+            ant.checksum(file: nodeBinaries.get().file("linux/$arch/nexus-node").asFile,
+                algorithm: 'SHA-256', todir: destination, fileext: '.sha256', forceOverwrite: true)
         }
     }
 }

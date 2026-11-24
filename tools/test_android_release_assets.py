@@ -19,10 +19,9 @@ class ReleaseAssetsTest(unittest.TestCase):
             for arch in ("x86_64", "aarch64"):
                 directory = nodes / arch
                 directory.mkdir(parents=True)
-                for binary in ("nexus-node", "nexus-server"):
-                    payload = f"{arch}/{binary}".encode()
-                    (directory / binary).write_bytes(payload)
-                    pins[f"assets/linux/{arch}/{binary}.sha256"] = hashlib.sha256(payload).hexdigest()
+                payload = arch.encode()
+                (directory / "nexus-node").write_bytes(payload)
+                pins[f"assets/linux/{arch}/nexus-node.sha256"] = hashlib.sha256(payload).hexdigest()
 
             for suffix, abis in (("arm64", ["arm64-v8a"]), ("universal", ["arm64-v8a", "x86_64"])):
                 with zipfile.ZipFile(root / f"Nexus-1.2.3-{suffix}.apk", "w") as apk:
@@ -34,8 +33,7 @@ class ReleaseAssetsTest(unittest.TestCase):
 
             prepare("v1.2.3", root, nodes, dest, changelog)
             for arch, cpu in (("x86_64", "amd64"), ("aarch64", "arm64")):
-                for binary in ("nexus-node", "nexus-server"):
-                    self.assertEqual((dest / f"{binary}-linux-{cpu}").read_bytes(), (nodes / arch / binary).read_bytes())
+                self.assertEqual((dest / f"nexus-node-linux-{cpu}").read_bytes(), (nodes / arch / "nexus-node").read_bytes())
 
             source = nodes / "x86_64" / "nexus-node"
             original = source.read_bytes()

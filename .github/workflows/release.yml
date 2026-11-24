@@ -35,22 +35,6 @@ jobs:
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-      - name: Build Linux nodes on Debian 12
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src rust:1.100.0-bookworm bash -euc '
-            apt-get update -qq
-            apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-            rustup target add aarch64-unknown-linux-gnu
-            export CARGO_TARGET_DIR=/tmp/target
-            cargo build --locked --release -p nexus-server
-            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo build --locked --release --target aarch64-unknown-linux-gnu -p nexus-server
-            install -D /tmp/target/release/nexus-server /src/apps/android/app/build/linuxNodes/x86_64/nexus-server
-            install -D /tmp/target/aarch64-unknown-linux-gnu/release/nexus-server /src/apps/android/app/build/linuxNodes/aarch64/nexus-server
-            for bin in /src/apps/android/app/build/linuxNodes/*/nexus-server; do
-              newest=$(readelf --version-info "$bin" | grep -oE "GLIBC_[0-9.]+" | sort -Vu | tail -1)
-              test -n "$newest" && dpkg --compare-versions "${newest#GLIBC_}" le 2.36
-            done
-            chown -R $(stat -c %u:%g /src) /src/apps/android/app/build'
       - name: Install Android toolchain
         run: |
           rustup toolchain install 1.100.0 --profile minimal --target aarch64-linux-android,x86_64-linux-android
@@ -107,4 +91,4 @@ jobs:
         run: |
           test "$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" = "$EXPECTED_MANIFEST"
           sha256sum --check --strict SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md Nexus-*.apk nexus-node-linux-* nexus-server-linux-* SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md Nexus-*.apk nexus-node-linux-* SHA256SUMS.txt

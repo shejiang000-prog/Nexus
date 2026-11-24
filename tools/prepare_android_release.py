@@ -22,11 +22,10 @@ def prepare(tag, apks, nodes, dest, changelog):
     assets = {}
     pins = {}
     for directory, arch in (("x86_64", "amd64"), ("aarch64", "arm64")):
-        for binary in ("nexus-node", "nexus-server"):
-            source = nodes / directory / binary
-            with source.open("rb") as f:
-                pins[f"assets/linux/{directory}/{binary}"] = hashlib.file_digest(f, "sha256").hexdigest()
-            assets[f"{binary}-linux-{arch}"] = source
+        source = nodes / directory / "nexus-node"
+        with source.open("rb") as f:
+            pins[f"assets/linux/{directory}/nexus-node.sha256"] = hashlib.file_digest(f, "sha256").hexdigest()
+        assets[f"nexus-node-linux-{arch}"] = source
     for suffix, expected in [("arm64", {"arm64-v8a"}), ("universal", {"arm64-v8a", "x86_64"})]:
         name = f"Nexus-{version}-{suffix}.apk"
         with zipfile.ZipFile(apks / name) as archive:
@@ -36,8 +35,11 @@ def prepare(tag, apks, nodes, dest, changelog):
             for abi in expected:
                 if not all(f"lib/{abi}/{lib}" in entries for lib in ("libnexus_android.so", "libshoes.so", "libgojni.so")):
                     raise ValueError(f"Incomplete native payload: {name} {abi}")
+            node_assets = [n for n in entries if n.startswith("assets/linux/") and not n.endswith("/")]
+            if sorted(node_assets) != sorted(pins):
+                raise ValueError(f"APK must contain only the matching Linux binary digests: {name}")
             for path, digest in pins.items():
-                if path in entries or archive.read(path + ".sha256").decode("ascii").strip() != digest:
+                if archive.read(path).decode("ascii").strip() != digest:
                     raise ValueError(f"APK must contain only the matching Linux binary digest: {name} {path}")
         assets[name] = apks / name
     dest.mkdir(parents=True, exist_ok=True)
