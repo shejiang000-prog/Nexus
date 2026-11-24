@@ -45,11 +45,16 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				h3.active.Store(1)
 				h3.opening.Store(1)
 				var attempts atomic.Int32
+				started := time.Now()
+				var firstAt, secondAt atomic.Int64
 				h3.round = func(r *http.Request) (*http.Response, error) {
 					if r.Method != http.MethodHead {
 						t.Error("expected a new authenticated round trip")
 					}
-					if attempts.Add(1) == 2 {
+					if attempts.Add(1) == 1 {
+						firstAt.Store(int64(time.Since(started)))
+					} else {
+						secondAt.Store(int64(time.Since(started)))
 						switch scenario {
 						case "second-head-succeeds":
 							return answer(), nil
@@ -72,6 +77,7 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				}()
 				discarded := make(chan struct{}, 1)
 				kept := make(chan struct{}, 1)
+				testDone := ctx.Done()
 				var dials atomic.Int32
 				s := selector{ctx: ctx, androidVPN: true, lane: h3, events: make(chan string)}
 				s.dial = func(ctx context.Context, kind string) (*transportLane, error) {
@@ -85,6 +91,9 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 						select {
 						case kept <- struct{}{}:
 						default:
+						}
+						if scenario == "second-head-succeeds" || scenario == "business-reply" {
+							<-testDone // Inspect this decision before another weak window starts.
 						}
 						return true
 					},
@@ -119,6 +128,12 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 				if dials.Load() != 1 || attempts.Load() != 2 {
 					t.Fatalf("H2 dials=%d, H3 challenges=%d", dials.Load(), attempts.Load())
 				}
+				if time.Duration(firstAt.Load()) != 500*time.Millisecond || time.Duration(secondAt.Load()-firstAt.Load()) != 850*time.Millisecond {
+					t.Fatalf("H3 challenge times %v and %v", time.Duration(firstAt.Load()), time.Duration(secondAt.Load()))
+				}
+				if scenario == "control-only" && time.Since(started) != 3050*time.Millisecond {
+					t.Fatalf("independent second challenge did not use the full 1700ms: decision at %v", time.Since(started))
+				}
 				synctest.Wait()
 				if oldClosed.Load() != (scenario == "control-only") {
 					t.Fatalf("old H3 closed=%v in %s", oldClosed.Load(), scenario)
@@ -130,6 +145,45 @@ func TestAndroidOneWayH3Failure(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestFirstWeakWindowRequiresActiveBusiness(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		s := selector{ctx: ctx, androidVPN: true, wake: make(chan struct{}, 1)}
+		started, finished := make(chan struct{}, 1), make(chan error, 1)
+		l := &transportLane{kind: "h3", wake: s.wake, health: "https://node.test/health.bin", stats: func() uint64 { return 0 }}
+		l.round = func(r *http.Request) (*http.Response, error) {
+			started <- struct{}{}
+			<-r.Context().Done()
+			finished <- r.Context().Err()
+			return nil, r.Context().Err()
+		}
+		s.lane = l
+		s.dial = func(context.Context, string) (*transportLane, error) { return nil, errors.New("unavailable") }
+		done := make(chan struct{})
+		go func() { s.watch(); close(done) }()
+		time.Sleep(15 * time.Second)
+		if len(started) != 0 {
+			t.Fatal("idle H3 probed")
+		}
+		l.active.Store(1)
+		l.opening.Store(1)
+		l.business()
+		<-started
+		l.active.Store(0)
+		l.opening.Store(0)
+		if err := <-finished; err != context.Canceled {
+			t.Fatalf("idle probe not canceled: %v", err)
+		}
+		time.Sleep(5 * time.Second)
+		if len(started) != 0 {
+			t.Fatal("repeated idle challenge")
+		}
+		cancel()
+		<-done
+	})
 }
 
 func TestCertificateFailureStopsColdRace(t *testing.T) {

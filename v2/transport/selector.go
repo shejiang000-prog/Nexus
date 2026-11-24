@@ -311,10 +311,30 @@ func authenticatedHead(parent context.Context, l *transportLane, timeout time.Du
 	return ok
 }
 
-func (s *selector) checkStalledH3(l *transportLane, delivered uint64) <-chan bool {
+// Start the first challenge in the first weak activity window. Its owner
+// cancels the request if business or lane changes before the second window.
+type h3Challenge struct {
+	lane      *transportLane
+	delivered uint64
+	answer    chan bool
+	cancel    context.CancelFunc
+}
+
+func (s *selector) firstH3Challenge(l *transportLane, delivered uint64) *h3Challenge {
+	ctx, cancel := context.WithCancel(s.ctx)
+	p := &h3Challenge{l, delivered, make(chan bool, 1), cancel}
+	go func() { p.answer <- authenticatedHead(ctx, l, 850*time.Millisecond) }()
+	return p
+}
+
+func (s *selector) checkStalledH3(l *transportLane, delivered uint64, first *h3Challenge) <-chan bool {
+	if first == nil {
+		first = s.firstH3Challenge(l, delivered)
+	}
 	reachable := make(chan bool, 1)
 	go func() {
-		ok := authenticatedHead(s.ctx, l, 850*time.Millisecond)
+		defer first.cancel()
+		ok := <-first.answer
 		if !ok && l.active.Load() > 0 && l.delivered.Load() == delivered {
 			ok = authenticatedHead(s.ctx, l, 1700*time.Millisecond)
 		}
@@ -387,6 +407,14 @@ func (s *selector) watch() {
 	var owner *transportLane
 	var standby *transportLane
 	var standbyUntil time.Time
+	var first *h3Challenge
+	discardFirst := func() {
+		if first != nil {
+			first.cancel()
+			first = nil
+		}
+	}
+	defer discardFirst()
 	closeStandby := func() {
 		if standby != nil {
 			standby.close()
@@ -411,6 +439,7 @@ func (s *selector) watch() {
 			}
 			if sleep {
 				discard()
+				discardFirst()
 				closeStandby()
 				weak = 0
 				tick.Stop()
@@ -429,6 +458,9 @@ func (s *selector) watch() {
 		case <-tick.C:
 		}
 		l = s.current()
+		if first != nil && (first.lane != l || first.delivered != l.delivered.Load()) {
+			discardFirst()
+		}
 		if standby != nil && (observed != l || !time.Now().Before(standbyUntil) || !standby.usable()) {
 			closeStandby()
 		}
@@ -506,6 +538,7 @@ func (s *selector) watch() {
 		}
 		if l.active.Load() == 0 || (!gone && (progress || idle)) {
 			discard()
+			discardFirst()
 			if l.active.Load() == 0 || idle {
 				closeStandby()
 			}
@@ -514,6 +547,9 @@ func (s *selector) watch() {
 		}
 		weak++
 		if weak < 2 {
+			if businessStalled {
+				first = s.firstH3Challenge(l, delivered)
+			}
 			if standby == nil && delta == 0 && time.Since(lastH2) >= 10*time.Second {
 				lastH2 = time.Now()
 				pending, abandon = s.prebuildH2()
@@ -522,6 +558,9 @@ func (s *selector) watch() {
 			continue
 		}
 		weak = 0
+		if !businessStalled {
+			discardFirst()
+		}
 		bursty := s.androidVPN && delta >= 1<<20
 		if bursty && !losses.impaired(s.ctx, l) {
 			continue
@@ -532,7 +571,8 @@ func (s *selector) watch() {
 		if businessStalled {
 			// A one-way block can still deliver QUIC ACKs and retransmissions.
 			// Test new round trips while the authenticated fallback is being built.
-			reachable = s.checkStalledH3(l, delivered)
+			reachable = s.checkStalledH3(l, delivered, first)
+			first = nil
 		} else if !bursty {
 			go func() {
 				ctx, cancel := context.WithTimeout(s.ctx, 850*time.Millisecond)
@@ -583,7 +623,7 @@ func (s *selector) watch() {
 				// challenge the current H3 now, using this same verified H2.
 				if h2time == 0 && h3time == 0 && !h3Answered && alt.ack.Load() && l.active.Load() > 0 && l.delivered.Load() == delivered {
 					businessStalled = true
-					reachable = s.checkStalledH3(l, delivered)
+					reachable = s.checkStalledH3(l, delivered, nil)
 				}
 			}
 		}
