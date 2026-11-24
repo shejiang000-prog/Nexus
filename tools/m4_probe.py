@@ -61,7 +61,7 @@ class Device:
         return r.stdout.decode().strip() if not r.returncode else ""
 
     def signal(self,value):
-        if value not in {"arm-drop","blocked","arm-unblock","arm-restart","node-up"}:
+        if not re.fullmatch(r"(arm-drop|arm-unblock|arm-restart|node-up|(blocked|restored) [0-9]+)",value):
             raise ValueError("unknown control signal")
         self.write("no_backup/m4-signal",value)
 
@@ -71,7 +71,7 @@ class Device:
         self.shell(*self.prefix,"rm","-f","no_backup/m4-stage","no_backup/m4-signal")
         args=["shell","am","instrument","-w","-e","mode","m4-probe","-e","phase",phase]
         for key,value in opts.items():
-            if key not in {"pairs","protocol"} or not re.fullmatch(r"[a-z0-9]+",str(value)):
+            if key not in {"pairs","protocol","recovery"} or not re.fullmatch(r"[a-z0-9]+",str(value)):
                 raise ValueError("invalid options")
             args+=["-e",key,str(value)]
         return subprocess.Popen(self.adb+args+[self.runner],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
@@ -122,39 +122,53 @@ class Device:
                 with suppress(Exception): proc.wait(timeout=10)
                 self.shell("am","force-stop",self.package)
 
-    def block(self,drop,restore):
-        """Pass existing host-side callables. restore must be idempotent and remove only our own rule."""
-        proc=self.start("block")
+    def rule_marker(self,callback,signal):
+        """Map callback return to Android CLOCK_BOOTTIME, then wake instrumentation over a pre-opened pipe."""
+        # /proc/uptime is CLOCK_BOOTTIME rounded down to centiseconds. Intersect five
+        # host monotonic sample brackets; report the uncertainty instead of treating adb as instantaneous.
+        bounds=[]
+        for _ in range(5):
+            begin=time.monotonic_ns()/1e6
+            sample=float(self.shell("cat","/proc/uptime").split()[0])*1000
+            end=time.monotonic_ns()/1e6
+            bounds.append((sample-end,sample+10-begin))
+        low=max(x[0] for x in bounds)
+        high=min(x[1] for x in bounds)
+        if low>high:
+            raise RuntimeError("unstable host to device monotonic clock mapping")
+        command=(f"run-as {self.package} sh -c 'read -r record && "
+                 'echo "$record" > no_backup/m4-signal.part && '
+                 "mv no_backup/m4-signal.part no_backup/m4-signal'")
+        with subprocess.Popen(self.adb+["shell","-T",command],stdin=subprocess.PIPE,
+                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL) as pipe:
+            begin=time.monotonic_ns()/1e6
+            callback()
+            end=time.monotonic_ns()/1e6
+            origin=round(end+(low+high)/2)
+            pipe.communicate(f"{signal} {origin}\n".encode(),timeout=10)
+            if pipe.returncode: raise RuntimeError("could not send rule event")
+        return {"returnBootMs":origin,"clockUncertaintyMs":round((high-low)/2+.5,2),
+                "commandDurationMs":round(end-begin,2)}
+
+    def block(self,drop,restore,recovery=True):
+        """One measured hot/cold round. Caller callbacks manage only this run's deny rule."""
+        proc=self.start("block",recovery=str(recovery).lower())
         armed=False
         try:
             self.wait(proc,"ready-drop")
-            drop_arm_min=time.monotonic()
             self.signal("arm-drop")
             self.wait(proc,"armed-drop")
-            drop_start=time.monotonic()
             armed=True
-            drop()
-            drop_end=time.monotonic()
-            self.signal("blocked")
-            self.wait(proc,"ready-unblock")
-            remove_arm_min=time.monotonic()
+            applied=self.rule_marker(drop,"blocked")
+            self.wait(proc,"ready-unblock",160)
             self.signal("arm-unblock")
             self.wait(proc,"armed-unblock")
-            restore_start=time.monotonic()
-            restore()
-            restore_end=time.monotonic()
+            removed=self.rule_marker(restore,"restored")
             armed=False
-            out=self.finish(proc,200)
-            out["host-rule-install-ms"]=round(1000*(drop_end-drop_start))
-            out["host-rule-remove-ms"]=round(1000*(restore_end-restore_start))
-            # The device timestamps arm when acknowledging it. SSH applies its rule between
-            # callback start and completion. Keep both uncertainties in the reported range.
-            for name,metric,arm_min,apply_end in (
-                ("hot","hot-H2-fresh-https-ms-from-arm",drop_arm_min,drop_end),
-                ("recover","restored-H3-fresh-https-ms-from-arm",remove_arm_min,restore_end),
-            ):
-                ms=int(out[metric])
-                out[name+"-from-rule-ms-bounds"]=[max(0,ms-round(1000*(apply_end-arm_min))),ms]
+            out=self.finish(proc,335)
+            out.update({"deny":applied,"restore":removed})
+            for name in ("hot","cold","recover"):
+                if name in out: out[name]=json.loads(out[name])
             return out
         finally:
             try:
@@ -171,15 +185,16 @@ if __name__=="__main__":
     p.add_argument("serial"); p.add_argument("package"); p.add_argument("--adb",default="adb")
     p.add_argument("--runner",help="installed CatalogCheck component for this package")
     sub=p.add_subparsers(dest="action",required=True)
-    c=sub.add_parser("config"); c.add_argument("--host","--owner-host",dest="host"); c.add_argument("--v2-host"); c.add_argument("--probe-url",default=FIXED_FILE["probeUrl"])
+    c=sub.add_parser("config"); c.add_argument("--host","--owner-host",dest="host"); c.add_argument("--v2-host"); c.add_argument("--echo-host"); c.add_argument("--echo-port",type=int); c.add_argument("--probe-title",default="Example Domain"); c.add_argument("--probe-url",default=FIXED_FILE["probeUrl"])
     q=sub.add_parser("run"); q.add_argument("phase",choices=sorted(PHASES)); q.add_argument("--pairs",type=int)
-    q.add_argument("--protocol",choices=["reality","hysteria2"])
+    q.add_argument("--protocol",choices=["reality","hysteria2","h2"])
+    q.add_argument("--recovery",choices=["true","false"])
     sub.add_parser("stage")
-    s=sub.add_parser("signal"); s.add_argument("value",choices=["arm-drop","blocked","arm-unblock","arm-restart","node-up"])
+    s=sub.add_parser("signal"); s.add_argument("value",help="arm-drop, arm-unblock, arm-restart, node-up, or stamped blocked/restored event")
     a=p.parse_args()
     device=Device(a.adb,a.serial,a.package,a.runner)
-    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,v2Host=a.v2_host or a.host or "")
+    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")
     elif a.action=="run":
-        print(json.dumps(device.run(a.phase,**{k:v for k,v in vars(a).items() if k in ("pairs","protocol") and v is not None}),ensure_ascii=False))
+        print(json.dumps(device.run(a.phase,**{k:v for k,v in vars(a).items() if k in ("pairs","protocol","recovery") and v is not None}),ensure_ascii=False))
     elif a.action=="stage": print(device.stage())
     elif a.action=="signal": device.signal(a.value)

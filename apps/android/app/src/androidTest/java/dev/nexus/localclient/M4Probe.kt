@@ -8,6 +8,10 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Bundle
 import android.os.SystemClock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.Closeable
 import java.io.File
@@ -137,8 +141,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
     fun usable(kind: String, ms: Long) {
         until(ms) {
             val before = available(kind)
-            val response = runCatching { fresh() }.isSuccess
-            before && response && available(kind)
+            before && runCatching { fresh() }.isSuccess && available(kind)
         }
     }
     fun stop() {
@@ -166,6 +169,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
     val signal = file("signal")
     fun marker(value: String) { stage.writeText(value); result.putString("stage",value) }
     fun awaitSignal(value: String) { until(180000) { signal.takeIf { it.exists() }?.readText()?.trim() == value } }
+    val benchBearer = if (args.getString("protocol") == "h2") "h2" else "h3"
     fun download(kind: String, index: Int): Double {
         val url = https(cfg.getString("url"))
         val expectedSize = cfg.getLong("bytes").also { require(it > 0) }
@@ -190,7 +194,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
             }
             val elapsed = SystemClock.elapsedRealtimeNanos()-began
             check(bytes==expectedSize && hash.digest().joinToString("") { "%02x".format(it) }==expectedHash)
-            check(available(if(kind=="v2") "h3" else "xray"))
+            check(available(if(kind=="v2") benchBearer else "xray"))
             val rate = 8000.0*bytes/elapsed
             val sample = "$kind-$index"
             result.putDouble(sample,rate)
@@ -204,11 +208,12 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
         when (phase) {
             "bench" -> {
                 val samples = requireNotNull(args.getString("pairs")).toInt().also { require(it in 1..60) }
+                result.putString("v2-benchmark-bearer",benchBearer)
                 val rates = mapOf("v2" to mutableListOf<Double>(),"reality" to mutableListOf<Double>())
                 repeat(samples) { n ->
                     for(kind in if(n%2==0) rates.keys.toList() else rates.keys.reversed()) {
                         marker("bench-$kind-${n+1}")
-                        start(kind); usable(if(kind=="v2") "h3" else "xray",30000)
+                        start(kind); usable(if(kind=="v2") benchBearer else "xray",30000)
                         rates.getValue(kind).add(download(kind,n+1))
                         stop(); clearSource()
                     }
@@ -300,13 +305,14 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     var resumed = -1L
                     marker("armed-restart")
                     until(420000) {
+                        val newBootAlreadyVerified = signal.takeIf { it.isFile }?.readText()?.trim()=="node-up"
                         val ok = runCatching { fresh() }.isSuccess
                         if (!ok) {
                             if (firstFailure < 0) firstFailure = now()-began
                             latestFailure = now()-began
                             resumed = -1
                         } else if (firstFailure >= 0 && resumed < 0) resumed = now()-began
-                        val done = resumed >= 0 && available("v2") && signal.takeIf { it.exists() }?.readText()?.trim()=="node-up"
+                        val done = newBootAlreadyVerified && ok && resumed >= 0 && available("v2")
                         if (!done) SystemClock.sleep(150)
                         done
                     }
@@ -315,50 +321,106 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     result.putLong("restart-last-failure-ms-from-arm",latestFailure)
                     result.putLong("restart-first-recovered-https-ms-from-arm",resumed)
                     result.putBoolean("same-android-vpn-network",!originalLost.get() && vpn()==initialNetwork)
+                    result.putLong("restart-post-verified-boot-https-ms-from-arm",now()-began)
                     result.putBoolean("same-app-process",true)
                     result.putString("recovered-bearer",bearer())
                 } finally { cm.unregisterNetworkCallback(cb) }
             }
             "block" -> {
-                start("v2"); usable("h3",30000)
-                HeldHttps(vpn(),endpoint(),2000).use { old ->
-                    old.ping()
-                    marker("ready-drop"); awaitSignal("arm-drop")
-                    val began = now()
-                    marker("armed-drop")
-                    var lost = -1L
-                    val latestOldResponse = java.util.concurrent.atomic.AtomicLong()
-                    val running = java.util.concurrent.atomic.AtomicBoolean(true)
-                    val worker = kotlin.concurrent.thread {
-                        try { while(running.get()) { old.ping(); latestOldResponse.set(now()-began); SystemClock.sleep(100) } }
-                        catch (_: Exception) { lost=now()-began }
+                fun origin(expected: String): Long {
+                    var stamp: Long? = null
+                    until(180000) {
+                        val value = signal.takeIf { it.isFile }?.readText()?.trim().orEmpty()
+                        if (value.startsWith("$expected ")) stamp = value.substringAfter(' ').toLongOrNull()
+                        stamp != null
                     }
-                    try {
-                        usable("h2",35000)
-                        result.putLong("hot-H2-fresh-https-ms-from-arm",now()-began)
-                    } finally {
-                        running.set(false); worker.join(3500)
-                    }
-                    result.putLong("old-H3-last-HTTPS-ms-from-arm",latestOldResponse.get())
-                    result.putLong("old-H3-first-failed-HTTPS-ms-from-arm",lost)
+                    return requireNotNull(stamp)
                 }
-                awaitSignal("blocked")
-                stop()
-                val cold = now()
-                start("v2"); usable("h2",30000)
-                result.putLong("cold-H2-fresh-https-ms",now()-cold)
-                HeldHttps(vpn(),endpoint(),2000).use { held ->
-                    held.ping(); marker("ready-unblock"); awaitSignal("arm-unblock")
-                    val began = now()
-                    marker("armed-unblock")
-                    var replies = 0
-                    until(160000) {
-                        held.ping(); replies++
-                        if(available("h3")) true else { SystemClock.sleep(300); false }
+                val drain = runCatching { mobile.Mobile::class.java.getMethod("drainTransportTrace") }.getOrNull()
+                fun trace(label: String) {
+                    val lines = drain?.invoke(null)?.toString()?.lineSequence()?.filter {
+                        it.matches(Regex("[0-9]+\\t[a-z_0-9]+\\t[a-z0-9_-]*([\\t][0-9]*)?"))
+                    }?.joinToString("|")
+                    result.putString("trace-$label", lines ?: "unavailable")
+                }
+                fun observeSelection(kind: String, stamp: java.util.concurrent.atomic.AtomicLong) =
+                    CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
+                        TunnelService.state.collect { s ->
+                            if (s.vpn && s.bearer.equals(kind,true)) stamp.compareAndSet(-1,now())
+                        }
                     }
-                    fresh(); held.ping()
-                    result.putLong("restored-H3-fresh-https-ms-from-arm",now()-began)
-                    result.putInt("same-H2-TCP-replies",replies+2)
+                M4Traffic(this,home,cfg,::vpn,::available).use { traffic ->
+                    trace("prior")
+                    start("v2")
+                    until(30000) { available("h3") && runCatching { vpn() }.isSuccess }
+                    traffic.echoSocket().use { old ->
+                        traffic.ping(old)
+                        val firstH2 = java.util.concurrent.atomic.AtomicLong(-1)
+                        val observer = observeSelection("h2",firstH2)
+                        marker("ready-drop"); awaitSignal("arm-drop")
+                        val running = java.util.concurrent.atomic.AtomicBoolean(true)
+                        val last = java.util.concurrent.atomic.AtomicLong(-1)
+                        val failure = java.util.concurrent.atomic.AtomicLong(-1)
+                        val worker = kotlin.concurrent.thread {
+                            while (running.get()) {
+                                try {
+                                    traffic.ping(old)
+                                    last.set(now())
+                                } catch (_: Exception) {
+                                    if (running.get()) failure.set(now())
+                                    break
+                                }
+                                SystemClock.sleep(100)
+                            }
+                            // If the held flow dies before a fallback is available, maintain ordinary
+                            // demand independently. These attempts are never used as business receipts.
+                            while (running.get() && !available("h2")) {
+                                runCatching { traffic.echoSocket().use(traffic::ping) }
+                                SystemClock.sleep(200)
+                            }
+                        }
+                        marker("armed-drop")
+                        try {
+                            val began = origin("blocked")
+                            val hot = traffic.measure("hot","h2",began,began+60000)
+                            hot.put("firstH2ObservedBootMs",firstH2.get())
+                            if (firstH2.get() in 0 until began) hot.put("state","ineligible-prior-H2")
+                            result.putString("hot",hot.toString())
+                        } finally { running.set(false); observer.cancel(); worker.join() }
+                        result.putLong("old-H3-last-reply-boot-ms",last.get())
+                        result.putLong("old-H3-first-error-boot-ms",failure.get())
+                    }
+                    trace("hot")
+                    stop()
+                    val cold = now()
+                    start("v2")
+                    result.putString("cold",traffic.measure("cold","h2",cold,cold+60000).toString())
+                    trace("cold")
+                    val firstH3 = java.util.concurrent.atomic.AtomicLong(-1)
+                    val observer = observeSelection("h3",firstH3)
+                    marker("ready-unblock"); awaitSignal("arm-unblock")
+                    marker("armed-unblock")
+                    val restored = origin("restored")
+                    if (args.getString("recovery") != "false") {
+                        // Keep real requests flowing while the existing VPN probes for H3.
+                        val running = java.util.concurrent.atomic.AtomicBoolean(true)
+                        val replies = java.util.concurrent.atomic.AtomicInteger()
+                        val worker = kotlin.concurrent.thread {
+                            while (running.get() && !available("h3")) {
+                                if (runCatching { traffic.echoSocket().use(traffic::ping) }.isSuccess) replies.incrementAndGet()
+                                SystemClock.sleep(300)
+                            }
+                        }
+                        try {
+                            val recovered = traffic.measure("recover","h3",restored,restored+300000)
+                            recovered.put("firstH3ObservedBootMs",firstH3.get())
+                            if (firstH3.get() in 0 until restored) recovered.put("state","ineligible-prior-H3")
+                            result.putString("recover",recovered.toString())
+                        } finally { running.set(false); worker.join() }
+                        result.putInt("recovery-background-echo-replies",replies.get())
+                        trace("recover")
+                    }
+                    observer.cancel()
                 }
             }
         }
