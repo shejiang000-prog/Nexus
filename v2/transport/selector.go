@@ -483,7 +483,21 @@ func (s *selector) watch() {
 			continue
 		}
 		var degraded bool
-		if bursty {
+		if s.androidVPN && delta == 0 {
+			// A silent H3 needs a working authenticated fallback. Transferring
+			// 32 KiB in a short bandwidth sample is not a liveness requirement.
+			ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+			resp, err := alt.healthHead(ctx)
+			cancel()
+			verified := err == nil && resp.StatusCode == http.StatusOK && alt.accepted(resp) == nil
+			if verified {
+				trace("health_ok", alt.kind, "")
+			} else {
+				trace("health_fail", alt.kind, "")
+			}
+			h3time := <-sample
+			degraded = verified && h3time == 0 && silentForTwoWindows(l, now, lastProgress)
+		} else if bursty {
 			var lossy bool
 			degraded, lossy = s.slowerOnFreshH3(alt)
 			if !lossy {

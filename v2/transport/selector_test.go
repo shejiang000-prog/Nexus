@@ -59,6 +59,7 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		var blocked atomic.Bool
 		var held atomic.Pointer[transportLane]
 		var h2Closed atomic.Bool
+		var acknowledge atomic.Bool
 		var h2Dials, h3Dials atomic.Int32
 		var received atomic.Uint64
 		health := func(r *http.Request) (*http.Response, error) {
@@ -80,7 +81,18 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 			if kind == "h2" {
 				h2Dials.Add(1)
 				// A speculative candidate may close independently of the selected one.
-				candidate := &transportLane{kind: "h2", health: h3.health, round: health}
+				candidate := &transportLane{kind: "h2", health: h3.health, round: func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodGet {
+						// A reachable H2 can still miss the 32 KiB capacity deadline.
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					resp, err := health(r)
+					if !acknowledge.Load() {
+						resp.Header.Del("Proxy-Authentication-Info")
+					}
+					return resp, err
+				}}
 				candidate.close = func() {
 					if held.Load() == candidate {
 						h2Closed.Store(true)
@@ -103,6 +115,11 @@ func TestAutoBlockedAfterHealthyProbe(t *testing.T) {
 		// The very next request stalls, within the previous prebuild's cooldown.
 		// It is still waiting for its CONNECT headers even if last I/O is old.
 		blocked.Store(true)
+		time.Sleep(3 * time.Second)
+		if s.current() != h3 {
+			t.Fatal("unauthenticated H2 health selected")
+		}
+		acknowledge.Store(true)
 		select {
 		case kind := <-s.events:
 			if kind != "h2" {
