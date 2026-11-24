@@ -107,5 +107,6 @@ class IdleCapture:
         out = {"seconds":round(duration,3),"packets":dict(collections.Counter(p for _,p in self.events)),
                "methods":dict(methods),"client_packet_seconds":[t for t,_ in self.events]}
         (self.work / ("idle-" + self.kind + ".json")).write_text(json.dumps(out))
-        if self.kind == "h2" and (duration < 600 or len(self.events) > 2 or methods):
-            raise ValueError("H2 idle capture failed: see idle-h2.json")
+        packet_limit = 2 if self.kind == "h2" else 0
+        if duration < 600 or len(self.events) > packet_limit or methods:
+            raise ValueError(f"{self.kind} idle capture failed: see idle-{self.kind}.json")
