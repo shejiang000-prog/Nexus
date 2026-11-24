@@ -67,7 +67,7 @@ internal class M4Traffic(
     }
 
     private fun page(phase: String, evidence: JSONObject) {
-        val defaultUrl = cfg.optString("probeUrl","https://example.com/")
+        val defaultUrl = if (phase == "reference") "https://example.com/" else cfg.optString("probeUrl","https://example.com/")
         val alternate = if (defaultUrl == "https://example.com/") when (phase) {
             "cold" -> "https://example.org/"
             "recover" -> "https://example.net/"
@@ -77,7 +77,10 @@ internal class M4Traffic(
             .appendQueryParameter("m4", java.util.UUID.randomUUID().toString()).build()
         require(uri.scheme == "https" && uri.host != null && uri.userInfo == null)
         val target = uri.toString()
-        val title = cfg.optString("probeTitle", "Example Domain")
+        val defaultTitle = if (phase == "reference") "Example Domain" else cfg.optString("probeTitle","Example Domain")
+        val title = cfg.optString(phase+"Title", defaultTitle)
+        val text = cfg.optString(phase+"Text", if (phase == "reference") "Example Domain" else cfg.optString("probeText",title))
+        require(text.isNotBlank())
         val done = CountDownLatch(1)
         val valid = AtomicBoolean()
         inst.runOnMainSync {
@@ -99,20 +102,40 @@ internal class M4Traffic(
                     val finished = now()
                     // Read the DOM title after the main document has loaded. WebView.title can lag this callback.
                     v.evaluateJavascript("""(() => {let n=performance.getEntriesByType('navigation')[0];
-                        return {title:document.title,age:performance.now(),
+                        let expectedTitle=${JSONObject.quote(title)}, expectedText=${JSONObject.quote(text)};
+                        let body=document.body && document.body.innerText.trim();
+                        return {titleOK:!expectedTitle || document.title===expectedTitle,
+                          urlOK:document.URL===${JSONObject.quote(target)},
+                          bodyOK:!!body && (expectedTitle ? body.includes(expectedText) : body===expectedText),
+                          complete:document.readyState==='complete',age:performance.now(),
                           dnsStart:n&&n.domainLookupStart,dnsEnd:n&&n.domainLookupEnd,
                           tcpStart:n&&n.connectStart,tlsStart:n&&n.secureConnectionStart,tcpEnd:n&&n.connectEnd,
-                          response:n&&n.responseStart}})()""") { raw ->
+                          request:n&&n.requestStart,response:n&&n.responseStart,responseEnd:n&&n.responseEnd,
+                          status:n&&n.responseStatus,bytes:n&&n.decodedBodySize}})()""") { raw ->
                         if (done.count == 0L) return@evaluateJavascript
                         runCatching {
                             val nav = JSONObject(raw)
-                            if (nav.optString("title") == title) {
-                                for (key in listOf("dnsStart","dnsEnd","tcpStart","tlsStart","tcpEnd","response"))
-                                    if (!nav.isNull(key)) evidence.put(key + "SinceNavMs",nav.getDouble(key))
-                                val age = nav.getDouble("age")
-                                evidence.put("navigationOriginBootMsLower",finished-age)
-                                    .put("navigationOriginBootMsUpper",now()-age)
-                                    .put("pageFinishedBootMs",finished)
+                            for (key in listOf("titleOK","urlOK","bodyOK","complete"))
+                                evidence.put(key,nav.optBoolean(key))
+                            for (key in listOf("dnsStart","dnsEnd","tcpStart","tlsStart","tcpEnd","request","response","responseEnd"))
+                                if (!nav.isNull(key)) evidence.put(key + "SinceNavMs",nav.getDouble(key))
+                            val status = nav.optInt("status")
+                            if (status > 0) evidence.put("httpStatus",status)
+                            if (!nav.isNull("bytes")) evidence.put("mainDecodedBodyBytes",nav.getLong("bytes"))
+                            val age = nav.getDouble("age")
+                            val upper = now()-age
+                            val end = nav.getDouble("responseEnd")
+                            val first = nav.getDouble("response")
+                            evidence.put("navigationOriginBootMsLower",finished-age)
+                                .put("navigationOriginBootMsUpper",upper)
+                                .put("pageFinishedBootMs",finished)
+                            // Older engines omit responseStatus. A successful main-frame callback plus the
+                            // expected page is usable evidence; never invent a status code for it.
+                            if (listOf("titleOK","urlOK","bodyOK","complete").all { nav.optBoolean(it) } &&
+                                (status == 0 || status in 200..299) && first > 0 && end >= first && end <= age) {
+                                evidence.put("mainResponseEndBootMsLower",finished-age+end)
+                                    .put("mainResponseEndBootMsUpper",upper+end)
+                                    .put("httpEvidence",if (status > 0) "navigation-status-and-document" else "verified-document-no-main-frame-error")
                                 valid.set(true)
                             }
                         }
@@ -136,7 +159,7 @@ internal class M4Traffic(
         out.put("eligibleBootMs",now())
         val echoData = JSONObject()
         val pageData = JSONObject()
-        fun attempt(data: JSONObject, action: () -> Unit) {
+        fun attempt(data: JSONObject, retry: Boolean, action: () -> Unit) {
             var tries = 0
             while (now() < deadline && available(kind)) {
                 tries++
@@ -145,20 +168,25 @@ internal class M4Traffic(
                 try {
                     val network = vpn()
                     action()
-                    val received = data.optLong("pageFinishedBootMs",now())
+                    val received = if (data.has("mainResponseEndBootMsUpper"))
+                        kotlin.math.ceil(data.getDouble("mainResponseEndBootMsUpper")).toLong() else now()
                     if (vpn() == network && available(kind) && received >= origin && start >= origin && received <= deadline) {
                         data.put("receivedBootMs",received).put("elapsedMs",received-origin)
                         return
                     }
                     break
                 } catch (e: Exception) { data.put("lastError",e.javaClass.simpleName) }
+                if (!retry) break
                 SystemClock.sleep(25)
             }
         }
-        val worker = kotlin.concurrent.thread(name = "m4-echo") { attempt(echoData) { echoSocket().use(::ping) } }
-        try { attempt(pageData) { page(phase,pageData) } }
-        finally { worker.join() }
-        return out.put("tcpEcho",echoData).put("webView",pageData)
+        val worker = if (phase == "reference") null else kotlin.concurrent.thread(name = "m4-echo") {
+            attempt(echoData,true) { echoSocket().use(::ping) }
+        }
+        try { attempt(pageData,false) { page(phase,pageData) } }
+        finally { worker?.join() }
+        if (worker != null) out.put("tcpEcho",echoData)
+        return out.put("webView",pageData)
     }
 
     override fun close() {

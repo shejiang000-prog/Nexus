@@ -129,7 +129,7 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
             return
         }
     }
-    require(phase in setOf("bench","block","v2","manage","restart"))
+    require(phase in setOf("bench","block","v2","manage","restart","reference"))
     check(VpnService.prepare(ctx) == null)
     check(!TunnelService.state.value.active)
     val prefs = ctx.getSharedPreferences("local",0)
@@ -212,6 +212,19 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
             return rate
         } finally { conn.disconnect() }
     }
+    val drain = runCatching { mobile.Mobile::class.java.getMethod("drainTransportTrace") }.getOrNull()
+    fun trace(label: String) {
+        val lines = drain?.invoke(null)?.toString()?.lineSequence()?.filter {
+            it.matches(Regex("[0-9]+\\t[a-z_0-9]+\\t[a-z0-9_-]*([\\t][0-9]*)?"))
+        }?.joinToString("|")
+        result.putString("trace-$label", lines ?: "unavailable")
+    }
+    fun observeSelection(kind: String, stamp: java.util.concurrent.atomic.AtomicLong) =
+        CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
+            TunnelService.state.collect { s ->
+                if (s.vpn && s.bearer.equals(kind,true)) stamp.compareAndSet(-1,now())
+            }
+        }
     val home = startActivitySync(Intent(ctx,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     try {
         check(prefs.edit().putBoolean(SplitRouting.KEY,false).commit())
@@ -336,6 +349,22 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     result.putString("recovered-bearer",bearer())
                 } finally { cm.unregisterNetworkCallback(cb) }
             }
+            "reference" -> M4Traffic(this,home,cfg,::vpn,::available).use { traffic ->
+                trace("prior")
+                start("v2")
+                until(30000) { available("h3") && runCatching { vpn() }.isSuccess }
+                traffic.echoSocket().use(traffic::ping)
+                check(available("h3"))
+                val offH3 = java.util.concurrent.atomic.AtomicLong(-1)
+                val observer = observeSelection("h2",offH3)
+                try {
+                    val origin = now()
+                    val report = traffic.measure("reference","h3",origin,origin+30000)
+                    if (offH3.get() >= 0) report.put("state","ineligible-bearer-changed")
+                    result.putString("reference",report.toString())
+                    trace("reference")
+                } finally { observer.cancel() }
+            }
             "block" -> {
                 fun origin(expected: String): Long {
                     var stamp: Long? = null
@@ -346,19 +375,6 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
                     }
                     return requireNotNull(stamp)
                 }
-                val drain = runCatching { mobile.Mobile::class.java.getMethod("drainTransportTrace") }.getOrNull()
-                fun trace(label: String) {
-                    val lines = drain?.invoke(null)?.toString()?.lineSequence()?.filter {
-                        it.matches(Regex("[0-9]+\\t[a-z_0-9]+\\t[a-z0-9_-]*([\\t][0-9]*)?"))
-                    }?.joinToString("|")
-                    result.putString("trace-$label", lines ?: "unavailable")
-                }
-                fun observeSelection(kind: String, stamp: java.util.concurrent.atomic.AtomicLong) =
-                    CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
-                        TunnelService.state.collect { s ->
-                            if (s.vpn && s.bearer.equals(kind,true)) stamp.compareAndSet(-1,now())
-                        }
-                    }
                 M4Traffic(this,home,cfg,::vpn,::available).use { traffic ->
                     trace("prior")
                     start("v2")

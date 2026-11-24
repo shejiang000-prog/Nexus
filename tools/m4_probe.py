@@ -12,7 +12,7 @@ FIXED_FILE = {
     "sha256": "8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb",
     "probeUrl": "https://example.com/",
 }
-PHASES = {"enroll","invite","links","bench","block","v2","manage","restart"}
+PHASES = {"reference","enroll","invite","links","bench","block","v2","manage","restart"}
 
 
 class Device:
@@ -185,7 +185,7 @@ if __name__=="__main__":
     p.add_argument("serial"); p.add_argument("package"); p.add_argument("--adb",default="adb")
     p.add_argument("--runner",help="installed CatalogCheck component for this package")
     sub=p.add_subparsers(dest="action",required=True)
-    c=sub.add_parser("config"); c.add_argument("--host","--owner-host",dest="host"); c.add_argument("--v2-host"); c.add_argument("--echo-host"); c.add_argument("--echo-port",type=int); c.add_argument("--probe-title",default="Example Domain"); c.add_argument("--probe-url",default=FIXED_FILE["probeUrl"])
+    c=sub.add_parser("config"); c.add_argument("--host","--owner-host",dest="host"); c.add_argument("--v2-host"); c.add_argument("--echo-host"); c.add_argument("--echo-port",type=int); c.add_argument("--probe-title",default="Example Domain"); c.add_argument("--probe-text"); c.add_argument("--probe-url",default=FIXED_FILE["probeUrl"])
     q=sub.add_parser("run"); q.add_argument("phase",choices=sorted(PHASES)); q.add_argument("--pairs",type=int)
     q.add_argument("--protocol",choices=["reality","hysteria2","h2"])
     q.add_argument("--recovery",choices=["true","false"])
@@ -193,7 +193,7 @@ if __name__=="__main__":
     s=sub.add_parser("signal"); s.add_argument("value",help="arm-drop, arm-unblock, arm-restart, node-up, or stamped blocked/restored event")
     a=p.parse_args()
     device=Device(a.adb,a.serial,a.package,a.runner)
-    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")
+    if a.action=="config": device.config(a.host,probeUrl=a.probe_url,probeTitle=a.probe_title,probeText=a.probe_text or a.probe_title,echoHost=a.echo_host,echoPort=a.echo_port,v2Host=a.v2_host or a.host or "")
     elif a.action=="run":
         print(json.dumps(device.run(a.phase,**{k:v for k,v in vars(a).items() if k in ("pairs","protocol","recovery") and v is not None}),ensure_ascii=False))
     elif a.action=="stage": print(device.stage())
