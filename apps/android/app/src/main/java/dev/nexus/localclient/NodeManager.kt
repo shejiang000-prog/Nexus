@@ -107,6 +107,32 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         return hex(digest.digest())
     }
 
+    private fun stageNode(ssh: Session, name: String, arch: String, destination: String): String {
+        val asset = "linux/$arch/$name"
+        ssh.setServerAliveInterval(15000)
+        val digest = if (BuildConfig.DEBUG) {
+            val sftp = ssh.openChannel("sftp") as ChannelSftp
+            try {
+                sftp.connect(8000)
+                upload(sftp, asset, destination)
+            } finally { sftp.disconnect() }
+        } else {
+            val pin = context.assets.open("$asset.sha256").bufferedReader().use { it.readText().trim() }
+            check(pin.matches(Regex("[0-9a-f]{64}"))) { "安装包中的节点校验值无效" }
+            val cpu = if (arch == "x86_64") "amd64" else "arm64"
+            val url = "https://github.com/shejiang000-prog/Nexus/releases/download/v${BuildConfig.VERSION_NAME}/$name-linux-$cpu"
+            try {
+                run(ssh, "curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location " +
+                        "--connect-timeout 15 --max-time 300 --output '$destination' '$url'")
+            } catch (e: Exception) {
+                throw IllegalStateException("服务器下载节点程序失败，请检查服务器网络及对应版本的发布文件", e)
+            }
+            pin
+        }
+        check(run(ssh, "sha256sum '$destination'").substringBefore(' ') == digest) { "节点程序 SHA-256 校验失败" }
+        return digest
+    }
+
     internal fun installV2(domain: String, extraProtocols: Set<String> = emptySet()) = session { ssh ->
         require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
         require(extraProtocols.all { it == "reality" || it == "hysteria2" })
@@ -123,13 +149,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         require(dir.matches(Regex("/tmp/nexus-upload\\.[A-Za-z0-9]{10}")))
         val staged = "$dir/nexus-node"
         try {
-            val sftp = ssh.openChannel("sftp") as ChannelSftp
-            val digest = try {
-                sftp.connect(8000)
-                upload(sftp, "linux/$arch/nexus-node", staged)
-            } finally { sftp.disconnect() }
-            check(run(ssh, "sha256sum $staged").substringBefore(' ') == digest)
-            ssh.setServerAliveInterval(15000)
+            stageNode(ssh, "nexus-node", arch, staged)
             val sudo = if (user == "root") "" else "sudo -n "
             run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address$protocols")
         } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
@@ -186,11 +206,14 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         require(dir.matches(Regex("/tmp/nexus-upload\\.[A-Za-z0-9]{10}")))
         try {
             val hashes = JSONObject()
+            if (config.optString("action") in setOf("", "upgrade")) {
+                hashes.put("nexus-server", stageNode(ssh, "nexus-server", arch, "$dir/nexus-server"))
+            }
             val sftp = ssh.openChannel("sftp") as ChannelSftp
             try {
                 sftp.connect(8000)
-                for ((file, asset) in listOf("nexus-server" to "linux/$arch/nexus-server", "node_admin.py" to "node_admin.py", "install_node.py" to "install_node.py")) {
-                    hashes.put(file, upload(sftp, asset, "$dir/$file"))
+                for (file in listOf("node_admin.py", "install_node.py")) {
+                    hashes.put(file, upload(sftp, file, "$dir/$file"))
                 }
             } finally { sftp.disconnect() }
             check(run(ssh,"sha256sum $dir/install_node.py").substringBefore(' ')==hashes.getString("install_node.py"))

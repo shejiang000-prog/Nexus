@@ -51,9 +51,27 @@ cd apps/android
 
 构建前，在支持的 Linux 环境依照仓库 CI 的 Android 作业交叉编译两个 nexus-server，将它们放在 app/build/linuxNodes/{x86_64,aarch64}/nexus-server。也可用 NEXUS_LINUX_BINARIES 指定具有相同布局的目录。标准 Debug 与 Release 使用 `tools/build_v2_aar.py` 从固定源码合编 libXray 与 V2，Gradle 自动执行。准备 Go 1.27.4、来自 `golang.org/x/mobile@v0.0.0-20261011034528-197770444867` 的 gomobile 和 gobind，将它们放在 PATH。将含提交 `5a0f7d8d1c28b34afb5727b04b26a10f6dbac7e3` 的 libXray 仓库放在 `target/libXray`，也可设置 `NEXUS_LIBXRAY_SOURCE`。脚本读取该 Git 对象，核对 go.sum、应用仓库内补丁，并逐 ABI 验证 Android 架构及传输依赖。预备 Go 模块、Gradle、Cargo、shoes 源码与分流数据缓存后，设置 `CARGO_NET_OFFLINE=true` 并给 gradlew 加 `--offline` 可离线构建。离线模式禁用 Go 模块代理及远程校验服务，仍按固定源码中的 go.sum 验算。Go build info 会记录本地模块替换的绝对路径。逐字节复现时使用相同版本的 Go、NDK、JDK、相同的工作目录绝对路径（可用 `NEXUS_AAR_WORKDIR` 指定一个尚不存在的仓库外目录）。并行构建使用各自的工作目录。Windows 使用 gradlew.bat。APK 位于 app/build/outputs/apk/debug/app-debug.apk，另外两个验收目标是 :app:assembleDebugAndroidTest 和 :vpnprobe:assembleDebug。
 
+Windows 的 PowerShell 构建示例沿用实验室已有的 Go 工具及离线模块缓存。换机器时将路径改成同版本安装的实际位置。
+
+```powershell
+$goBin = 'E:\Tools\gopath\pkg\mod\golang.org\toolchain@v0.0.1-go1.27.4.windows-amd64\bin'
+$mobileBin = 'E:\temp\nexus-round5\bin'
+$env:Path = "$goBin;$mobileBin;$env:Path"
+$env:GOTOOLCHAIN = 'local'
+$env:GOPATH = 'E:\Tools\gopath'
+$env:GOMODCACHE = 'E:\temp\toolchains\go-mod-r2'
+$env:NEXUS_LIBXRAY_SOURCE = 'E:\temp\nexus-round5\libXray'
+go version
+go env GOMODCACHE
+```
+
+Debug 将两个架构的 V2 与旧版 Linux 节点放入 APK，可通过 SSH 离线部署。Release 包对每个节点程序只内置 SHA-256。目标服务器需要 curl、sha256sum 和到 GitHub Releases 的 HTTPS 连接。App 根据本机版本和远端架构选择同版本标签的程序，下载到私有临时目录，校验后才执行。切回上次已安装的旧版程序时使用服务器上的副本。
+
+Release 准备脚本从 Gradle 的 `app/build/nodeBinaries/linux` 取同一次构建的节点文件，核对两个 APK 中的摘要，作为 `nexus-node-linux-{amd64,arm64}` 和 `nexus-server-linux-{amd64,arm64}` 随对应 `vX.Y.Z` 的 APK 发布。正式发布须使用新的版本标签。在该标签具有匹配资产前，Release 一键部署会报告失败。
+
 ## 部署、分享与订阅
 
-服务器维护页可以检测或重启服务，从受信任 APK 更新程序，或回滚到上一次安装的程序。上述操作会中断现有连接。拥有者可在 VPS 上备份、恢复授权库；恢复操作将设备、邀请和额度带回快照时点，需要单独确认。在「出口与诊断」可为私人节点选择业务应用。空列表覆盖全设备，非空列表仅覆盖指定应用。使用始终开启或系统级阻止直连前，请在 Android 系统设置确认期望的网络行为。
+服务器维护页可以检测或重启服务，更新到与 APK 同版本的程序，或回滚到上一次安装的程序。上述操作会中断现有连接。拥有者可在 VPS 上备份、恢复授权库；恢复操作将设备、邀请和额度带回快照时点，需要单独确认。在「出口与诊断」可为私人节点选择业务应用。空列表覆盖全设备，非空列表仅覆盖指定应用。使用始终开启或系统级阻止直连前，请在 Android 系统设置确认期望的网络行为。
 
 「移除部署」会停止服务、取消自动启动并在服务器侧归档程序与 systemd 单元，保留设备和签发身份。「恢复已移除部署」还原原来的安装并启动两项服务。
 
@@ -61,7 +79,7 @@ cd apps/android
 
 订阅的「管理」可设置置顶、排序和是否参与自动选择。勾选「验证网页并尝试备用节点」后，先验证选中节点可到达 example.com，失败时从已参与自动选择的来源尝试最多七个候选。连接期间每 20 秒再次检查，连续两次失败后切换。首页的「按当前网络质量选择节点」会考虑来源置顶、剩余额度、有效期、最近一天同类网络上的网页成功率、耗时、抖动及已有测速结果。点击当前节点的测速按钮会经 VPN 访问 speed.cloudflare.com，下载和上传各 1 MiB。
 
-在「部署与分享」输入本人服务器的 SSH 地址，并通过 VPS 控制台独立确认 SHA-256 主机指纹。安装器接受 Debian 12、Debian 13 和 Ubuntu 24.04，APK 提供 x86_64 与 aarch64 节点程序，需要 root 或免密 sudo。确认页面显示端口。首次安装创建普通服务账户和两个 systemd 服务，已有部署会退出。部署完可给其他设备创建限额、限时邀请。接收者的设备自己生成私钥，并在领取时证明持有对应私钥。
+在「部署与分享」输入本人服务器的 SSH 地址，并通过 VPS 控制台独立确认 SHA-256 主机指纹。安装器接受 Debian 12、Debian 13 和 Ubuntu 24.04，支持 x86_64 与 aarch64，需要 root 或免密 sudo。确认页面显示端口。首次安装创建普通服务账户和两个 systemd 服务，已有部署会退出。部署完可给其他设备创建限额、限时邀请。接收者的设备自己生成私钥，并在领取时证明持有对应私钥。
 
 首页的「订阅与节点」接受 HTTPS 订阅、节点文本、Base64、Clash/mihomo proxies 和 sing-box outbounds。各来源分别加密保存在手机中。具体协议的实测进度见交接记录。配置导出会包含节点连接凭据。
 

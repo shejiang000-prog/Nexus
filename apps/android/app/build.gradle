@@ -153,24 +153,53 @@ def buildNodeAssets = tasks.register('buildV2LinuxNodes', Exec) {
         new File(repoRoot, 'tools/build_v2_node_assets.py'), v2NodeAssets.get().asFile
 }
 def adminAssets = tasks.register('prepareNodeAssets', Sync) {
-    dependsOn buildNodeAssets
-    from(v2NodeAssets) { into 'linux'; include 'x86_64/nexus-node', 'aarch64/nexus-node' }
     from(new File(rootProject.projectDir.parentFile.parentFile, 'PRIVACY.md'))
     from(new File(rootProject.projectDir.parentFile.parentFile, 'LICENSE')) { into 'licenses/Nexus' }
     from(new File(rootProject.projectDir.parentFile.parentFile, 'tools')) { include 'node_admin.py', 'install_node.py' }
+    into layout.buildDirectory.dir('nodeAssets')
+}
+android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('nodeAssets'))
+tasks.named('preBuild').configure { dependsOn adminAssets }
+
+def nodeBinaries = layout.buildDirectory.dir('nodeBinaries')
+def stageLinuxNodes = tasks.register('stageLinuxNodes', Sync) {
+    dependsOn buildNodeAssets
+    into nodeBinaries
+    from(v2NodeAssets) { into 'linux'; include 'x86_64/nexus-node', 'aarch64/nexus-node' }
     from(providers.environmentVariable('NEXUS_LINUX_BINARIES').orElse(layout.buildDirectory.dir('linuxNodes').map { it.asFile.absolutePath })) {
         into 'linux'
         include 'x86_64/nexus-server', 'aarch64/nexus-server'
     }
-    into layout.buildDirectory.dir('nodeAssets')
     doLast {
-        for (abi in ['x86_64','aarch64']) {
-            if (!new File(destinationDir, "linux/$abi/nexus-server").isFile()) throw new GradleException("Missing Linux node for $abi. See docs/ANDROID.md")
+        for (arch in ['x86_64', 'aarch64']) {
+            for (name in ['nexus-node', 'nexus-server']) {
+                if (!new File(destinationDir, "linux/$arch/$name").isFile())
+                    throw new GradleException("Missing $name for $arch. See docs/ANDROID.md")
+            }
         }
     }
 }
-android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('nodeAssets'))
-tasks.named('preBuild').configure { dependsOn adminAssets }
+android.sourceSets.debug.assets.srcDir(nodeBinaries)
+tasks.named('preDebugBuild').configure { dependsOn stageLinuxNodes }
+
+def releasePins = layout.buildDirectory.dir('releaseNodePins')
+def pinLinuxNodes = tasks.register('pinLinuxNodes') {
+    dependsOn stageLinuxNodes
+    inputs.dir(nodeBinaries)
+    outputs.dir(releasePins)
+    doLast {
+        for (arch in ['x86_64', 'aarch64']) {
+            def destination = releasePins.get().dir("linux/$arch").asFile
+            destination.mkdirs()
+            for (name in ['nexus-node', 'nexus-server']) {
+                ant.checksum(file: nodeBinaries.get().file("linux/$arch/$name").asFile,
+                    algorithm: 'SHA-256', todir: destination, fileext: '.sha256', forceOverwrite: true)
+            }
+        }
+    }
+}
+android.sourceSets.release.assets.srcDir(releasePins)
+tasks.named('preReleaseBuild').configure { dependsOn pinLinuxNodes }
 
 def splitScript = new File(rootProject.projectDir.parentFile.parentFile, 'tools/generate_split_rules.py')
 def splitAssets = layout.buildDirectory.dir('splitAssets')
