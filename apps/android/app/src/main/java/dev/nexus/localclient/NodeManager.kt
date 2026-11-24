@@ -161,23 +161,24 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             "runuser -u nexus-v2 -- /opt/nexus-v2/bin/nexus-node ledger /var/lib/nexus-v2/ledger.db"
 
     internal fun v2Invite(days: Int? = null): String = session { ssh ->
-        require(days == null || days in 1..365)
+        val validity = V2ShareValidity(days)
         val now = run(ssh, "date -u +%s").toLong()
-        val deadline = endAfterDays(now, minOf(days ?: 7, 7))
-        val accountEnd = days?.let { " " + endAfterDays(now, it) }.orEmpty()
-        val account = run(ssh, "$v2Ledger create-user$accountEnd")
+        val account = run(ssh, "$v2Ledger ${validity.createUser(now)}")
         require(account.matches(Regex("[0-9a-f]{32}")))
-        run(ssh, "$v2Ledger invite --link $account $deadline").also { V2Invite.parse(it) }
+        run(ssh, "$v2Ledger ${validity.invite(account,now)}").also { V2Invite.parse(it) }
     }
 
-    private fun endAfterDays(start: Long, days: Int) =
-        java.time.Instant.ofEpochSecond(start).plusSeconds(days * 86400L).toString()
-
-    internal fun v2Renew(account: String, expiresAt: Long, days: Int) {
-        require(account.matches(Regex("[0-9a-f]{32}")) && days in 1..365)
+    internal fun v2Renew(account: String, validity: V2ShareValidity) {
+        require(account.matches(Regex("[0-9a-f]{32}")))
         session { ssh ->
+            val expires = if (validity.days == null) null else {
+                val row = run(ssh, "$v2Ledger users").lineSequence().filter(String::isNotBlank)
+                    .map { JSONObject(it) }.first { it.getString("id") == account }
+                check(row.has("expires_at"))
+                if (row.isNull("expires_at")) null else row.getLong("expires_at")
+            }
             val now = run(ssh, "date -u +%s").toLong()
-            run(ssh, "$v2Ledger renew $account " + endAfterDays(maxOf(now, expiresAt), days))
+            run(ssh, "$v2Ledger ${validity.renew(account,now,expires)}")
         }
     }
 

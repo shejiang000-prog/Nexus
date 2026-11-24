@@ -11,12 +11,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +70,8 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
     var domain by remember { mutableStateOf("") }
     var extraProtocols by remember { mutableStateOf(emptySet<String>()) }
     var days by remember { mutableStateOf("7") }
+    var v2Days by remember(host) { mutableStateOf("") }
+    var permanent by remember(host) { mutableStateOf(false) }
     var count by remember { mutableStateOf("1") }
     var mb by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -128,11 +134,10 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             }
         } else if (access.isV2(host)) {
             Text(host, style=MaterialTheme.typography.titleLarge)
-            val validDays = days.toIntOrNull()?.takeIf { it in 1..365 }
-            OutlinedTextField(days,{days=it.take(3)},Modifier.fillMaxWidth(),singleLine=true,label={Text("账号有效天数（1–365）")})
-            PrimaryAction({ work {
-                link=withContext(Dispatchers.IO) { access.manager(host).v2Invite(validDays) }
-            } },Modifier.fillMaxWidth(),enabled=!busy && validDays!=null) { Text("邀请朋友或我的设备") }
+            val validity=V2ShareValidity.parse(v2Days,permanent)
+            V2ValidityInput(v2Days,permanent,!busy,{v2Days=it},{permanent=it}) { chosen ->
+                work { link=withContext(Dispatchers.IO) { access.manager(host).v2Invite(chosen.days) } }
+            }
             Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
                 Text("已授权设备",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
                 TextButton({ work { devices=withContext(Dispatchers.IO) { access.manager(host).v2Devices() } } },enabled=!busy) { Text("刷新") }
@@ -141,12 +146,12 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             if (rows==null || rows.length()==0) Text(if(rows==null) "正在读取设备…" else "还没有已授权设备",color=MaterialTheme.colorScheme.onSurfaceVariant)
             else repeat(rows.length()) { i ->
                 val row=rows.getJSONObject(i)
-                V2ManagedDeviceRow(row,groupPlace(i,rows.length()-1,false,false),busy,validDays!=null,
-                    renew={ expires ->
-                        if (validDays!=null) work {
+                V2ManagedDeviceRow(row,groupPlace(i,rows.length()-1,false,false),busy,validity!=null,
+                    renew={
+                        if (validity!=null) work {
                             devices=withContext(Dispatchers.IO) {
                                 val manager=access.manager(host)
-                                manager.v2Renew(row.getString("user_id"),expires,validDays)
+                                manager.v2Renew(row.getString("user_id"),validity)
                                 manager.v2Devices()
                             }
                             status="账号已续期"
@@ -226,7 +231,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
                 expanded=false; adding=false; status=if (deploy) "部署成功" else "绑定成功"
             }
         }) {Text("确认")}},dismissButton={SecondaryAction({pin=""}) {Text("取消")}})
-    if (link.isNotEmpty()) ShareInvite(link,if(access.isV2(host)) listOf(days+" 天","一次领取") else listOf(days+" 天",count+" 台",mb.takeIf { it.isNotBlank() }?.plus(" MB") ?: "不限")) { link="" }
+    if (link.isNotEmpty()) ShareInvite(link,if(access.isV2(host)) listOf(if(permanent) "长期有效" else "$v2Days 天","一次领取") else listOf(days+" 天",count+" 台",mb.takeIf { it.isNotBlank() }?.plus(" MB") ?: "不限")) { link="" }
     revoke?.let { row -> AlertDialog(onDismissRequest={revoke=null},title={Text("撤销这台设备？")},
         text={Text(row.getString("name")+" 将失去连接权限。")},confirmButton={PrimaryAction({
             revoke=null; work { devices=withContext(Dispatchers.IO) { val m=access.manager(host)
@@ -236,14 +241,32 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
 }
 
 @Composable
-internal fun V2ManagedDeviceRow(row:JSONObject,place:GroupPlace,busy:Boolean,validDays:Boolean,renew:(Long)->Unit,revoke:()->Unit) {
+internal fun V2ValidityInput(days:String,permanent:Boolean,enabled:Boolean,changeDays:(String)->Unit,
+                            changePermanent:(Boolean)->Unit,invite:(V2ShareValidity)->Unit) {
+    val validity=V2ShareValidity.parse(days,permanent)
+    Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,
+        horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
+        OutlinedTextField(days,changeDays,Modifier.weight(1f),enabled=enabled && !permanent,singleLine=true,
+            label={Text("账号有效天数（1–3650）")},isError=days.isNotEmpty() && validity==null,
+            keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),shape=Shapes.control)
+        Row(Modifier.heightIn(min=48.dp).toggleable(value=permanent,enabled=enabled,role=Role.Switch,onValueChange=changePermanent),
+            verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(Space.xs)) {
+            Text("永久",style=MaterialTheme.typography.labelLarge)
+            Switch(checked=permanent,onCheckedChange=null,enabled=enabled)
+        }
+    }
+    PrimaryAction({validity?.let(invite)},Modifier.fillMaxWidth(),enabled=enabled && validity!=null) { Text("邀请朋友或我的设备") }
+}
+
+@Composable
+internal fun V2ManagedDeviceRow(row:JSONObject,place:GroupPlace,busy:Boolean,validDays:Boolean,renew:()->Unit,revoke:()->Unit) {
     val active=row.isNull("revoked_at")
     val expires=if(row.isNull("expires_at")) null else row.getLong("expires_at")
     val expiry=v2ExpiryText(expires,row.has("expires_at"))
     ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
         if(active) expiry else "已撤销 · $expiry",place,enabled=active,trailing={
             if (active) Row {
-                if (expires!=null) TextButton({renew(expires)},enabled=!busy && validDays) { Text("续期") }
+                TextButton(renew,enabled=!busy && validDays) { Text("续期") }
                 TextButton(revoke,enabled=!busy) { Text("撤销") }
             }
         })
