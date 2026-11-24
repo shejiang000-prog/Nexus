@@ -17,6 +17,16 @@ private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(
 private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 private fun base64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
+internal val v2CompatProtocols = mapOf("reality" to "Reality", "hysteria2" to "Hysteria2")
+
+internal fun v2InstallProtocols(domain: String, selected: Set<String> = v2CompatProtocols.keys): String {
+    require(v2CompatProtocols.keys.containsAll(selected))
+    val extras = if (domain.isBlank()) listOf("reality") else v2CompatProtocols.keys.filter { it in selected }
+    return (listOf("v2") + extras).joinToString(",")
+}
+
+internal class CompatLinkFailure(message: String) : IllegalStateException(message)
+
 class NodeManager(private val context: Context, val host: String, val port: Int, val user: String,
                   private val password: String, private val fingerprint: String, private val sshKey: ByteArray? = null,
                   private val loadKey: (() -> ByteArray)? = null) {
@@ -133,11 +143,9 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         return digest
     }
 
-    internal fun installV2(domain: String, extraProtocols: Set<String> = emptySet()) = session { ssh ->
+    internal fun installV2(domain: String, extraProtocols: Set<String> = v2CompatProtocols.keys) = session { ssh ->
         require(nodeIP(host) != null) { "请填写有效的服务器 IP" }
-        require(extraProtocols.all { it == "reality" || it == "hysteria2" })
-        val protocols = if (domain.isBlank() || extraProtocols.isEmpty()) ""
-            else " --protocols " + (listOf("v2") + extraProtocols.sorted()).joinToString(",")
+        val protocols = v2InstallProtocols(domain, extraProtocols)
         val address = if (domain.isBlank()) "--public-host $host" else {
             require(domain.length <= 253 && '.' in domain && nodeIP(domain) == null &&
                 domain.split('.').all { it.matches(Regex("[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")) }) { "请填写有效的域名" }
@@ -151,7 +159,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         try {
             stageNode(ssh, "nexus-node", arch, staged)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address$protocols")
+            run(ssh, "chmod 0700 $staged && ${sudo}$staged install --non-interactive $address --protocols $protocols")
         } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
         Unit
     }
@@ -179,6 +187,22 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
             }
             val now = run(ssh, "date -u +%s").toLong()
             run(ssh, "$v2Ledger ${validity.renew(account,now,expires)}")
+        }
+    }
+
+    internal fun v2CompatLink(account: String, protocol: String): String {
+        require(account.matches(Regex("[0-9a-f]{32}")))
+        val label = requireNotNull(v2CompatProtocols[protocol])
+        val prefix = if (protocol == "reality") "vless://" else "hysteria2://"
+        return session { ssh ->
+            if (run(ssh, "if test -f /etc/systemd/system/nexus-v2-$protocol.service; then echo installed; fi") != "installed")
+                throw CompatLinkFailure("这台服务器未部署 $label。")
+            // Emit only a fixed marker on failure; remote diagnostics can contain credentials.
+            val links = run(ssh, "$v2Ledger compat enable $account $protocol && $v2Ledger compat export $account links || echo ISSUE_FAILED")
+            if (links.lineSequence().last() == "ISSUE_FAILED")
+                throw CompatLinkFailure("$label 链接未签发，请检查账号有效期、节点版本和服务状态。")
+            links.lineSequence().singleOrNull { it.startsWith(prefix) }
+                ?: throw CompatLinkFailure("节点未返回此协议的有效链接。")
         }
     }
 

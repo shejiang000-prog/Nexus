@@ -40,14 +40,14 @@ import org.json.JSONObject
 @Composable
 internal fun DeploymentDomain(domain:String, change:(String)->Unit, protocols:Set<String>, select:(Set<String>)->Unit, enabled:Boolean) {
     OutlinedTextField(domain,{change(it.trim().take(253))},Modifier.fillMaxWidth(),enabled=enabled,singleLine=true,
-        label={Text("域名（可选）")},supportingText={Text("留空部署 V2 和 Reality。有域名时伪装效果更好。")},shape=Shapes.control,
+        label={Text("域名（可选）")},supportingText={Text("留空部署 V2 和 Reality。填写域名后可同时部署 Hysteria2。")},shape=Shapes.control,
         colors=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=MaterialTheme.colorScheme.outlineVariant,
             focusedBorderColor=MaterialTheme.colorScheme.primary,unfocusedContainerColor=MaterialTheme.colorScheme.background,
             focusedContainerColor=MaterialTheme.colorScheme.background))
     if (domain.isNotBlank()) {
         Text("随 V2 部署",style=MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement=Arrangement.spacedBy(Space.sm)) {
-            for ((id,name) in listOf("reality" to "Reality","hysteria2" to "Hysteria2")) {
+            for ((id,name) in v2CompatProtocols) {
                 FilterChip(selected=id in protocols,enabled=enabled,
                     onClick={select(if(id in protocols) protocols-id else protocols+id)},label={Text(name)})
             }
@@ -68,7 +68,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
     var deploy by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
     var domain by remember { mutableStateOf("") }
-    var extraProtocols by remember { mutableStateOf(emptySet<String>()) }
+    var extraProtocols by remember(adding) { mutableStateOf(v2CompatProtocols.keys) }
     var days by remember { mutableStateOf("7") }
     var v2Days by remember(host) { mutableStateOf("") }
     var permanent by remember(host) { mutableStateOf(false) }
@@ -79,6 +79,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
     var link by remember { mutableStateOf("") }
     var devices by remember { mutableStateOf<JSONArray?>(null) }
     var revoke by remember { mutableStateOf<JSONObject?>(null) }
+    var compatAccount by remember(host) { mutableStateOf<JSONObject?>(null) }
     var changed by remember { mutableStateOf(false) }
     var retrust by remember { mutableStateOf(false) }
     fun work(block: suspend () -> Unit) {
@@ -156,7 +157,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
                             }
                             status="账号已续期"
                         }
-                    }, revoke={ revoke=row })
+                    }, revoke={ revoke=row }, compat={ status=""; compatAccount=row })
             }
             access.hosts.filter { it!=host }.forEach { other ->
                 ListRow(other,"切换服务器",GroupPlace.Single) { host=other;access.current=other;devices=null;status="" }
@@ -206,7 +207,7 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             val tools=buildList {
                 add(Triple("高级","更新、迁移、备份恢复、端口与 DNS") { advanced(host) })
                 access.hosts.filter { it!=host }.forEach { other -> add(Triple("管理 "+other,"切换到这台服务器") { host=other; access.current=other; devices=null; status="" }) }
-                add(Triple("添加其他服务器","再接入一台服务器") { host="";adding=true;expanded=false;devices=null;status="" })
+                add(Triple("添加其他服务器","再接入一台服务器") { host="";domain="";adding=true;expanded=false;devices=null;status="" })
             }
             Column { tools.forEachIndexed { i,(title,detail,go) -> ToolRow(title,detail,groupPlace(i,tools.lastIndex,false,false),!busy,go) } }
         }
@@ -232,6 +233,24 @@ internal fun SimpleServer(saved: (V2Node) -> Unit, advanced: (String?) -> Unit) 
             }
         }) {Text("确认")}},dismissButton={SecondaryAction({pin=""}) {Text("取消")}})
     if (link.isNotEmpty()) ShareInvite(link,if(access.isV2(host)) listOf(if(permanent) "长期有效" else "$v2Days 天","一次领取") else listOf(days+" 天",count+" 台",mb.takeIf { it.isNotBlank() }?.plus(" MB") ?: "不限")) { link="" }
+    compatAccount?.let { row ->
+        AlertDialog(onDismissRequest={if (!busy) compatAccount=null},title={Text("兼容链接")},
+            text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(Space.sm)) {
+                Text(row.optString("name").ifBlank { row.getString("id").take(8) },style=MaterialTheme.typography.titleMedium)
+                Text("为此设备所属账号启用协议并复制链接。持有链接的人可使用该账号，撤销单台设备无法收回链接。")
+                for ((id,label) in v2CompatProtocols) {
+                    SecondaryAction({
+                        work {
+                            val value=withContext(Dispatchers.IO) { access.manager(host).v2CompatLink(row.getString("user_id"),id) }
+                            copySensitive(ctx,"Nexus $label",value)
+                            status="$label 链接已复制"
+                        }
+                    },Modifier.fillMaxWidth(),enabled=!busy) { Text("启用并复制 $label 链接") }
+                }
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (status.isNotBlank()) Text(status)
+            }},confirmButton={TextButton({compatAccount=null},enabled=!busy){Text("关闭")}})
+    }
     revoke?.let { row -> AlertDialog(onDismissRequest={revoke=null},title={Text("撤销这台设备？")},
         text={Text(row.getString("name")+" 将失去连接权限。")},confirmButton={PrimaryAction({
             revoke=null; work { devices=withContext(Dispatchers.IO) { val m=access.manager(host)
@@ -259,17 +278,17 @@ internal fun V2ValidityInput(days:String,permanent:Boolean,enabled:Boolean,chang
 }
 
 @Composable
-internal fun V2ManagedDeviceRow(row:JSONObject,place:GroupPlace,busy:Boolean,validDays:Boolean,renew:()->Unit,revoke:()->Unit) {
+internal fun V2ManagedDeviceRow(row:JSONObject,place:GroupPlace,busy:Boolean,validDays:Boolean,renew:()->Unit,revoke:()->Unit,compat:(()->Unit)?=null) {
     val active=row.isNull("revoked_at")
     val expires=if(row.isNull("expires_at")) null else row.getLong("expires_at")
     val expiry=v2ExpiryText(expires,row.has("expires_at"))
     ListRow(row.optString("name").ifBlank { row.getString("id").take(8) },
-        if(active) expiry else "已撤销 · $expiry",place,enabled=active,trailing={
+        if(!active) "已撤销 · $expiry" else if(compat!=null) "$expiry · 兼容链接" else expiry,place,enabled=active && !busy,trailing={
             if (active) Row {
                 TextButton(renew,enabled=!busy && validDays) { Text("续期") }
                 TextButton(revoke,enabled=!busy) { Text("撤销") }
             }
-        })
+        },onClick=compat)
 }
 
 internal fun usageAmount(bytes: Long) = java.lang.String.format(java.util.Locale.ROOT,
@@ -391,9 +410,7 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
             PrimaryAction({context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(Intent.EXTRA_TEXT,message),"发送邀请"))},Modifier.fillMaxWidth()){Text("发送邀请")}
             SecondaryAction({
-                val clip=ClipData.newPlainText("Nexus 发出的邀请",message)
-                clip.description.extras=android.os.PersistableBundle().apply{putBoolean("android.content.extra.IS_SENSITIVE",true)}
-                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip);copied=true
+                copySensitive(context,"Nexus 发出的邀请",message);copied=true
             },Modifier.fillMaxWidth()){Text("复制消息（发微信用）")}
             }
             BoxWithConstraints(Modifier.fillMaxWidth()){
@@ -406,6 +423,12 @@ internal fun ShareInvite(link:String,limits:List<String> = emptyList(),close:()-
             }
         }
     }
+}
+
+private fun copySensitive(context:Context,label:String,value:String) {
+    val clip=ClipData.newPlainText(label,value)
+    clip.description.extras=android.os.PersistableBundle().apply{putBoolean("android.content.extra.IS_SENSITIVE",true)}
+    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
 }
 
 @Composable

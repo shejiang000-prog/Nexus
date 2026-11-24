@@ -28,7 +28,7 @@ internal fun ServerScreen(onProfile: (Profile) -> Unit, close: () -> Unit, bound
     DisposableEffect(sshKey) { val key = sshKey; onDispose { key?.fill(0) } }
     var pin by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }
     var domain by remember { mutableStateOf("") }
-    var extraProtocols by remember { mutableStateOf(emptySet<String>()) }
+    var extraProtocols by remember { mutableStateOf(v2CompatProtocols.keys) }
     var dns by remember { mutableStateOf("") }; var port by remember { mutableStateOf("8443") }
     var claimPort by remember { mutableStateOf("8444") }
     var days by remember { mutableStateOf("30") }; var quota by remember { mutableStateOf("") }

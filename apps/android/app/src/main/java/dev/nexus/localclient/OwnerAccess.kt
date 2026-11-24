@@ -130,6 +130,7 @@ internal fun sharedInvitation(text: String): Invitation? {
 }
 internal fun friendlyError(e: Exception): String = when {
     e is ChangedServer -> "服务器身份已变化，操作已停止。请先向服务器提供商核实。"
+    e is CompatLinkFailure -> e.message!!
     e is com.jcraft.jsch.JSchException && e.message.orEmpty().contains("auth",true) -> "登录失败，请检查服务器密码或本机的管理授权。"
     e.message in listOf("请填写有效的服务器 IP","请填写有效的域名","请先解除固定出口","这台服务器已经部署，请选择绑定","尚未找到部署，请选择部署") -> e.message!!
     else -> "操作未完成。请检查网络和服务器状态后重试。"
