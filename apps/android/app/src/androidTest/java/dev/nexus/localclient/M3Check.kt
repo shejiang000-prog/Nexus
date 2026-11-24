@@ -130,6 +130,9 @@ internal fun Instrumentation.m3Check(result: Bundle, phase: String, probePackage
                 waitFor(10000) { Thread.sleep(100); count()==0 }
                 result.putString("udp-workers","initial=$initial busy=$busy idle=$idle stopped=0")
             } else if(phase=="soak") {
+                // Sample the connected, idle VPN after the initial echo and H3 idle timeout.
+                SystemClock.sleep(35000)
+                check(vpn()!=null && TunnelService.state.value.active)
                 control("soak-start")
                 try {
                     soak(result, { connect().use(::echo); udp(); download() }, ::stop)

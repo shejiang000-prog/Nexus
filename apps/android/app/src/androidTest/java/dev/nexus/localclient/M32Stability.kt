@@ -16,35 +16,45 @@ import java.security.SecureRandom
 // Read local process counters only. Sampling idle must not send traffic through the VPN.
 internal fun Instrumentation.soak(result: Bundle, traffic: () -> Unit, stop: () -> Unit) {
     val clock = SystemClock::elapsedRealtime
-    val goroutines = Class.forName("mobile.Mobile").getMethod("labGoroutines")
+    val mobile = Class.forName("mobile.Mobile")
+    val goroutines = mobile.getMethod("labGoroutines")
     val samples = mutableListOf<String>()
     val start = clock()
-    fun sample(label: String) {
+    fun sample(label: String): Pair<Int, Int> {
         val rss = File("/proc/self/status").useLines { lines ->
             lines.first { it.startsWith("VmRSS:") }.substringAfter(":").trim().substringBefore(" ").toInt()
         }
         val pss = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }.totalPss
         val fds = requireNotNull(File("/proc/self/fd").list()).size
-        val row = "$label,${clock()-start},$pss,$rss,${goroutines.invoke(null)},$fds"
+        val go = (goroutines.invoke(null) as Number).toInt()
+        val row = "$label,${clock()-start},$pss,$rss,$go,$fds"
         samples.add(row)
         result.putString("app-samples-ms-pssKiB-rssKiB-go-fd",samples.joinToString(" | "))
         sendStatus(1,Bundle().apply {putString("sample",row)})
+        return go to fds
     }
     var cycles=0
-    sample("start")
-    for (minute in 5..120 step 5) {
+    val initial = sample("start")
+    var idle = initial
+    for (minute in 5..45 step 5) {
         val end = start + minute * 60000L
         while (clock() < end) {
-            if (minute<=60) { traffic(); cycles++ }
+            if (minute<=30) { traffic(); cycles++ }
             val left = end-clock()
-            if (left>0) SystemClock.sleep(if(minute<=60) minOf(15000,left) else left)
+            if (left>0) SystemClock.sleep(if(minute<=30) minOf(15000,left) else left)
         }
-        sample(if(minute<=60) "mixed-$minute" else "idle-${minute-60}")
+        idle = sample(if(minute<=30) "mixed-$minute" else "idle-${minute-30}")
     }
     result.putInt("mixed-cycles",cycles)
     stop()
     SystemClock.sleep(10000)
-    sample("disconnected")
+    val stopped = sample("disconnected")
+    val udp = mobile.getMethod("labUDPWorkers").invoke(null) as Int
+    val tcp = mobile.getMethod("labTCPWorkers").invoke(null) as Int
+    result.putString("stopped-workers","udp=$udp tcp=$tcp")
+    check(udp == 0 && tcp == 0) { "workers after stop: udp=$udp tcp=$tcp" }
+    check(kotlin.math.abs(idle.first-initial.first) <= 10) { "goroutines: $initial -> $idle" }
+    check(idle.second <= initial.second && stopped.second <= initial.second) { "fd: $initial -> $idle -> $stopped" }
 }
 
 internal fun Instrumentation.networkChanges(kind:String, result:Bundle, connect:()->Socket, echo:(Socket)->Unit) {

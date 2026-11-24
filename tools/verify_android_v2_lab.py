@@ -73,7 +73,7 @@ def run(adb, package, fixture, runner, probe, phase, ld_shell=None):
         instrument=([str(ld_shell),"-s","0"," ".join(args)] if ld_shell else [*a,"shell",*args])
         proc=subprocess.Popen(instrument, stdout=log,stderr=subprocess.STDOUT)
         stage=""
-        deadline=time.monotonic()+(7500 if phase=="soak" else 900)
+        deadline=time.monotonic()+(2880 if phase=="soak" else 900)
         try:
             while proc.poll() is None:
                 if time.monotonic()>deadline:raise TimeoutError("M3 instrumentation watchdog")

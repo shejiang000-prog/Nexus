@@ -12,6 +12,13 @@ func LabGoroutines() int32 { return int32(runtime.NumGoroutine()) }
 
 // LabUDPWorkers counts live Android V2 UDP dispatchers and their workers.
 func LabUDPWorkers() int32 {
+	return labWorkers(true)
+}
+
+// LabTCPWorkers counts TCP dispatchers and copy workers from the same bridge.
+func LabTCPWorkers() int32 { return labWorkers(false) }
+
+func labWorkers(udp bool) int32 {
 	size := runtime.NumGoroutine() + 32
 	for {
 		records := make([]runtime.StackRecord, size)
@@ -25,8 +32,12 @@ func LabUDPWorkers() int32 {
 			frames := runtime.CallersFrames(r.Stack())
 			for {
 				frame, more := frames.Next()
-				if strings.HasPrefix(frame.Function, "github.com/xtls/libxray/v2vpn.(*handler).udp") {
-					count++
+				const prefix = "github.com/xtls/libxray/v2vpn.(*handler)."
+				isUDP := strings.HasPrefix(frame.Function, prefix+"udp")
+				if isUDP || strings.HasPrefix(frame.Function, prefix+"Dispatch") {
+					if isUDP == udp {
+						count++
+					}
 					break
 				}
 				if !more {

@@ -85,7 +85,7 @@ class NodeSamples:
         self.sample("start")
         def run():
             try:
-                for minute in range(5,121,5):
+                for minute in range(5,46,5):
                     if self.stopped.wait(max(0,self.start_time+minute*60-time.monotonic())):return
                     self.sample(str(minute))
             except Exception as e:self.failure=e

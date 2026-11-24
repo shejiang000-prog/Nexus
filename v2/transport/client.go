@@ -252,7 +252,7 @@ func dialAddress(ctx context.Context, c Config, kind string, peer netip.AddrPort
 		if runtime.GOOS == "android" {
 			// Release unused sockets before peer keepalives can keep waking the radio.
 			// acquire reconnects on demand; open streams never start the idle timer.
-			base.IdleConnTimeout = 30 * time.Second
+			base.IdleConnTimeout = 15 * time.Second
 		}
 		tr, e := http2.ConfigureTransports(base)
 		if e != nil {
