@@ -12,7 +12,7 @@ FIXED_FILE = {
     "sha256": "8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb",
     "probeUrl": "https://example.com/",
 }
-PHASES = {"invite","links","bench","block","v2","manage","restart"}
+PHASES = {"enroll","invite","links","bench","block","v2","manage","restart"}
 
 
 class Device:
@@ -83,7 +83,7 @@ class Device:
         out={}
         for key,value in re.findall(r"^INSTRUMENTATION_RESULT: ([\w-]+)=(.*)$",data,re.M):
             if key in {"shortMsg","longMsg","stream"}: continue
-            out[key]=value.strip()
+            out[key]=value.rstrip("\r") if key.startswith("trace-") else value.strip()
         if proc.returncode or "INSTRUMENTATION_CODE: -1" not in data:
             raise RuntimeError("M4 instrumentation failed "+json.dumps(out,ensure_ascii=False))
         return out

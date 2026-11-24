@@ -107,6 +107,16 @@ internal fun Instrumentation.m4Probe(args: Bundle, result: Bundle) {
         return (0 until rows.length()).map(rows::getJSONObject).single { it.getString("id") == id }
     }
     when (phase) {
+        "enroll" -> {
+            val path = file("enroll.link")
+            val invite = try { V2Invite.parse(path.readText()) } finally { check(path.delete()) }
+            val host = cfg.getString("v2Host").removeSurrounding("[","]").lowercase(Locale.ROOT)
+            check(host.isNotBlank() && invite.host.removeSurrounding("[","]").equals(host,true))
+            val node = V2Devices.enroll(ctx,invite)
+            check(node.host.equals(host,true) && owners.edit().putString(host,node.key).commit())
+            result.putString("enroll","verified")
+            return
+        }
         "invite" -> { file("v2.link").writeText(manager().v2Invite()); result.putString("invite","created"); return }
         "links" -> {
             val row = deviceRow(v2().deviceId)
