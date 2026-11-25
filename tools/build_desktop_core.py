@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,26 @@ WINTUN_ARCHIVE = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef
 WINTUN_AMD64 = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
 
 LOCAL_MODULES = {"github.com/apernet/quic-go": "../patched/aper", "github.com/xtls/xray-core": "../patched/xray"}
+
+
+def stage_owner_assets(dest):
+    version = os.environ.get("NEXUS_VERSION")
+    if version is None:
+        version = json.loads((ROOT / "apps/desktop/tauri.conf.json").read_text(encoding="utf-8"))["version"]
+    pins = [os.environ.get("NEXUS_NODE_SHA256_" + cpu) for cpu in ("AMD64", "ARM64")]
+    if pins == [None, None] and version == "2.0.1" and "NEXUS_VERSION" not in os.environ:
+        # Offline development pins from the published v2.0.1 Android APK.
+        pins = ["5b5a21032aeb133c74ac7b4e8f4b25454386a6d5ff7bb246403addbfe947ce78",
+                "c61e9d680fb6314f2ffd1c6ae2d1aae74f98aa298549975e19a1141871e3773b"]
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version) or not all(
+            re.fullmatch(r"[0-9a-f]{64}", pin or "") for pin in pins):
+        raise ValueError("Expected the desktop release version and both matching Android node SHA-256 digests")
+    values = ", ".join(json.dumps(s) for s in (version, *pins))
+    (dest / "owner_release.go").write_text(
+        "package main\nvar ownerNodeRelease = struct{ Version, AMD64, ARM64 string }{" + values + "}\n",
+        encoding="ascii")
+    script = ROOT / "apps/android/app/src/main/assets/download_node.sh"
+    (dest / "download_node.sh").write_bytes(script.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def portable_modules(lib):
@@ -67,6 +88,7 @@ if __name__ == "__main__":
                         ROOT / "apps/android/app/build/splitDownloads"), help="Android routing data download cache")
     parser.add_argument("--test-routing", action="store_true", help="check split/global parity on a Windows x64 host")
     parser.add_argument("--test-subscriptions", action="store_true", help="check synthetic subscriptions and Windows storage")
+    parser.add_argument("--test-owner", action="store_true", help="exercise server management with an in-process SSH server")
     parser.add_argument("--test-tun", action="store_true", help="run isolated TUN checks without UAC or network changes")
     parser.add_argument("--wintun-zip", type=Path, help="package the verified official Wintun 0.14.1 AMD64 DLL and licenses")
     args = parser.parse_args()
@@ -98,6 +120,7 @@ if __name__ == "__main__":
         for name in ("tun_windows_wfp.go", "wfp_leak.go", "desktop_dns_guard_windows.go", "desktop_dns_guard_windows_test.go"):
             shutil.copyfile(patched / "xray/proxy/tun" / name, guard / name)
         shutil.copytree(ROOT / "apps/desktop/core", lib / "cmd/nexus-core")
+        stage_owner_assets(lib / "cmd/nexus-core")
         generate(args.rules_cache, lib / "cmd/nexus-core/split-rules.txt")
         env = dict(os.environ, GOOS="windows", GOARCH="amd64", CGO_ENABLED="0", GOWORK="off")
         binary = Path(publish) / output.name
@@ -108,6 +131,9 @@ if __name__ == "__main__":
         if args.test_subscriptions:
             subprocess.run(["go", "test", "-mod=readonly", "-ldflags=-checklinkname=0",
                             "-run", "Subscription", "./subscriptions", "./cmd/nexus-core"], cwd=lib, env=env, check=True)
+        if args.test_owner:
+            subprocess.run(["go", "test", "-mod=readonly", "-ldflags=-checklinkname=0",
+                            "-run", "^TestOwner", "-v", "./cmd/nexus-core"], cwd=lib, env=env, check=True)
         if args.test_tun:
             subprocess.run(["go", "test", "-mod=readonly", "-ldflags=-checklinkname=0", "-run", "Tun",
                             "./cmd/nexus-core"], cwd=lib, env=env, check=True)

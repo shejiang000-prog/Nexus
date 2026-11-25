@@ -11,6 +11,8 @@ jobs:
       contents: read
     outputs:
       release_manifest: ${{ steps.manifest.outputs.digest }}
+      node_amd64: ${{ steps.manifest.outputs.node_amd64 }}
+      node_arm64: ${{ steps.manifest.outputs.node_arm64 }}
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -66,7 +68,11 @@ jobs:
       - run: python3 tools/prepare_android_release.py "$GITHUB_REF_NAME" apps/android/app/build/outputs/apk/release apps/android/app/build/nodeBinaries/linux release-assets
       - id: manifest
         working-directory: release-assets
-        run: echo "digest=$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "digest=$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          for cpu in amd64 arm64; do
+            echo "node_$cpu=$(awk -v name="nexus-node-linux-$cpu" '$2 == name {print $1}' SHA256SUMS.txt)" >> "$GITHUB_OUTPUT"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: signed-android
@@ -75,6 +81,7 @@ jobs:
           retention-days: 1
   windows:
     if: vars.NEXUS_RELEASE_WINDOWS == 'true'
+    needs: build
     runs-on: windows-latest
     permissions:
       contents: read
@@ -122,6 +129,9 @@ jobs:
             "NEXUS_WINDOWS_SIGNTOOL=$($sdk.FullName)" >> $env:GITHUB_ENV
           } finally { if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx } }
       - name: Build pinned Windows binaries
+        env:
+          NEXUS_NODE_SHA256_AMD64: ${{ needs.build.outputs.node_amd64 }}
+          NEXUS_NODE_SHA256_ARM64: ${{ needs.build.outputs.node_arm64 }}
         run: |
           Invoke-WebRequest 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile "$env:RUNNER_TEMP/wintun.zip"
           python tools/build_desktop_core.py --wintun-zip "$env:RUNNER_TEMP/wintun.zip" target/libXray target/windows-payload/nexus-core.exe

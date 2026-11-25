@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod owner;
 mod probes;
 mod subscriptions;
 mod system_proxy;
@@ -448,6 +449,10 @@ fn main() {
             core_status,
             traffic_stats,
             probes::probe_nodes,
+            owner::owner_start,
+            owner::owner_status,
+            owner::owner_result,
+            owner::owner_cancel,
             set_proxy,
             device_identity,
             subscriptions::subscriptions,
@@ -458,6 +463,7 @@ fn main() {
         .expect("desktop initialization failed")
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                owner::shutdown();
                 let _ = stop_and_wait();
             }
         });

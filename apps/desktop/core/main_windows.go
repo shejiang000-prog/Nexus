@@ -3,6 +3,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,43 @@ import (
 
 var errPort = errors.New("port")
 var errConfig = errors.New("config")
+
+//go:embed download_node.sh
+var ownerDownloadScript string
+
+func ownerCommand(line []byte) string {
+	var req ownerRequest
+	if len(line) > 32*1024 || json.Unmarshal(line, &req) != nil {
+		return "invalid_request"
+	}
+	clear(line)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The shell owns the write end until completion. EOF also covers a shell crash.
+	go func() {
+		io.Copy(io.Discard, os.Stdin)
+		cancel()
+	}()
+	result, err := runOwner(ctx, req, func(phase string) {
+		fmt.Println("progress:" + phase)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return "cancelled"
+		}
+		var code ownerError
+		if errors.As(err, &code) {
+			return string(code)
+		}
+		return "owner_failed"
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return "owner_failed"
+	}
+	fmt.Printf("result:%s\n", data)
+	return ""
+}
 
 func reservePort(preferred int) (*net.TCPListener, error) {
 	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: preferred}
@@ -175,6 +214,8 @@ func command() (result string) {
 		return "invalid_request"
 	}
 	switch req.Action {
+	case "owner":
+		return ownerCommand(line)
 	case "probe_nodes":
 		if req.V2 != nil && (!*req.V2 || req.SubscriptionID != "") || req.V2 == nil && !validSourceID(req.SubscriptionID) {
 			return "invalid_request"
