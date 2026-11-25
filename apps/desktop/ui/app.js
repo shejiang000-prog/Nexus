@@ -31,41 +31,41 @@ function navigate(focus) {
 window.addEventListener("hashchange", () => navigate(true));
 
 const messages = {
-  invite_invalid: "邀请链接格式无效，请重新粘贴完整链接。",
-  invite_rejected: "邀请已被领取、已过期或已被撤销，请向分享人要一条新的邀请。",
-  node_unreachable: "无法连接节点，请检查网络和节点状态。节点 IP 可能被屏蔽，或被防火墙拦截。",
-  local_port: "本机代理端口无法监听，请检查端口占用或本机权限。",
-  key_missing: "本机设备密钥已丢失，请在设置里移除设备身份，再用新邀请登记。",
-  no_identity: "本机尚未登记，请先粘贴 V2 邀请链接。",
-  missing: "找不到 nexus-core.exe，请重新安装 Nexus。",
-  routing: "分流规则无法加载，请重新安装 Nexus。",
-  busy: "请先断开连接，再移除设备身份。",
-  identity_changed: "已登记的节点已更改，请确认后再移除。",
-  identity_busy: "请先断开所有正在使用此设备身份的连接，再移除。",
-  "proxy-busy": "另一个 Nexus 窗口正在管理系统代理。",
-  "proxy-changed": "系统代理已由其他程序修改，已保留当前设置。",
-  "proxy-error": "系统代理设置或恢复失败。请检查权限，必要时重新启动 Nexus 以重试恢复。",
-  subscription_download: "订阅下载失败，请检查链接和网络，然后重试。",
-  subscription_format: "链接或订阅格式不受支持，或内容超出限制。",
-  subscription_storage: "无法读取或保存订阅，请检查本机用户资料。",
-  subscription_changed: "订阅或节点已变更，请重新选择。",
-  tun_admin: "未获得管理员权限。请在 Windows 授权提示中选择允许，或在设置里关闭 TUN 模式。",
-  tun_driver: "无法加载 Wintun 驱动，请重新安装 Nexus。",
-  tun_conflict: "TUN 与其他应用的虚拟网卡或路由冲突，请先关闭其他应用的 TUN 模式。",
-  tun_session: "TUN 数据通道已中断，请检查网络或其他 VPN 后重新连接。",
-  tun_recovery: "未能恢复上次 TUN 会话的网络设置。请重新打开 Nexus 并允许恢复。",
-  tun_version: "核心程序版本不匹配，请重新安装 Nexus。",
-  tun_recovering: "正在检查上次 TUN 会话，请稍后再连接。",
-  update_busy: "正在处理软件更新，请稍后再试。",
-  update_check: "暂时无法检查更新。",
-  update_download: "更新下载失败，请检查网络后重试。",
-  update_signature: "更新包签名验证失败，已取消安装。",
-  update_cleanup: "网络设置尚未恢复。请先断开连接并关闭其他 Nexus 窗口。",
-  update_install: "无法启动安装程序，请重试。",
-  probe_unsupported: "当前版本暂不支持测速。",
-  probe_busy: "正在测速，请稍候。",
-  probe_failed: "测速未完成，请重试。",
-  generic: "操作失败，请检查本机设备记录和节点授权。"
+  invite_invalid: "这条邀请链接不完整，请重新复制一遍。",
+  invite_rejected: "这条邀请已经用过、过期或被收回了，找分享的人再要一条吧。",
+  node_unreachable: "连不上节点。可能是网络不通，或者节点的 IP 被墙了。",
+  local_port: "本机端口被占满了，重启电脑后再试试。",
+  key_missing: "这台电脑的密钥丢了。请在设置里退出私人节点，再用新邀请加入。",
+  no_identity: "还没有私人节点，先粘贴一条邀请链接。",
+  missing: "程序文件不完整，请重新安装 Nexus。",
+  routing: "分流规则加载失败，请重新安装 Nexus。",
+  busy: "先断开连接，再退出私人节点。",
+  identity_changed: "节点信息刚变过，请再确认一次。",
+  identity_busy: "还有连接在用这个节点，先断开再退出。",
+  "proxy-busy": "另一个 Nexus 窗口正在管系统代理。",
+  "proxy-changed": "系统代理被别的软件改了，已保留它的设置。",
+  "proxy-error": "系统代理没设置成功。重新打开 Nexus 会自动恢复原来的设置。",
+  subscription_download: "订阅下载失败，检查一下链接和网络再试。",
+  subscription_format: "这个链接认不出来，或者订阅内容太大。",
+  subscription_storage: "订阅没能保存，检查一下磁盘空间。",
+  subscription_changed: "订阅刚更新过，请重新选一下节点。",
+  tun_admin: "没拿到管理员授权。在弹出的提示里点「是」，或者在设置里关掉「接管全部流量」。",
+  tun_driver: "虚拟网卡驱动加载失败，请重新安装 Nexus。",
+  tun_conflict: "和别的 VPN 冲突了，先关掉它的 TUN 模式。",
+  tun_session: "全部流量的通道断了，检查网络后重新连接。",
+  tun_recovery: "上次的网络设置没能恢复，重新打开 Nexus 并允许恢复。",
+  tun_version: "程序版本不一致，请重新安装 Nexus。",
+  tun_recovering: "正在恢复上次的网络设置，稍等一下再连。",
+  update_busy: "正在更新，稍等一下。",
+  update_check: "暂时检查不了更新",
+  update_download: "更新下载失败，检查网络后再试",
+  update_signature: "更新包校验没通过，已取消安装",
+  update_cleanup: "先断开连接、关掉其他 Nexus 窗口，再更新",
+  update_install: "安装程序没能启动，再试一次",
+  probe_unsupported: "这个版本还不支持测速。",
+  probe_busy: "正在测速，稍等。",
+  probe_failed: "测速没完成，再试一次。",
+  generic: "出了点问题，再试一次。"
 };
 const protocolName = protocol => ({hysteria:"Hysteria2", vless:"VLESS", vmess:"VMess", trojan:"Trojan", shadowsocks:"Shadowsocks"})[protocol] || String(protocol).toUpperCase();
 const modeInputs = [...document.querySelectorAll('input[name="mode"]')];
@@ -122,7 +122,7 @@ function render() {
   const [state, socks, http, enabled, notice, sessionTun] = snapshot;
   const ready = connected(state);
   const active = running(state);
-  const status = ready ? "已连接" : ({stopped:"未连接", connecting:"正在连接", stopping:"正在断开"})[state] || "连接失败";
+  const status = ready ? "已连接" : ({stopped:"未连接", connecting:"连接中…", stopping:"断开中…"})[state] || "连接失败";
   if ($("status").textContent !== status) { $("status").textContent = status; restart($("status"), "swap", 400); }
   const error = localError || messages[state] || messages[notice] || "";
   setText($("feedback"), error);
@@ -135,21 +135,21 @@ function render() {
   }
   hero.dataset.link = link;
   setText($("toggle-label"), active ? "断开" : "连接");
-  setText($("lane"), ready ? ({h3:"HTTP/3", h2:"HTTP/2"}[state] || (sessionTun ? "TUN" : "代理")) : "");
+  setText($("lane"), ready ? ({h3:"主线路", h2:"备用线路"}[state] || "") : "");
   if (ready && !since) since = Date.now();
   if (!ready) since = 0;
-  setText($("clock"), ready ? clock() : active ? "" : "点击圆环连接");
+  setText($("clock"), ready ? clock() : active ? "" : "点一下开始连接");
   $("traffic").hidden = !ready || !trafficSupported;
 
   const fromSubscription = source === "subscription";
   const selected = catalog.find(sub => sub.id === chosenSub);
   const node = selected?.nodes.find(item => item[0] === chosenNode);
-  setText($("current-name"), fromSubscription ? (node ? node[1] : "选择节点") : "我的 V2 节点");
-  setText($("current-from"), fromSubscription ? (node ? selected.name + " · " + protocolName(node[2]) : loaded ? "还没有选中的订阅节点" : "")
-    : identity || (identityRead ? "尚未登记" : ""));
+  setText($("current-name"), fromSubscription ? (node ? node[1] : "选一个节点") : identity || !identityRead ? "私人节点" : "还没有节点");
+  setText($("current-from"), fromSubscription ? (node ? selected.name : loaded ? "去「节点」页挑一个" : "")
+    : identity || (identityRead ? "粘贴朋友发来的邀请，或去导入订阅" : ""));
   showLatency($("current-latency"), fromSubscription ? latency.get(chosenSub + ":" + chosenNode) : latency.get("v2"));
   $("enrollment").hidden = active || fromSubscription || !identityRead || !!identity;
-  setText($("v2-name"), identity ? "我的 V2 节点 · " + identity : "我的 V2 节点（粘贴邀请后连接）");
+  setText($("v2-name"), identity ? "私人节点 · " + identity : "还没有私人节点");
 
   if (active) {
     proxy.checked = enabled;
@@ -263,7 +263,7 @@ document.querySelector('[data-probe="v2"]').addEventListener("click", event => p
 async function readIdentity() {
   try {
     [identity, identityToken] = await invoke("device_identity", {remove:false});
-    setText($("identity"), identity || "尚未登记");
+    setText($("identity"), identity ? "已加入私人节点 " + identity : "还没加入私人节点");
   } catch {
     identity = "";
     identityToken = "";
@@ -293,7 +293,7 @@ async function act(action) {
   try { await action(); }
   catch (err) { localError = messages[err] || messages.generic; }
   try { await update(); }
-  catch { localError = "无法读取核心状态。"; }
+  catch { localError = "Nexus 后台没有响应，请重新打开 Nexus。"; }
   busy = false;
   render();
 }
@@ -337,7 +337,7 @@ $("confirm").addEventListener("close", () => {
 async function refresh() {
   if (!busy && !document.hidden) {
     try { await update(); }
-    catch { localError = "无法读取核心状态。"; render(); }
+    catch { localError = "Nexus 后台没有响应，请重新打开 Nexus。"; render(); }
   }
   setTimeout(refresh, 750);
 }
@@ -375,7 +375,7 @@ function nodeControls() {
   }
   $("subscription-url").disabled = subBusy;
   $("add-sub").disabled = subBusy || !invoke;
-  setText($("selected-hint"), active ? "断开连接后可切换节点。" : "");
+  setText($("selected-hint"), active ? "断开后才能换节点" : "");
 }
 
 function formatBytes(bytes) {
@@ -408,7 +408,7 @@ function showGroups() {
     group.querySelector(".refresh").addEventListener("click", () => manage("update_subscription", {id:sub.id}));
     group.querySelector(".delete").addEventListener("click", () => {
       deletingId = sub.id;
-      $("delete-hint").textContent = "将从本机删除「" + sub.name + "」及其 " + sub.nodes.length + " 个节点。";
+      $("delete-hint").textContent = "「" + sub.name + "」和里面的 " + sub.nodes.length + " 个节点都会从这台电脑删掉。";
       $("confirm-sub").returnValue = "";
       $("confirm-sub").showModal();
     });
@@ -447,9 +447,9 @@ async function manage(action, fields = {}) {
       $("import-form").hidden = true;
       $("show-import").hidden = false;
     }
-    status.textContent = {import_subscription:"已添加。",update_subscription:"已刷新。",remove_subscription:"已删除。"}[action] || "";
+    status.textContent = {import_subscription:"添加好了",update_subscription:"已更新",remove_subscription:"已删除"}[action] || "";
   } catch (err) {
-    status.textContent = messages[err] || "订阅操作失败，请重试。";
+    status.textContent = messages[err] || "没成功，再试一次。";
     status.classList.add("error");
     loaded = true;
   } finally {
@@ -480,7 +480,7 @@ async function softwareUpdate(automatic) {
   updateAction.disabled = true;
   try {
     if (availableVersion) {
-      updateFeedback.textContent = "正在下载并验证更新…";
+      updateFeedback.textContent = "正在下载更新…";
       await invoke("install_update");
     } else {
       if (!automatic) updateFeedback.textContent = "正在检查…";
@@ -488,7 +488,7 @@ async function softwareUpdate(automatic) {
       if (availableVersion) {
         updateAction.textContent = "安装";
         updateAction.classList.add("primary");
-        updateFeedback.textContent = "可更新至 " + availableVersion + "，安装前会先断开连接";
+        updateFeedback.textContent = "有新版本 " + availableVersion + "，安装时会先断开连接";
       } else updateFeedback.textContent = "已是最新版本";
     }
   } catch (err) {

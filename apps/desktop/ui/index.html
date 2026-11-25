@@ -62,13 +62,13 @@
     <p id="feedback" role="alert" hidden></p>
 
     <a id="current" class="row link" href="#nodes">
-      <span class="row-text"><b id="current-name">我的 V2 节点</b><small id="current-from"></small></span>
+      <span class="row-text"><b id="current-name">私人节点</b><small id="current-from"></small></span>
       <span id="current-latency" class="latency" hidden></span>
       <svg class="icon chevron"><use href="#i-arrow"/></svg>
     </a>
     <div id="enrollment" hidden>
-      <label for="invite" class="sr-only">V2 邀请链接</label>
-      <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="首次使用请粘贴 V2 邀请链接">
+      <label for="invite" class="sr-only">邀请链接</label>
+      <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴邀请链接">
     </div>
     <div class="seg" role="radiogroup" aria-label="分流模式">
       <span class="seg-pill" aria-hidden="true"></span>
@@ -87,7 +87,7 @@
     </div>
     <div class="group-nodes">
       <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false" data-id="v2">
-        <span class="node-name" id="v2-name">我的 V2 节点</span><span class="latency" hidden></span><span class="badge">V2</span>
+        <span class="node-name" id="v2-name">私人节点</span><span class="latency" hidden></span><span class="badge">私人</span>
         <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
       </button>
     </div>
@@ -118,7 +118,7 @@
       <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
     </button>
   </template>
-  <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除此订阅？</h2><p id="delete-hint"></p>
+  <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除这个订阅？</h2><p id="delete-hint"></p>
     <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="delete" class="btn danger">删除</button></form>
   </dialog>
 </section>
@@ -126,22 +126,22 @@
 <section id="settings" hidden aria-labelledby="settings-title">
   <h1 id="settings-title" class="sr-only" tabindex="-1">设置</h1>
   <div class="list">
-    <div class="row"><label for="proxy" class="row-text"><b>系统代理</b><small>浏览器等应用自动走代理</small></label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
-    <div class="row"><label for="tun" class="row-text"><b>TUN 模式</b><small id="tun-hint">接管全部网络，需要管理员权限</small></label><input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled></div>
+    <div class="row"><label for="proxy" class="row-text"><b>系统代理</b><small>浏览器等软件自动走 Nexus</small></label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
+    <div class="row"><label for="tun" class="row-text"><b>接管全部流量</b><small id="tun-hint">游戏、命令行也走 Nexus，开启时要授权</small></label><input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled></div>
   </div>
   <div class="list">
-    <div class="row"><span class="row-text"><b>本机代理端口</b><small id="ports">连接后显示</small></span></div>
-    <div class="row"><span class="row-text"><b>设备身份</b><small id="identity">读取中…</small></span><button id="remove" type="button" class="btn small ghost-danger" hidden>移除</button></div>
-    <div class="row"><span class="row-text"><b>软件更新</b><small id="update-feedback">—</small></span><button type="button" id="update-action" class="btn small" disabled>检查更新</button></div>
+    <div class="row"><span class="row-text"><b>本机端口</b><small id="ports">连接后显示</small></span></div>
+    <div class="row"><span class="row-text"><b>这台电脑</b><small id="identity">读取中…</small></span><button id="remove" type="button" class="btn small ghost-danger" hidden>退出</button></div>
+    <div class="row"><span class="row-text"><b>软件更新</b><small id="update-feedback">正在检查…</small></span><button type="button" id="update-action" class="btn small" disabled>检查更新</button></div>
   </div>
   <div class="about">
     <img src="nexus-logo.svg" alt="" width="40" height="40">
     <b>Nexus</b>
     <small>无需注册 · 密钥只保存在本机 · 不收集任何数据</small>
   </div>
-  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
-    <p>将删除本机的设备密钥和节点记录，再次使用需要新的邀请。</p>
-    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="remove" class="btn danger">移除</button></form>
+  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">让这台电脑退出私人节点？</h2>
+    <p>退出后就不能再用这个节点了，想重新加入需要一条新的邀请。</p>
+    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="remove" class="btn danger">退出</button></form>
   </dialog>
 </section>
 </main>
