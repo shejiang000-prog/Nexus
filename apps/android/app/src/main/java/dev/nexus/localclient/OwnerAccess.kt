@@ -109,6 +109,7 @@ internal class OwnerAccess(private val context: Context) {
 internal const val INVITE_MESSAGE = "复制这条消息后打开 Nexus"
 internal fun friendlyError(e: Exception): String = when {
     e is ChangedServer -> "服务器身份已变化，操作已停止。请先向服务器提供商核实。"
+    e is InstallerPortOccupied -> "服务器的 ${e.port} 端口已被其他程序（如 nginx）占用，请停用它或换一台干净的服务器后重试。"
     // JSch's TCP dial uses this marker exclusively for Socket.connect timeouts.
     e is com.jcraft.jsch.JSchException && e.message == "timeout: socket is not established" &&
         e.cause is java.net.SocketTimeoutException -> "无法连接到服务器。这个 IP 可能在国内无法访问，可以在服务商处更换 IP 后重试。"

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import com.jcraft.jsch.*
 import org.json.JSONObject
+import java.io.OutputStream
 import java.security.MessageDigest
 
 private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)
@@ -18,6 +19,27 @@ internal fun v2InstallProtocols(domain: String, selected: Set<String> = v2Compat
 }
 
 internal class CompatLinkFailure(message: String) : IllegalStateException(message)
+
+internal class InstallerPortOccupied(val port: Int) : IllegalStateException()
+
+internal class InstallerStderr : OutputStream() {
+    private val marker = Regex("""port occupied: ([1-9][0-9]{0,4})/(?:tcp|udp)\r?""")
+    private val line = StringBuilder(32)
+    @Volatile private var occupiedPort: Int? = null
+
+    override fun write(b: Int) {
+        if (occupiedPort != null) return
+        if (b == '\n'.code) {
+            occupiedPort = marker.matchEntire(line)?.groupValues?.get(1)?.toInt()?.takeIf { it <= 65535 }
+            line.setLength(0)
+        } else if (line.length < 32) {
+            // Longer than every valid marker, so a truncated line can never match.
+            line.append(b.toChar())
+        }
+    }
+
+    fun failure(exitStatus: Int) = if (exitStatus > 0) occupiedPort?.let(::InstallerPortOccupied) else null
+}
 
 class NodeManager(private val context: Context, val host: String, val port: Int, val user: String,
                   private val password: String, private val fingerprint: String, private val sshKey: ByteArray? = null,
@@ -78,17 +100,20 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
     private fun installedV2(ssh: Session) = run(ssh, "if test -x /opt/nexus-v2/bin/nexus-node; then echo yes; fi") == "yes"
 
 
-    private fun run(ssh: Session, cmd: String, data: String = "", limit: Int = 131072): String {
+    private fun run(ssh: Session, cmd: String, data: String = "", limit: Int = 131072, installerStderr: InstallerStderr? = null): String {
         val channel = ssh.openChannel("exec") as ChannelExec
         try {
             channel.setCommand(cmd)
             channel.setInputStream(data.byteInputStream())
+            installerStderr?.let { channel.setErrStream(it) }
             val output = channel.inputStream
             channel.connect(8000)
             val result = output.bounded(limit).toString(Charsets.UTF_8)
             val deadline = android.os.SystemClock.elapsedRealtime() + 3000
             while (!channel.isClosed && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(20)
-            check(channel.exitStatus == 0)
+            val status = channel.exitStatus
+            installerStderr?.failure(status)?.let { throw it }
+            check(status == 0)
             return result.trim()
         } finally { channel.disconnect() }
     }
@@ -148,7 +173,7 @@ class NodeManager(private val context: Context, val host: String, val port: Int,
         try {
             stageNode(ssh, "nexus-node", arch, staged)
             val sudo = if (user == "root") "" else "sudo -n "
-            run(ssh, "chmod 0700 $staged && ${sudo}$staged $arguments")
+            run(ssh, "chmod 0700 $staged && ${sudo}$staged $arguments", installerStderr = InstallerStderr())
         } finally { runCatching { run(ssh, "rm -f -- $staged && rmdir -- $dir") } }
         Unit
     }
