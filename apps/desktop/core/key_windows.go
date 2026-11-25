@@ -32,6 +32,7 @@ var (
 
 type deviceKey struct {
 	handle uintptr
+	lease  windows.Handle // released together with the key, or on process exit
 }
 
 // Caller supplies only fixed identifiers and a validated hexadecimal alias.
@@ -53,7 +54,7 @@ func acquireKey(provider, alias string, create bool) (*deviceKey, error) {
 	name := wide("Nexus.Desktop." + alias)
 	rc, _, _ = openKey.Call(storage, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(name)), 0, silentFlag)
 	if rc == 0 {
-		return &deviceKey{key}, nil
+		return &deviceKey{handle: key}, nil
 	}
 	if !create {
 		if rc == uintptr(windows.NTE_BAD_KEYSET) || rc == uintptr(windows.NTE_NOT_FOUND) {
@@ -71,10 +72,15 @@ func acquireKey(provider, alias string, create bool) (*deviceKey, error) {
 		freeObject.Call(key)
 		return nil, syscall.Errno(rc)
 	}
-	return &deviceKey{key}, nil
+	return &deviceKey{handle: key}, nil
 }
 
-func (k *deviceKey) Close() { freeObject.Call(k.handle) }
+func (k *deviceKey) Close() {
+	if k.lease != 0 {
+		windows.CloseHandle(k.lease)
+	}
+	freeObject.Call(k.handle)
+}
 
 // NCryptDeleteKey frees the handle on success.
 func (k *deviceKey) Delete() error {

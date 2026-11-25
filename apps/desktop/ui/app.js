@@ -24,6 +24,7 @@ const messages = {
   routing: "分流规则无法加载，请检查核心程序。",
   busy: "请先断开连接，再移除此设备身份。",
   identity_changed: "当前已登记节点已更改，请确认节点后再移除。",
+  identity_busy: "请先断开所有正在使用此设备身份的连接，再移除。",
   "proxy-busy": "另一个 Nexus 窗口正在管理系统代理。",
   "proxy-changed": "系统代理已由其他程序修改，已保留当前设置。",
   "proxy-error": "系统代理设置或恢复失败。请检查权限，必要时重新启动 Nexus 以重试恢复。",

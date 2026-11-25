@@ -56,6 +56,7 @@ fn error_label(line: &str) -> &'static str {
         "error:node_unreachable" => "node_unreachable",
         "error:key_missing" => "key_missing",
         "error:identity_changed" => "identity_changed",
+        "error:identity_busy" => "identity_busy",
         "error:local_port" => "local_port",
         "error:no_identity" => "no_identity",
         "error:routing" => "routing",

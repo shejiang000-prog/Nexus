@@ -59,6 +59,7 @@ func (r *registration) save(path string) error {
 }
 
 var (
+	errIdentityBusy    = errors.New("identity is in use")
 	errIdentityChanged = errors.New("the current identity changed")
 	errInviteInvalid   = errors.New("invalid invitation")
 	errNoIdentity      = errors.New("no local identity")
@@ -68,6 +69,8 @@ var (
 func errorCode(err error) string {
 	var carrier *transport.Error
 	switch {
+	case errors.Is(err, errIdentityBusy):
+		return "identity_busy"
 	case errors.Is(err, errIdentityChanged):
 		return "identity_changed"
 	case errors.Is(err, errInviteInvalid):
@@ -185,6 +188,17 @@ func currentIdentity() (string, string, error) {
 	return label, alias, nil
 }
 
+// Completed registrations are immutable. Share reads among running cores and
+// acquire exclusive access before removing their key. Enrollment.lock gates
+// new leases while removal is in progress.
+func openRecord(path string, access, share uint32) (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	return windows.CreateFile(name, access, share, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+}
+
 func removeDevice(expected string) error {
 	dir, lock, err := lockProfile()
 	if err != nil {
@@ -206,6 +220,17 @@ func removeDevice(expected string) error {
 	path := filepath.Join(dir, alias+".json")
 	r, err := readRegistration(path)
 	if err == nil {
+		lease, err := openRecord(path, windows.DELETE, 0)
+		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return errIdentityBusy
+		}
+		if err != nil {
+			return err
+		}
+		// No new readers can acquire a lease until we release enrollment.lock.
+		if err := windows.CloseHandle(lease); err != nil {
+			return err
+		}
 		key, err := acquireKey(r.Provider, alias, false)
 		if err != nil && !errors.Is(err, errKeyMissing) {
 			return err
@@ -308,6 +333,11 @@ func loadDevice(link string) (*device, error) {
 	if len(r.ID) != 16 {
 		return nil, errors.New("invalid device ID")
 	}
+	lease, err := openRecord(path, windows.GENERIC_READ, windows.FILE_SHARE_READ)
+	if err != nil {
+		return nil, err
+	}
+	key.lease = lease
 	if invite != nil {
 		if err := save(active, []byte(alias)); err != nil {
 			return nil, err
