@@ -73,6 +73,9 @@ fn public_subscriptions(body: InvokeBody) -> Result<Vec<Subscription>, &'static 
 }
 
 fn request_core(line: String) -> Result<Vec<Subscription>, &'static str> {
+    let _guard = super::updates::REQUESTS
+        .try_read()
+        .map_err(|_| "update_busy")?;
     let mut child = super::spawn_core()?;
     let mut response = String::new();
     let read = writeln!(child.stdin.take().unwrap(), "{line}").and_then(|()| {

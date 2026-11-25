@@ -114,7 +114,7 @@ func startTunHelper(mode string) (*tunPipe, error) {
 	if err != nil {
 		return nil, tunFailure("tun_admin")
 	}
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + user.User.Sid.String() + ")")
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;" + user.User.Sid.String() + ")")
 	if err != nil {
 		return nil, tunFailure("tun_admin")
 	}
@@ -162,7 +162,16 @@ func startTunHelper(mode string) (*tunPipe, error) {
 			windows.GetOverlappedResult(h, &ol, &n, true)
 		}
 	}()
-	process, err = launchTunHelper(path, mode, nonce)
+	service, err := requestTunService(path, mode, nonce)
+	if err != nil {
+		return nil, err
+	}
+	if service != nil {
+		defer service.Close()
+		process, err = servicePeer(service, path, h, event, pending)
+	} else {
+		process, err = launchTunHelper(path, mode, nonce)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +192,17 @@ func startTunHelper(mode string) (*tunPipe, error) {
 		return nil, tunFailure("tun_admin")
 	}
 	file = os.NewFile(uintptr(h), "Nexus TUN session")
+	if service != nil {
+		if err := file.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return nil, tunFailure("tun_admin")
+		}
+		if _, err := file.Write([]byte{tuntrust.ModeByte(mode)}); err != nil {
+			return nil, tunFailure("tun_admin")
+		}
+		if err := file.SetWriteDeadline(time.Time{}); err != nil {
+			return nil, tunFailure("tun_admin")
+		}
+	}
 	if err := file.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
 		return nil, tunFailure("tun_driver")
 	}

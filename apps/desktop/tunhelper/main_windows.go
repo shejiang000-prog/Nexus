@@ -122,7 +122,7 @@ func openLocalPipe(nonce string) (windows.Handle, error) {
 		windows.OPEN_EXISTING, windows.SECURITY_SQOS_PRESENT|windows.SECURITY_IDENTIFICATION|windows.FILE_FLAG_OVERLAPPED, 0)
 }
 
-func serve(mode string, proc windows.Handle, owner string, pipe *os.File) bool {
+func serve(parent context.Context, mode string, proc windows.Handle, owner string, pipe *os.File) bool {
 	send := func(code byte) error {
 		_, err := pipe.Write([]byte{code})
 		return err
@@ -131,7 +131,7 @@ func serve(mode string, proc windows.Handle, owner string, pipe *os.File) bool {
 		_ = send(1)
 		return false
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	done, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
 		_ = send(3)
@@ -215,10 +215,25 @@ func runHelper() bool {
 	if err != nil {
 		return false
 	}
-	return serve(mode, proc, owner, pipe)
+	return serve(context.Background(), mode, proc, owner, pipe)
 }
 
 func main() {
+	if len(os.Args) == 2 {
+		var err error
+		switch os.Args[1] {
+		case "--service":
+			err = runWindowsService()
+		case "--install-service", "--remove-service":
+			err = manageWindowsService(os.Args[1] == "--install-service")
+		default:
+			err = errPeer
+		}
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if !runHelper() {
 		os.Exit(1)
 	}

@@ -1,4 +1,4 @@
-name: Android release
+name: Nexus release
 on:
   push:
     tags: ['v*']
@@ -73,8 +73,86 @@ jobs:
           path: release-assets/
           if-no-files-found: error
           retention-days: 1
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 100
+    env:
+      GOTOOLCHAIN: go1.27.4
+      RUSTUP_TOOLCHAIN: '1.100.0'
+    outputs:
+      manifest: ${{ steps.windows-assets.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: XTLS/libXray
+          ref: 5a0f7d8d1c28b34afb5727b04b26a10f6dbac7e3
+          path: target/libXray
+          persist-credentials: false
+      - name: Set shared release version
+        run: |
+          if ($env:GITHUB_REF_NAME -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Expected vX.Y.Z' }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          if (!(Select-String -LiteralPath apps/android/app/build.gradle -SimpleMatch "def publicVersion = '$version'")) { throw 'Android version differs from tag' }
+          "NEXUS_VERSION=$version" >> $env:GITHUB_ENV
+          "TAURI_CONFIG=$(@{version=$version} | ConvertTo-Json -Compress)" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=$env:RUNNER_TEMP/nexus-cargo" >> $env:GITHUB_ENV
+          rustup toolchain install 1.100.0 --profile minimal
+      - name: Prepare optional Windows signing certificate
+        env:
+          PFX_B64: ${{ secrets.NEXUS_WINDOWS_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.NEXUS_WINDOWS_PFX_PASSWORD }}
+        run: |
+          if (!$env:PFX_B64 -and !$env:PFX_PASSWORD) { Write-Output 'Windows 代码签名：未签名'; exit 0 }
+          if (!$env:PFX_B64 -or !$env:PFX_PASSWORD) { throw 'Incomplete Windows signing secrets' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'nexus-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+            $password = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+            $cert = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey)
+            if ($cert.Count -ne 1) { throw 'Expected one Windows signing identity' }
+            "NEXUS_WINDOWS_CERT_THUMBPRINT=$($cert[0].Thumbprint)" >> $env:GITHUB_ENV
+            $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+            if (!$sdk) { throw 'Missing Windows SDK signtool' }
+            "NEXUS_WINDOWS_SIGNTOOL=$($sdk.FullName)" >> $env:GITHUB_ENV
+          } finally { if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx } }
+      - name: Build pinned Windows binaries
+        run: |
+          Invoke-WebRequest 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile "$env:RUNNER_TEMP/wintun.zip"
+          python tools/build_desktop_core.py --wintun-zip "$env:RUNNER_TEMP/wintun.zip" target/libXray target/windows-payload/nexus-core.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --locked --release --manifest-path apps/desktop/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item "$env:CARGO_TARGET_DIR/release/nexus-desktop.exe" target/windows-payload/
+          python tools/prepare_windows_release.py sign target/windows-payload/nexus-desktop.exe
+      - name: Package x64 NSIS installer
+        run: |
+          python tools/build_desktop_installer.py --payload target/windows-payload --version $env:NEXUS_VERSION --output "target/windows-release/Nexus-$env:NEXUS_VERSION-windows-x64-setup.exe" --tools-cache "$env:RUNNER_TEMP/nexus-tools"
+      - name: Sign installer and build updater manifest
+        id: windows-assets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          python tools/prepare_windows_release.py release $env:GITHUB_REF_NAME "target/windows-release/Nexus-$env:NEXUS_VERSION-windows-x64-setup.exe" --cli "$env:RUNNER_TEMP/nexus-tools/cargo-tauri.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "digest=$((Get-FileHash target/windows-release/WINDOWS-SHA256SUMS.txt).Hash.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - name: Remove ephemeral signing identity
+        if: always()
+        run: |
+          if ($env:NEXUS_WINDOWS_CERT_THUMBPRINT) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:NEXUS_WINDOWS_CERT_THUMBPRINT" -DeleteKey }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-x64
+          path: target/windows-release/
+          if-no-files-found: error
+          retention-days: 1
   publish:
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -83,12 +161,20 @@ jobs:
         with:
           name: signed-android
           path: assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-x64
+          path: windows
       - name: Publish verified tag
         working-directory: assets
         env:
           EXPECTED_MANIFEST: ${{ needs.build.outputs.release_manifest }}
+          WINDOWS_MANIFEST: ${{ needs.windows.outputs.manifest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           test "$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" = "$EXPECTED_MANIFEST"
           sha256sum --check --strict SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md "Nexus-${GITHUB_REF_NAME#v}-arm64.apk" "Nexus-${GITHUB_REF_NAME#v}-universal.apk" nexus-node-linux-amd64 nexus-node-linux-arm64 SHA256SUMS.txt
+          (cd ../windows && echo "$WINDOWS_MANIFEST  WINDOWS-SHA256SUMS.txt" | sha256sum --check --strict && sha256sum --check --strict WINDOWS-SHA256SUMS.txt)
+          test -s ../windows/latest.json || { echo 'Configure the updater signing secrets before publishing a release.'; exit 1; }
+          cat ../windows/windows-release.txt >> release-notes.md
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md "Nexus-${GITHUB_REF_NAME#v}-arm64.apk" "Nexus-${GITHUB_REF_NAME#v}-universal.apk" nexus-node-linux-amd64 nexus-node-linux-arm64 SHA256SUMS.txt ../windows/*

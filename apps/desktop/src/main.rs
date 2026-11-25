@@ -2,13 +2,15 @@
 
 mod subscriptions;
 mod system_proxy;
+mod updates;
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::windows::process::CommandExt,
     process::{Child, ChildStdin, Command, Stdio},
-    sync::Mutex,
+    sync::{Condvar, Mutex},
     thread,
+    time::Duration,
 };
 use tauri::ipc::{InvokeBody, Request};
 
@@ -33,6 +35,7 @@ static CORE: Mutex<Core> = Mutex::new(Core {
     tun_supported: None,
     notice: "",
 });
+static STOPPED: Condvar = Condvar::new();
 
 fn spawn_core() -> Result<Child, &'static str> {
     let exe = std::env::current_exe()
@@ -156,10 +159,12 @@ fn monitor(mut child: Child) {
     core.input = None;
     core.http = 0;
     core.socks = 0;
+    STOPPED.notify_all();
 }
 
 #[tauri::command(async)]
 fn start_core(request: Request<'_>) -> Result<(), &'static str> {
+    let _guard = updates::REQUESTS.try_read().map_err(|_| "update_busy")?;
     let InvokeBody::Json(body) = request.body() else {
         return Err("invite_invalid");
     };
@@ -249,6 +254,20 @@ fn stop_core() {
     }
 }
 
+fn stop_and_wait() -> Result<(), &'static str> {
+    stop_core();
+    let core = CORE.lock().unwrap();
+    let (core, _) = STOPPED
+        .wait_timeout_while(core, Duration::from_secs(30), |core| {
+            core.status == "stopping" || core.input.is_some()
+        })
+        .map_err(|_| "update_cleanup")?;
+    if core.status == "stopping" || core.input.is_some() {
+        return Err("update_cleanup");
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn core_status() -> (&'static str, u16, u16, bool, &'static str, bool) {
     let core = CORE.lock().unwrap();
@@ -264,6 +283,7 @@ fn core_status() -> (&'static str, u16, u16, bool, &'static str, bool) {
 
 #[tauri::command]
 fn set_proxy(enabled: bool) -> Result<(), &'static str> {
+    let _guard = updates::REQUESTS.try_read().map_err(|_| "update_busy")?;
     let mut core = CORE.lock().unwrap();
     let changed = if !enabled {
         system_proxy::restore()
@@ -284,6 +304,7 @@ fn device_identity(
     remove: bool,
     expected: Option<String>,
 ) -> Result<(String, String), &'static str> {
+    let _guard = updates::REQUESTS.try_read().map_err(|_| "update_busy")?;
     let core = CORE.lock().unwrap();
     if remove && (core.input.is_some() || core.status == "stopping") {
         return Err("busy");
@@ -377,24 +398,41 @@ fn check_tun_support() -> Result<(), &'static str> {
 }
 
 fn main() {
+    let mut args = std::env::args_os().skip(1);
+    let cleanup = match args.next() {
+        None => false,
+        Some(arg) if arg == "--cleanup" && args.next().is_none() => true,
+        Some(_) => std::process::exit(2),
+    };
+    let _install = updates::install_lock().unwrap_or_else(|code| std::process::exit(code));
+    let _lifetime = updates::lifetime_lock(cleanup).unwrap_or_else(|code| std::process::exit(code));
+    if cleanup {
+        std::process::exit(if updates::recover().is_ok() { 0 } else { 3 });
+    }
     if let Err(code) = system_proxy::recover() {
         CORE.lock().unwrap().notice = code;
     }
-    thread::spawn(check_tun_support);
+    thread::spawn(|| {
+        let _guard = updates::REQUESTS.read().unwrap();
+        check_tun_support()
+    });
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             start_core,
             stop_core,
             core_status,
             set_proxy,
             device_identity,
-            subscriptions::subscriptions
+            subscriptions::subscriptions,
+            updates::check_update,
+            updates::install_update
         ])
         .build(tauri::generate_context!())
         .expect("desktop initialization failed")
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                stop_core()
+                let _ = stop_and_wait();
             }
         });
 }

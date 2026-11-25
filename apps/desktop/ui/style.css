@@ -15,6 +15,10 @@ nav{display:grid;gap:4px}
 nav a{color:inherit;text-decoration:none;padding:10px 14px;border-radius:5px}
 nav a[aria-current]{background:var(--active);color:var(--accent);font-weight:650}
 nav a:hover{text-decoration:underline}
+.updates{margin:26px 10px 0}
+.updates p{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
+.updates p:empty{display:none}
+@media(max-width:730px){.updates{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin:8px 0 0}.updates p{margin:0}}
 main{padding:clamp(20px,4vw,48px);min-width:0}
 main section{max-width:840px}
 h1{width:fit-content;font-size:clamp(26px,3vw,36px);margin:0 0 22px;font-weight:650}

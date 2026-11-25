@@ -10,6 +10,10 @@
 
 ## 其他组件
 
+Windows 安装器使用 Tauri CLI 2.12.6（bundler 2.10.6）、NSIS 3.13 和 nsis-tauri-utils 0.5.3；桌面壳链接 tauri-plugin-updater 2.14.1，签名验证采用 minisign-verify 0.3.0。Tauri 组件选择 MIT，minisign-verify 使用 MIT。NSIS 及所含插件、压缩模块分别适用其 COPYING 所列条款。Windows 安装器随附这些许可和版权声明。WebView2 引导程序及运行时适用 Microsoft Edge WebView2 条款。[安装器许可全文](assets/licenses/desktop-install/NOTICE.txt) · [Microsoft WebView2 分发说明](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)
+
+更新器在 Windows 使用系统 TLS。此次锁文件涉及的 hyper-tls 0.6.0、native-tls 0.2.18、rustls-pki-types 1.16.0、tauri-plugin 2.7.4、tauri-utils 2.10.4、tempfile 3.27.0、windows-registry 0.6.1、zeroize 1.9.2 选用 MIT；schannel 0.1.30 和 tokio-native-tls 0.3.1 使用 MIT。`serde_json` 复用现有锁版，供 Tauri 构建宏生成插件配置。
+
 Android 数字字体 Space Grotesk 依 SIL Open Font License 1.1 分发。版权与完整许可见 `assets/licenses/space-grotesk/OFL.txt`。[官方字体文件](https://github.com/google/fonts/tree/main/ofl/spacegrotesk)
 
 以下为两个 Cargo.lock 解析的注册包，包含构建依赖及非当前目标的条件分支。版本、SPDX 或上游许可文件来自对应 Cargo 包元数据。

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +19,47 @@ import (
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/proxy/tun"
 	"github.com/xtls/xray-core/transport"
+	"golang.org/x/sys/windows"
 )
+
+func TestDesktopTunMaintenance(t *testing.T) {
+	root := t.TempDir()
+	app := filepath.Join(root, "app")
+	exe := filepath.Join(app, "nexus-core.exe")
+	file := filepath.Join(root, "maintenance.lock")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := installationLock(exe, app)
+	if err != nil || first == 0 {
+		t.Fatal("installed core lock", err)
+	}
+	second, err := installationLock(exe, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows.CloseHandle(second)
+	name, _ := windows.UTF16PtrFromString(file)
+	exclusive := func() (windows.Handle, error) {
+		return windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	}
+	if h, err := exclusive(); err != windows.ERROR_SHARING_VIOLATION {
+		windows.CloseHandle(h)
+		t.Fatal("installer could lock during core lifetime", err)
+	}
+	windows.CloseHandle(first)
+	h, err := exclusive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(h)
+	if _, err := installationLock(exe, app); err != windows.ERROR_SHARING_VIOLATION {
+		t.Fatal("core started during maintenance", err)
+	}
+	if h, err := installationLock(filepath.Join(t.TempDir(), "nexus-core.exe"), app); h != 0 || err != nil {
+		t.Fatal("development checkout used installed lock")
+	}
+}
 
 // Both endpoints of this test are in-process pinned Xray packet stacks. No
 // adapter, route, physical resolver or listening socket is used.

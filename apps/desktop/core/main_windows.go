@@ -11,9 +11,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	mobile "github.com/xtls/libxray/nexusmobile"
+	"github.com/xtls/libxray/tuntrust"
 	"github.com/xtls/libxray/v2vpn"
 	xlog "github.com/xtls/xray-core/common/log"
 	"golang.org/x/sys/windows"
@@ -256,7 +259,37 @@ type discardXrayLog struct{}
 
 func (discardXrayLog) Handle(xlog.Message) {}
 
+func installationLock(exe, appDir string) (windows.Handle, error) {
+	if !strings.EqualFold(filepath.Dir(exe), appDir) {
+		// A shortcut can use a short name or a junction to the installed directory.
+		actual, e1 := os.Stat(filepath.Dir(exe))
+		expected, e2 := os.Stat(appDir)
+		if e1 != nil || e2 != nil || !os.SameFile(actual, expected) {
+			return 0, nil
+		}
+	}
+	name, err := windows.UTF16PtrFromString(filepath.Join(filepath.Dir(appDir), "maintenance.lock"))
+	if err != nil {
+		return 0, err
+	}
+	return windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+}
+
 func main() {
+	exe, err := os.Executable()
+	helper, folderErr := tuntrust.InstalledHelper()
+	if err != nil || folderErr != nil {
+		fmt.Println("error:maintenance")
+		os.Exit(1)
+	}
+	lock, err := installationLock(exe, filepath.Dir(helper))
+	if err != nil {
+		fmt.Println("error:maintenance")
+		os.Exit(1)
+	}
+	if lock != 0 {
+		defer windows.CloseHandle(lock)
+	}
 	// Share conversion can log before an Xray instance installs its no-log config.
 	// The inherited pipe is exclusively for public responses and status codes.
 	xlog.RegisterHandler(discardXrayLog{})

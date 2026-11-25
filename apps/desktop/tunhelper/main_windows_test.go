@@ -7,9 +7,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
+	"github.com/xtls/libxray/tuntrust"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 // Exercise only the unprivileged rendezvous, with the test process as peer.
@@ -62,5 +66,41 @@ func TestLocalPipePeer(t *testing.T) {
 	}
 	if _, err := verifyPeer(client, proc, pid, filepath.Join(t.TempDir(), "nexus-core.exe")); err == nil {
 		t.Fatal("accepted a different installation")
+	}
+}
+
+// Exercise the SCM entry without registering a service or using an admin token.
+func TestInstalledServiceBoundary(t *testing.T) {
+	image, err := tuntrust.InstalledHelper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, ServiceStartName: "LocalSystem", BinaryPathName: syscall.EscapeArg(image) + " --service"}
+	if !tuntrust.ServiceMatches(config, image) || tuntrust.ServiceMatches(config, filepath.Join(t.TempDir(), "nexus-tun-helper.exe")) {
+		t.Fatal("service image check")
+	}
+	config.BinaryPathName += " other"
+	if tuntrust.ServiceMatches(config, image) {
+		t.Fatal("accepted extra service arguments")
+	}
+	temp := filepath.Join(t.TempDir(), "nexus-core.exe")
+	if err := os.WriteFile(temp, []byte("user-writable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if lock, _, err := tuntrust.InstalledDigest(temp); err == nil {
+		lock.Close()
+		t.Fatal("accepted user-writable installation")
+	}
+	if _, _, err := installedPaths(); err == nil {
+		t.Fatal("test process matched installed helper")
+	}
+	var worker tunService
+	for _, mode := range []string{"test", "full", "recover", "other"} {
+		status := make(chan svc.Status, 2)
+		args := []string{tuntrust.ServiceName, mode, strconv.Itoa(os.Getpid()), strings.Repeat("a", 64)}
+		_, rc := worker.Execute(args, nil, status)
+		if rc == 0 || worker.completed.Load() {
+			t.Fatal("accepted unauthenticated request")
+		}
 	}
 }

@@ -1,6 +1,7 @@
 """Build the Windows x64 sidecar alongside the Tauri executable."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -10,9 +11,38 @@ import zipfile
 
 from generate_split_rules import generate
 from prepare_v2 import ROOT, patch, prepare, stage_client
+from prepare_windows_release import sign_if_configured
 
 WINTUN_ARCHIVE = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 WINTUN_AMD64 = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+
+LOCAL_MODULES = {"github.com/apernet/quic-go": "../patched/aper", "github.com/xtls/xray-core": "../patched/xray"}
+
+
+def portable_modules(lib):
+    module = json.loads(subprocess.check_output(["go", "mod", "edit", "-json"], cwd=lib))
+    edits = []
+    for replacement in module.get("Replace") or []:
+        old, new = replacement["Old"], replacement["New"]
+        if new.get("Version"):
+            continue
+        target = LOCAL_MODULES.get(old["Path"])
+        if not target or (lib / new["Path"]).resolve() != (lib / target).resolve():
+            raise ValueError("unexpected local Go replacement")
+        name = old["Path"] + ("@" + old["Version"] if old.get("Version") else "")
+        edits.append("-replace=" + name + "=" + target)
+    if edits:
+        subprocess.run(["go", "mod", "edit", *edits], cwd=lib, check=True)
+
+
+def check_build_paths(binary):
+    info = json.loads(subprocess.check_output(["go", "version", "-m", "-json", binary]))
+    if {"Key": "-trimpath", "Value": "true"} not in info["Settings"]:
+        raise ValueError("Go binary lacks -trimpath")
+    for dep in [info["Main"], *(info.get("Deps") or [])]:
+        new = dep.get("Replace")
+        if new and not new.get("Version") and new["Path"] != LOCAL_MODULES.get(dep["Path"]):
+            raise ValueError("embedded Go metadata contains a non-portable replacement")
 
 
 def package_wintun(archive, dest):
@@ -52,6 +82,7 @@ if __name__ == "__main__":
         prepare(patched, android=True)
         patch(patched / "xray", "xray-desktop-socks-udp", "xray-desktop-packet-tun", "xray-desktop-dns-guard")
         lib = stage_client(work, args.source, patched)
+        portable_modules(lib)
         # Staged Go sources can come from a CRLF Windows working copy.
         for rel in ("internal/nexusv2/transport/tls.go", "internal/nexusv2/transport/client.go", "nexusmobile/mobile.go"):
             src = lib / rel
@@ -82,11 +113,15 @@ if __name__ == "__main__":
             subprocess.run(["go", "test", "-mod=readonly", "./cmd/nexus-tun-helper/..."], cwd=lib, env=env, check=True)
         subprocess.run(["go", "build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", helper,
                         "./cmd/nexus-tun-helper"], cwd=lib, env=env, check=True)
+        check_build_paths(helper)
+        sign_if_configured(helper)
         with helper.open("rb") as f:
             helper_hash = hashlib.file_digest(f, "sha256").hexdigest()
         subprocess.run(["go", "build", "-mod=readonly", "-trimpath",
                         "-ldflags=-checklinkname=0 -s -w -X main.tunHelperSHA256=" + helper_hash,
                         "-o", binary, "./cmd/nexus-core"], cwd=lib, env=env, check=True)
+        check_build_paths(binary)
+        sign_if_configured(binary)
         if args.wintun_zip:
             package_wintun(args.wintun_zip, Path(publish))
         for extra in Path(publish).iterdir():

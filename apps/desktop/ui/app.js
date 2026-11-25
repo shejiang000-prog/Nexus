@@ -39,6 +39,12 @@ const messages = {
   tun_recovery: "未能恢复上次 TUN 会话的网络设置。请重新打开 Nexus 并允许恢复。",
   tun_version: "核心程序未确认支持 TUN。请使用与桌面程序同一版本的 nexus-core.exe 后重试。",
   tun_recovering: "正在检查上次 TUN 会话，请稍后再连接。",
+  update_busy: "正在处理软件更新，请稍后再试。",
+  update_check: "暂时无法检查更新，请稍后重试。",
+  update_download: "更新下载失败，请检查网络后重试。",
+  update_signature: "更新包签名验证失败，已取消安装。",
+  update_cleanup: "网络设置尚未恢复。请先断开连接并关闭其他 Nexus 窗口，再重试更新。",
+  update_install: "无法启动安装程序，请重试。",
   generic: "操作失败，请检查本机设备记录和节点授权。"
 };
 const proxy = $("proxy");
@@ -303,5 +309,36 @@ $("use-node").addEventListener("click", () => {
   location.hash = "home";
   render();
 });
+const updateAction = $("update-action");
+const updateFeedback = $("update-feedback");
+let availableVersion = "";
+async function softwareUpdate(automatic) {
+  if (!invoke) return;
+  updateAction.disabled = true;
+  const installing = Boolean(availableVersion);
+  try {
+    if (installing) {
+      updateFeedback.textContent = "正在下载并验证更新…";
+      await invoke("install_update");
+    } else {
+      if (!automatic) updateFeedback.textContent = "正在检查更新…";
+      availableVersion = await invoke("check_update") || "";
+      if (availableVersion) {
+        updateAction.textContent = "安装更新";
+        updateFeedback.textContent = "可更新至 " + availableVersion + "。安装前将断开连接并恢复网络设置。";
+      } else if (!automatic) updateFeedback.textContent = "当前已是最新版本。";
+    }
+  } catch (err) {
+    if (!automatic) updateFeedback.textContent = messages[err] || messages.update_check;
+    if (err === "update_signature" || err === "update_check") {
+      availableVersion = "";
+      updateAction.textContent = "检查更新";
+    }
+  } finally {
+    updateAction.disabled = false;
+  }
+}
+updateAction.addEventListener("click", () => softwareUpdate(false));
+softwareUpdate(true);
 manage("subscriptions");
 refresh();

@@ -1,14 +1,20 @@
 [package]
 name = "nexus-desktop"
-version = "0.1.0"
+version = "2.0.1"
 edition = "2021"
 publish = false
 
 [dependencies]
+# generate_context! uses this existing Tauri dependency for plugin config.
+serde_json = "=1.0.154"
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["native-tls", "system-proxy"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 
 [features]
 default = ["custom-protocol"]

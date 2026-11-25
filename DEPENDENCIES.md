@@ -30,3 +30,15 @@ Android TUN 使用 netstack-smoltcp 0.2.5（MIT 或 Apache-2.0），smoltcp 负�
 3. 内嵌内核驱动通过微软签名验证。本机 DriverStore 中的对应 CAT、SYS、INF 各自完整匹配 DLL 内的字节。CAT 有效签名者为 Microsoft Windows Hardware Compatibility Publisher，`signtool verify /kp /c wintun.cat wintun.sys` 通过。
 
 构建复用 libXray 锁定的两个 Go 模块。`--wintun-zip` 对每次打包重查上表 ZIP 与 DLL 摘要，逐字节复制上述已验签的 DLL 并附完整许可。
+
+## Windows 安装与更新（PC-M3）
+
+| 用途 | 固定输入 | SHA-256 |
+| --- | --- | --- |
+| Tauri 2 bundler 构建工具 | Tauri CLI 2.12.6，内含 tauri-bundler 2.10.6，Windows x64 MSVC 官方 ZIP | `39636fa68bc00f13dd610fb57688f292e93742978cc35395f2f1be7c540b88a1` |
+| NSIS 编译器 | NSIS 3.13 ZIP | `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8` |
+| Tauri NSIS 插件 | nsis-tauri-utils 0.5.3，x86 Unicode 安装器插件 | `5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709` |
+| WebView2 引导程序 | Microsoft Edge WebView2 Evergreen Bootstrapper 1.3.319.41，微软 Authenticode 有效，安装时仅在缺少平台运行时时使用 | `fc2972da71d43e0c57b8d85a5cb9b200ed221f723cf43052d08ca722eb0bb22e` |
+| 自动更新 | tauri-plugin-updater 2.14.1，Cargo 包 | `d957abbcb3f9f6c76d22a3a0f012f30880640d0bccb5634d2b12a9937e4c872b` |
+
+Windows CI 和本地打包共用锁定的构建工具。运行时 Rust 依赖的精确版本及 registry 摘要以 `apps/desktop/Cargo.lock` 为准。Windows 服务沿用现有 Go Windows API 模块及权限助手。[Tauri 工具发布](https://github.com/tauri-apps/tauri/releases/tag/tauri-cli-v2.12.6) · [Tauri updater](https://v2.tauri.app/plugin/updater/)
