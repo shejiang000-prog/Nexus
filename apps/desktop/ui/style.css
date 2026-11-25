@@ -4,3 +4,13 @@ main{padding:clamp(24px,5vw,64px);min-width:0}main section{max-width:920px}h1{fo
 @media(prefers-color-scheme:dark){:root{--base:#15201e;--side:#1d2c28;--ink:#e7f0ea;--muted:#aec4bb;--accent:#94d8bb;--line:#50645c;--active:#2d483c}}
 @media(max-width:730px){body{display:block}aside{padding:12px 16px}.brand{margin:0 0 10px;font-size:18px}.brand span{width:26px;height:26px;font-size:16px}nav{display:flex;flex-wrap:wrap}nav a{padding:7px 10px}main{padding:20px}.section-title{margin:24px 0 10px}}
 @media(forced-colors:active){nav a[aria-current]{outline:2px solid Highlight}.connection{border:1px solid CanvasText}}
+
+#connection-form{display:grid;gap:16px;margin:20px 0;justify-items:start}
+#enrollment{width:min(100%,440px)}
+#enrollment label{display:block;font-weight:600}
+#invite,#toggle{font:inherit;border:1px solid var(--muted);border-radius:4px;min-height:40px}
+#invite{width:100%;padding:6px 10px;margin:4px 0;background:var(--base);color:var(--ink)}
+#invite-hint,.endpoints{font-size:14px}
+#toggle{min-width:90px;padding:6px 20px;background:var(--accent);color:var(--base);cursor:pointer}
+#toggle:disabled{opacity:.65;cursor:default}
+#invite:focus-visible,#toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px}

@@ -8,9 +8,8 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
-from prepare_v2 import ROOT, V2, QUIC, XRAY, prepare
+from prepare_v2 import ROOT, V2, QUIC, prepare, stage_client
 
-LIB = "5a0f7d8d1c28b34afb5727b04b26a10f6dbac7e3"
 MOBILE = "v0.0.0-20261011034528-197770444867"
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--lab", action="store_true", help="include the local acceptance runtime counter")
@@ -55,23 +54,7 @@ with build_workspace() as tmp:
     if a.patched is None:
         a.patched = Path(tmp).resolve() / "patched"
         prepare(a.patched, android=True)
-    lib = Path(tmp) / "lib"
-    archive = Path(tmp) / "source.zip"
-    subprocess.run(["git", "archive", "--format=zip", "-o", archive, LIB], cwd=a.source, check=True)
-    with zipfile.ZipFile(archive) as z:
-        z.extractall(lib)
-    for package in ("internal/congestion", "udp", "transport", "proof", "mobile", "enrollment"):
-        dest = lib / {"mobile": "nexusmobile", "enrollment": "enrollment"}.get(package, "internal/nexusv2/" + package)
-        shutil.copytree(V2 / package, dest, ignore=shutil.ignore_patterns("*_test.go", "testdata"))
-        for f in dest.rglob("*.go"):
-            f.write_bytes(f.read_bytes().replace(b"github.com/shejiang000-prog/Nexus/v2/", b"github.com/xtls/libxray/internal/nexusv2/"))
-    shutil.copytree(ROOT / "apps/android/engine/v2vpn", lib / "v2vpn", ignore=shutil.ignore_patterns("*_test.go"))
-    shutil.copyfile(ROOT / "apps/android/engine/transport/dns.go", lib / "internal/nexusv2/transport/dns.go")
-    shutil.copyfile(ROOT / "apps/android/engine/mobile/dns.go", lib / "nexusmobile/dns.go")
-    for flag in ["-require=" + "@".join(QUIC),
-                 "-replace=" + QUIC[0] + "=" + (a.patched.resolve()/"aper").as_posix(),
-                 "-replace=" + XRAY[0] + "=" + (a.patched.resolve()/"xray").as_posix()]:
-        subprocess.run(["go", "mod", "edit", flag], cwd=lib, check=True)
+    lib = stage_client(Path(tmp), a.source, a.patched)
     built = Path(tmp) / "combined.aar"
     if a.test_routing:
         shutil.copyfile(ROOT / "apps/android/engine/v2vpn/vpn_test.go", lib / "v2vpn/vpn_test.go")

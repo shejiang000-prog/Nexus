@@ -100,6 +100,31 @@ def prepare(out, android):
         raise
 
 
+LIBXRAY = "5a0f7d8d1c28b34afb5727b04b26a10f6dbac7e3"
+
+
+def stage_client(work, source, patched):
+    """Assemble both clients from the same pinned library, transport and outbound."""
+    lib = work / "lib"
+    archive = work / "source.zip"
+    subprocess.run(["git", "archive", "--format=zip", "-o", archive, LIBXRAY], cwd=source, check=True)
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(lib)
+    for package in ("internal/congestion", "udp", "transport", "proof", "mobile", "enrollment"):
+        dest = lib / {"mobile": "nexusmobile", "enrollment": "enrollment"}.get(package, "internal/nexusv2/" + package)
+        shutil.copytree(V2 / package, dest, ignore=shutil.ignore_patterns("*_test.go", "testdata"))
+        for f in dest.rglob("*.go"):
+            f.write_bytes(f.read_bytes().replace(b"github.com/shejiang000-prog/Nexus/v2/", b"github.com/xtls/libxray/internal/nexusv2/"))
+    shutil.copytree(ROOT / "apps/android/engine/v2vpn", lib / "v2vpn", ignore=shutil.ignore_patterns("*_test.go"))
+    shutil.copyfile(ROOT / "apps/android/engine/transport/dns.go", lib / "internal/nexusv2/transport/dns.go")
+    shutil.copyfile(ROOT / "apps/android/engine/mobile/dns.go", lib / "nexusmobile/dns.go")
+    for flag in ["-require=" + "@".join(QUIC),
+                 "-replace=" + QUIC[0] + "=" + (patched.resolve()/"aper").as_posix(),
+                 "-replace=" + XRAY[0] + "=" + (patched.resolve()/"xray").as_posix()]:
+        subprocess.run(["go", "mod", "edit", flag], cwd=lib, check=True)
+    return lib
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("output", type=Path)

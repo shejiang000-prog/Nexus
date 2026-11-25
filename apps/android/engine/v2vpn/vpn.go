@@ -1,5 +1,4 @@
-// Package v2vpn is built inside the pinned libXray module by build_v2_aar.py.
-// Only the selected outbound changes; Xray retains its existing Android TUN and router.
+// Package v2vpn installs the shared V2 outbound into a pinned Xray instance.
 package v2vpn
 
 import (
@@ -38,6 +37,11 @@ func Start(config string, client *mobile.Client) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	return StartConfig(cfg, client)
+}
+
+// StartConfig accepts the fixed desktop configuration without linking Xray's JSON loader.
+func StartConfig(cfg *core.Config, client *mobile.Client) (*Session, error) {
 	instance, err := core.New(cfg)
 	if err != nil {
 		return nil, err

@@ -5,8 +5,11 @@
   "identifier": "dev.nexus.localclient",
   "build": { "frontendDist": "ui" },
   "app": {
+    "withGlobalTauri": true,
     "windows": [{"title":"Nexus","width":1080,"height":720,"minWidth":420,"minHeight":440}],
-    "security": {"csp":"default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'"}
+    "security": {
+      "capabilities": [{"identifier":"desktop-main","windows":["main"],"permissions":["control-core"]}],
+      "csp":"default-src 'none'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'"}
   },
   "bundle": {"active":false,"icon":["icons/icon.ico"]}
 }
