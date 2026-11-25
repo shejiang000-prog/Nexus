@@ -13,29 +13,18 @@ function navigate(focus) {
 window.addEventListener("hashchange", () => navigate(true));
 navigate(false);
 
-// A segmented control behaves like the select element it replaced.
-function radios(name) {
-  const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
-  return {
-    get value() { return inputs.find(input => input.checked)?.value; },
-    set value(next) { for (const input of inputs) input.checked = input.value === next; },
-    set disabled(off) { for (const input of inputs) input.disabled = off; },
-    addEventListener(type, handler) { for (const input of inputs) input.addEventListener(type, handler); },
-  };
-}
-
 const invoke = window.__TAURI__?.core.invoke;
 const messages = {
   invite_invalid: "邀请链接格式无效，请重新粘贴完整链接。",
   invite_rejected: "邀请已被领取、已过期或已被撤销，请向分享人要一条新的邀请。",
   node_unreachable: "无法连接节点，请检查网络和节点状态。节点 IP 可能被屏蔽，或被防火墙拦截。",
   local_port: "本机代理端口无法监听，请检查端口占用或本机权限。",
-  key_missing: "本机设备密钥已丢失，请移除此设备身份并用新邀请登记。",
-  no_identity: "本机尚未登记，请粘贴 V2 邀请链接。",
-  missing: "找不到 nexus-core.exe，请将它与桌面程序放在同一目录。",
-  routing: "分流规则无法加载，请检查核心程序。",
-  busy: "请先断开连接，再移除此设备身份。",
-  identity_changed: "当前已登记节点已更改，请确认节点后再移除。",
+  key_missing: "本机设备密钥已丢失，请在设置里移除设备身份，再用新邀请登记。",
+  no_identity: "本机尚未登记，请先粘贴 V2 邀请链接。",
+  missing: "找不到 nexus-core.exe，请重新安装 Nexus。",
+  routing: "分流规则无法加载，请重新安装 Nexus。",
+  busy: "请先断开连接，再移除设备身份。",
+  identity_changed: "已登记的节点已更改，请确认后再移除。",
   identity_busy: "请先断开所有正在使用此设备身份的连接，再移除。",
   "proxy-busy": "另一个 Nexus 窗口正在管理系统代理。",
   "proxy-changed": "系统代理已由其他程序修改，已保留当前设置。",
@@ -44,48 +33,47 @@ const messages = {
   subscription_format: "链接或订阅格式不受支持，或内容超出限制。",
   subscription_storage: "无法读取或保存订阅，请检查本机用户资料。",
   subscription_changed: "订阅或节点已变更，请重新选择。",
-  tun_admin: "未获得管理员权限。请在 Windows 授权提示中选择允许，或关闭 TUN 模式后连接。",
-  tun_driver: "无法加载 Wintun 驱动。请检查安装包中的驱动文件后重试。",
-  tun_conflict: "TUN 与现有虚拟网卡或路由冲突。请先关闭其他应用的 TUN 模式，再重试。",
-  tun_session: "TUN 数据通道已中断，请检查网络或其他 VPN 的状态后重新连接。",
+  tun_admin: "未获得管理员权限。请在 Windows 授权提示中选择允许，或在设置里关闭 TUN 模式。",
+  tun_driver: "无法加载 Wintun 驱动，请重新安装 Nexus。",
+  tun_conflict: "TUN 与其他应用的虚拟网卡或路由冲突，请先关闭其他应用的 TUN 模式。",
+  tun_session: "TUN 数据通道已中断，请检查网络或其他 VPN 后重新连接。",
   tun_recovery: "未能恢复上次 TUN 会话的网络设置。请重新打开 Nexus 并允许恢复。",
-  tun_version: "核心程序未确认支持 TUN。请使用与桌面程序同一版本的 nexus-core.exe 后重试。",
+  tun_version: "核心程序版本不匹配，请重新安装 Nexus。",
   tun_recovering: "正在检查上次 TUN 会话，请稍后再连接。",
   update_busy: "正在处理软件更新，请稍后再试。",
-  update_check: "暂时无法检查更新，请稍后重试。",
+  update_check: "暂时无法检查更新。",
   update_download: "更新下载失败，请检查网络后重试。",
   update_signature: "更新包签名验证失败，已取消安装。",
-  update_cleanup: "网络设置尚未恢复。请先断开连接并关闭其他 Nexus 窗口，再重试更新。",
+  update_cleanup: "网络设置尚未恢复。请先断开连接并关闭其他 Nexus 窗口。",
   update_install: "无法启动安装程序，请重试。",
   generic: "操作失败，请检查本机设备记录和节点授权。"
 };
-const modeText = {
-  split: "国内网站和局域网直连，其余流量经节点。",
-  global: "除局域网外，所有流量都经节点。",
-};
 const protocolName = protocol => ({hysteria:"Hysteria2", vless:"VLESS", vmess:"VMess", trojan:"Trojan", shadowsocks:"Shadowsocks"})[protocol] || String(protocol).toUpperCase();
-
+const modeInputs = [...document.querySelectorAll('input[name="mode"]')];
+const mode = {
+  get value() { return modeInputs.find(input => input.checked)?.value; },
+  set value(next) { for (const input of modeInputs) input.checked = input.value === next; },
+  set disabled(off) { for (const input of modeInputs) input.disabled = off; },
+};
 const proxy = $("proxy");
-const mode = radios("mode");
 const tun = $("tun");
 const toggle = $("toggle");
 const invite = $("invite");
-const source = radios("source");
 proxy.checked = localStorage.getItem("systemProxy") !== "off";
 mode.value = localStorage.getItem("routingMode") === "global" ? "global" : "split";
-source.value = localStorage.getItem("connectionSource") === "subscription" ? "subscription" : "v2";
+let source = localStorage.getItem("connectionSource") === "subscription" ? "subscription" : "v2";
 let snapshot = ["stopped", 0, 0, false, ""];
 let busy = false;
 let revision = 0;
 let identity = "";
 let identityToken = "";
+let identityRead = false;
 let removingToken = "";
 let localError = "";
 let previous = null;
 let chosenSub = localStorage.getItem("chosenSubscription") || "";
 let chosenNode = localStorage.getItem("chosenNode") || "";
 let catalog = [];
-let shownSub = "";
 let subBusy = false;
 let loaded = false;
 let deletingId = "";
@@ -97,47 +85,37 @@ function render() {
   const [state, socks, http, enabled, notice, sessionTun] = snapshot;
   const ready = connected(state);
   const active = running(state);
-  const label = state === "subscription" ? "代理已就绪" : ready ? "已连接" : ({stopped:"未连接", connecting:"正在连接", stopping:"正在断开"})[state] || "连接失败";
-  setText($("status"), label);
+  setText($("status"), ready ? "已连接" : ({stopped:"未连接", connecting:"正在连接", stopping:"正在断开"})[state] || "连接失败");
   const error = localError || messages[state] || messages[notice] || "";
   setText($("feedback"), error);
   $("feedback").hidden = !error;
   toggle.dataset.link = ready ? "on" : active ? "busy" : (state !== "stopped" || localError) ? "failed" : "idle";
+  setText($("toggle-label"), active ? "断开" : "连接");
+  const lane = {h3:"HTTP/3", h2:"HTTP/2"}[state];
+  const takeover = [sessionTun && "TUN", enabled && "系统代理"].filter(Boolean).join(" + ");
+  setText($("route"), ready ? [lane, takeover].filter(Boolean).join(" · ") : "");
 
-  const fromSubscription = source.value === "subscription";
+  const fromSubscription = source === "subscription";
   const selected = catalog.find(sub => sub.id === chosenSub);
   const node = selected?.nodes.find(item => item[0] === chosenNode);
-  const lane = {h3:"HTTP/3", h2:"HTTP/2"}[state];
-  const modeName = mode.value === "global" ? "全局代理" : "绕过大陆";
-  setText($("route"), state === "subscription" ? (node?.[1] || "订阅节点") + " · " + modeName
-    : lane ? "V2 · " + lane + " · " + modeName : "");
-  setText($("toggle-hint"), ready ? "点击圆环断开" : active ? "" : "点击圆环连接");
-  setText($("toggle-label"), active ? "断开" : "连接");
+  setText($("current-name"), fromSubscription ? (node ? node[1] : "选择节点") : "我的 V2 节点");
+  setText($("current-from"), fromSubscription ? (node ? selected.name + " · " + protocolName(node[2]) : loaded ? "还没有选中的订阅节点" : "")
+    : identity || (identityRead ? "尚未登记" : ""));
+  $("enrollment").hidden = active || fromSubscription || !identityRead || !!identity;
+  setText($("v2-name"), identity ? "我的 V2 节点 · " + identity : "我的 V2 节点（粘贴邀请后连接）");
 
-  source.disabled = active || busy;
-  $("enrollment").hidden = active || fromSubscription;
-  $("selected-sub").hidden = !fromSubscription;
-  $("selected-sub").classList.toggle("empty-pick", !node);
-  setText($("selected-node"), node ? node[1] : loaded ? "尚未选择节点" : "正在读取订阅…");
-  setText($("selected-from"), node ? selected.name + " · " + protocolName(node[2]) : "前往「我的订阅」选择一个节点");
-  $("ports").hidden = !ready;
-  if (ready) {
-    setText($("socks"), "127.0.0.1:" + socks);
-    setText($("http"), "127.0.0.1:" + http);
-  }
   if (active) {
     proxy.checked = enabled;
     tun.checked = sessionTun;
   }
+  setText($("ports"), ready ? "SOCKS5 127.0.0.1:" + socks + "　HTTP 127.0.0.1:" + http : "连接后显示");
   tun.disabled = active || busy || !invoke;
   toggle.disabled = busy || state === "stopping" || !invoke || (!active && fromSubscription && (!node || subBusy));
   proxy.disabled = busy || state === "stopping" || !invoke;
   mode.disabled = active || busy;
-  $("mode-hint").hidden = !active;
-  setText($("mode-desc"), modeText[mode.value]);
   $("remove").hidden = !identity;
   $("remove").disabled = active || busy;
-  subControls();
+  nodeControls();
 }
 
 async function readIdentity() {
@@ -147,8 +125,9 @@ async function readIdentity() {
   } catch {
     identity = "";
     identityToken = "";
-    setText($("identity"), "无法读取本机身份");
+    setText($("identity"), "无法读取");
   }
+  identityRead = true;
 }
 
 async function update() {
@@ -183,7 +162,7 @@ $("connection-form").addEventListener("submit", event => {
   act(async () => {
     if (running(snapshot[0])) await invoke("stop_core");
     else {
-      const selection = source.value === "subscription"
+      const selection = source === "subscription"
         ? {source:"subscription", subscriptionId:chosenSub, nodeId:chosenNode}
         : {source:"v2", invite:invite.value.trim()};
       await invoke("start_core", {...selection, mode:mode.value, proxy:proxy.checked, tun:tun.checked});
@@ -199,28 +178,7 @@ proxy.addEventListener("change", () => {
     localStorage.setItem("systemProxy", enabled ? "on" : "off");
   });
 });
-mode.addEventListener("change", () => {
-  localStorage.setItem("routingMode", mode.value);
-  render();
-});
-source.addEventListener("change", () => {
-  localStorage.setItem("connectionSource", source.value);
-  localError = "";
-  render();
-});
-for (const button of document.querySelectorAll(".copy")) {
-  button.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText($(button.dataset.copy).textContent);
-      button.classList.add("done");
-      button.querySelector("use").setAttribute("href", "#i-check");
-      setTimeout(() => {
-        button.classList.remove("done");
-        button.querySelector("use").setAttribute("href", "#i-copy");
-      }, 1400);
-    } catch { /* The address stays visible for manual copying. */ }
-  });
-}
+for (const input of modeInputs) input.addEventListener("change", () => localStorage.setItem("routingMode", mode.value));
 $("remove").addEventListener("click", () => {
   removingToken = identityToken;
   $("confirm").returnValue = "";
@@ -242,103 +200,85 @@ async function refresh() {
   setTimeout(refresh, 750);
 }
 
-const displayed = () => catalog.find(row => row.id === shownSub);
+function choose(subId, nodeId) {
+  source = subId ? "subscription" : "v2";
+  localStorage.setItem("connectionSource", source);
+  if (subId) {
+    chosenSub = subId;
+    chosenNode = nodeId;
+    localStorage.setItem("chosenSubscription", chosenSub);
+    localStorage.setItem("chosenNode", chosenNode);
+  }
+  localError = "";
+  location.hash = "home";
+  render();
+}
+$("pick-v2").addEventListener("click", () => choose("", ""));
 
-function subControls() {
-  const sub = displayed();
+function nodeControls() {
   const active = running(snapshot[0]);
-  const inUse = active && source.value === "subscription" && sub?.id === chosenSub;
+  $("pick-v2").setAttribute("aria-checked", String(source === "v2"));
+  $("pick-v2").disabled = active || busy;
+  for (const group of $("sub-groups").children) {
+    const sub = catalog.find(row => row.id === group.dataset.id);
+    const inUse = active && source === "subscription" && sub?.id === chosenSub;
+    group.querySelector(".refresh").disabled = subBusy || !sub?.refreshable || inUse;
+    group.querySelector(".delete").disabled = subBusy || inUse;
+    for (const node of group.querySelectorAll(".node")) {
+      node.setAttribute("aria-checked", String(source === "subscription" && sub?.id === chosenSub && node.dataset.id === chosenNode));
+      node.disabled = subBusy || active || busy;
+    }
+  }
   $("subscription-url").disabled = subBusy;
   $("add-sub").disabled = subBusy || !invoke;
-  for (const tab of $("sub-list").children) tab.disabled = subBusy;
-  for (const node of $("node-list").children) node.disabled = subBusy || active || busy;
-  $("refresh-sub").disabled = subBusy || !sub?.refreshable || inUse;
-  $("delete-sub").disabled = subBusy || !sub || inUse;
-  const hint = $("selected-hint");
-  if (active) setText(hint, "断开连接后可切换节点。");
-  else if (sub && sub.id === chosenSub && source.value === "subscription" && sub.nodes.some(node => node[0] === chosenNode)) {
-    if (!hint.querySelector("a")) {
-      const link = Object.assign(document.createElement("a"), {href:"#home", textContent:"回首页连接"});
-      hint.replaceChildren("已选用，", link);
-    }
-  } else setText(hint, "点击节点即可选用。");
+  setText($("selected-hint"), active ? "断开连接后可切换节点。" : "");
 }
 
 function formatBytes(bytes) {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   let amount = bytes, index = 0;
   while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index++; }
-  return amount.toLocaleString("zh-CN", {maximumFractionDigits:2}) + " " + units[index];
+  return amount.toLocaleString("zh-CN", {maximumFractionDigits:1}) + " " + units[index];
 }
 
-function showTabs() {
-  const tabs = catalog.map(sub => {
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "tab";
-    tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-selected", String(sub.id === shownSub));
-    tab.tabIndex = sub.id === shownSub ? 0 : -1;
-    const name = Object.assign(document.createElement("span"), {textContent:sub.name});
-    const count = Object.assign(document.createElement("span"), {className:"count", textContent:String(sub.nodes.length)});
-    tab.append(name, count);
-    tab.addEventListener("click", () => { shownSub = sub.id; showTabs(); showNodes(); });
-    return tab;
-  });
-  $("sub-list").replaceChildren(...tabs);
-}
-
-function showNodes() {
-  const sub = displayed();
-  const list = $("node-list");
-  list.replaceChildren();
-  if (sub) {
-    setText($("sub-name"), sub.name);
-    const meta = [[sub.nodes.length + " 个节点", ""]];
-    if (sub.remaining !== null && sub.remaining >= 0) meta.push(["剩余 " + formatBytes(sub.remaining), sub.remaining < 1024 ** 3 ? "warn" : ""]);
+function showGroups() {
+  const groupTemplate = $("group-template").content.firstElementChild;
+  const nodeTemplate = $("node-template").content.firstElementChild;
+  const groups = catalog.map(sub => {
+    const group = groupTemplate.cloneNode(true);
+    group.dataset.id = sub.id;
+    group.querySelector(".group-name").textContent = sub.name;
+    const meta = [];
+    let warn = false;
+    if (sub.remaining !== null && sub.remaining >= 0) { meta.push("剩余 " + formatBytes(sub.remaining)); warn ||= sub.remaining < 1024 ** 3; }
     if (sub.expire > 0) {
       const end = new Date(sub.expire * 1000);
-      if (!Number.isNaN(end.valueOf())) meta.push(["到期 " + end.toLocaleDateString("zh-CN"), end - Date.now() < 7 * 864e5 ? "warn" : ""]);
+      if (!Number.isNaN(end.valueOf())) { meta.push(end.toLocaleDateString("zh-CN") + " 到期"); warn ||= end - Date.now() < 7 * 864e5; }
     }
-    $("sub-meta").replaceChildren(...meta.map(([text, tone]) => Object.assign(document.createElement("span"), {textContent:text, className:tone})));
-    const template = $("node-template").content.firstElementChild;
+    const metaElement = group.querySelector(".group-meta");
+    metaElement.textContent = meta.join(" · ");
+    metaElement.classList.toggle("warn", warn);
+    group.querySelector(".group-nodes").setAttribute("aria-label", sub.name);
+    group.querySelector(".refresh").addEventListener("click", () => manage("update_subscription", {id:sub.id}));
+    group.querySelector(".delete").addEventListener("click", () => {
+      deletingId = sub.id;
+      $("delete-hint").textContent = "将从本机删除「" + sub.name + "」及其 " + sub.nodes.length + " 个节点。";
+      $("confirm-sub").returnValue = "";
+      $("confirm-sub").showModal();
+    });
     for (const [id, name, protocol] of sub.nodes) {
-      const item = template.cloneNode(true);
+      const item = nodeTemplate.cloneNode(true);
+      item.dataset.id = id;
+      item.title = name;
       item.querySelector(".node-name").textContent = name;
       item.querySelector(".badge").textContent = protocolName(protocol);
-      item.title = name;
-      item.setAttribute("aria-checked", String(sub.id === chosenSub && id === chosenNode));
       item.addEventListener("click", () => choose(sub.id, id));
-      list.append(item);
+      group.querySelector(".group-nodes").append(item);
     }
-  }
-  subControls();
-}
-
-function choose(subId, nodeId) {
-  chosenSub = subId;
-  chosenNode = nodeId;
-  source.value = "subscription";
-  localStorage.setItem("chosenSubscription", chosenSub);
-  localStorage.setItem("chosenNode", chosenNode);
-  localStorage.setItem("connectionSource", source.value);
-  localError = "";
-  showNodes();
-  render();
-}
-
-function setCatalog(rows, action) {
-  const previousIds = new Set(catalog.map(sub => sub.id));
-  catalog = rows.map(([id,name,refreshable,remaining,expire,nodes]) => ({id,name,refreshable,remaining,expire,nodes}));
-  loaded = true;
-  const added = action === "import_subscription" && catalog.find(sub => !previousIds.has(sub.id));
-  const next = added || displayed() || catalog.find(sub => sub.id === chosenSub) || catalog[0];
-  shownSub = next?.id || "";
-  $("sub-details").hidden = !catalog.length;
-  $("sub-empty").hidden = !!catalog.length;
-  setText($("sub-empty-text"), "还没有订阅。粘贴订阅地址或节点链接，点「添加」。");
-  showTabs();
-  showNodes();
+    return group;
+  });
+  $("sub-groups").replaceChildren(...groups);
+  nodeControls();
 }
 
 async function manage(action, fields = {}) {
@@ -350,62 +290,63 @@ async function manage(action, fields = {}) {
   render();
   try {
     const rows = await invoke("subscriptions", {action, ...fields});
-    setCatalog(rows, action);
-    if (action === "import_subscription") $("subscription-url").value = "";
-    status.textContent = {import_subscription:"已添加。",update_subscription:"订阅已刷新。",remove_subscription:"已删除。"}[action] || "";
+    catalog = rows.map(([id,name,refreshable,remaining,expire,nodes]) => ({id,name,refreshable,remaining,expire,nodes}));
+    loaded = true;
+    showGroups();
+    if (action === "import_subscription") {
+      $("subscription-url").value = "";
+      $("import-form").hidden = true;
+      $("show-import").hidden = false;
+    }
+    status.textContent = {import_subscription:"已添加。",update_subscription:"已刷新。",remove_subscription:"已删除。"}[action] || "";
   } catch (err) {
     status.textContent = messages[err] || "订阅操作失败，请重试。";
     status.classList.add("error");
-    if (!loaded) { setText($("sub-empty-text"), "订阅列表暂不可用。"); loaded = true; }
+    loaded = true;
   } finally {
     subBusy = false;
     render();
   }
 }
 
+$("show-import").addEventListener("click", () => {
+  $("import-form").hidden = false;
+  $("show-import").hidden = true;
+  $("subscription-url").focus();
+});
 $("import-form").addEventListener("submit", event => {
   event.preventDefault();
   if (!$("add-sub").disabled) manage("import_subscription", {url:$("subscription-url").value.trim()});
-});
-$("refresh-sub").addEventListener("click", () => manage("update_subscription", {id:displayed().id}));
-$("delete-sub").addEventListener("click", () => {
-  const sub = displayed();
-  deletingId = sub.id;
-  $("delete-hint").textContent = "将从本机删除「" + sub.name + "」及其节点。";
-  $("confirm-sub").returnValue = "";
-  $("confirm-sub").showModal();
 });
 $("confirm-sub").addEventListener("close", () => {
   if ($("confirm-sub").returnValue === "delete") manage("remove_subscription", {id:deletingId});
 });
 
 const updateAction = $("update-action");
-const updateLabel = $("update-label");
 const updateFeedback = $("update-feedback");
 let availableVersion = "";
 async function softwareUpdate(automatic) {
   if (!invoke) return;
   updateAction.disabled = true;
-  const installing = Boolean(availableVersion);
   try {
-    if (installing) {
+    if (availableVersion) {
       updateFeedback.textContent = "正在下载并验证更新…";
       await invoke("install_update");
     } else {
-      if (!automatic) updateFeedback.textContent = "正在检查更新…";
+      if (!automatic) updateFeedback.textContent = "正在检查…";
       availableVersion = await invoke("check_update") || "";
       if (availableVersion) {
-        updateLabel.textContent = "安装更新 " + availableVersion;
-        updateAction.classList.add("available");
-        updateFeedback.textContent = "安装前将断开连接并恢复网络设置。";
-      } else if (!automatic) updateFeedback.textContent = "当前已是最新版本。";
+        updateAction.textContent = "安装";
+        updateAction.classList.add("primary");
+        updateFeedback.textContent = "可更新至 " + availableVersion + "，安装前会先断开连接";
+      } else updateFeedback.textContent = "已是最新版本";
     }
   } catch (err) {
-    if (!automatic) updateFeedback.textContent = messages[err] || messages.update_check;
+    updateFeedback.textContent = messages[err] || messages.update_check;
     if (err === "update_signature" || err === "update_check") {
       availableVersion = "";
-      updateLabel.textContent = "检查更新";
-      updateAction.classList.remove("available");
+      updateAction.textContent = "检查更新";
+      updateAction.classList.remove("primary");
     }
   } finally {
     updateAction.disabled = false;

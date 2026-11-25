@@ -6,159 +6,102 @@
 </head>
 <body>
 <svg class="sprite" aria-hidden="true">
-  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></symbol>
-  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 4 8.5 4.5L12 13 3.5 8.5z"/><path d="m3.5 12.5 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/></symbol>
-  <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></symbol>
-  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.6 7a7.5 7.5 0 1 0 10.8 0"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2"/></symbol>
-  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
-  <symbol id="i-net" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5S9.6 5.9 12 3.5"/></symbol>
-  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="14" r="4"/><path d="m11 11 8.5-8.5M16.5 5.5l2.5 2.5M14 8l2 2"/></symbol>
-  <symbol id="i-node" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
-  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></symbol>
 </svg>
 
-<aside class="side">
-  <div class="brand"><img src="nexus-logo.svg" alt="" width="34" height="34"><span>Nexus</span></div>
-  <nav aria-label="主要导航">
-    <a href="#home"><svg class="icon"><use href="#i-home"/></svg><span>首页</span></a>
-    <a href="#subscriptions"><svg class="icon"><use href="#i-layers"/></svg><span>我的订阅</span></a>
-    <a href="#servers"><svg class="icon"><use href="#i-server"/></svg><span>我的服务器</span></a>
-    <a href="#shared"><svg class="icon"><use href="#i-share"/></svg><span>朋友分享</span></a>
-  </nav>
-  <div class="side-foot">
-    <button type="button" id="update-action" class="quiet" disabled><svg class="icon"><use href="#i-download"/></svg><span id="update-label">检查更新</span></button>
-    <p id="update-feedback" role="status"></p>
-  </div>
-</aside>
+<header class="top">
+  <div class="brand"><img src="nexus-logo.svg" alt="" width="24" height="24"><span>Nexus</span></div>
+  <nav aria-label="主要导航"><a href="#home">连接</a><a href="#nodes">节点</a><a href="#settings">设置</a></nav>
+</header>
 
 <main>
-<section id="home">
-  <header class="page-head"><h1 tabindex="-1">网络概览</h1></header>
-  <form id="connection-form" class="home-grid">
-    <div class="card hero">
-      <button id="toggle" type="submit" class="dial" data-link="idle" aria-describedby="status route" disabled>
-        <span class="dial-ring" aria-hidden="true"></span>
-        <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
-        <span id="toggle-label" class="sr-only">连接</span>
-      </button>
-      <h2 id="status" role="status">未连接</h2>
-      <p id="route"></p>
-      <p id="toggle-hint" class="hint">点击圆环连接</p>
-      <p id="feedback" role="alert" hidden></p>
-      <div id="ports" class="ports" hidden>
-        <span class="chip">SOCKS5 <b id="socks"></b><button type="button" class="copy" data-copy="socks" aria-label="复制 SOCKS5 地址"><svg class="icon"><use href="#i-copy"/></svg></button></span>
-        <span class="chip">HTTP <b id="http"></b><button type="button" class="copy" data-copy="http" aria-label="复制 HTTP 地址"><svg class="icon"><use href="#i-copy"/></svg></button></span>
-      </div>
+<section id="home" aria-labelledby="home-title">
+  <h1 id="home-title" class="sr-only" tabindex="-1">连接</h1>
+  <form id="connection-form">
+    <button id="toggle" type="submit" class="dial" data-link="idle" aria-describedby="status" disabled>
+      <span class="dial-ring" aria-hidden="true"></span>
+      <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
+      <span id="toggle-label" class="sr-only">连接</span>
+    </button>
+    <p id="status" role="status">未连接</p>
+    <p id="route"></p>
+    <p id="feedback" role="alert" hidden></p>
+
+    <a id="current" class="row link" href="#nodes">
+      <span class="row-text"><b id="current-name">我的 V2 节点</b><small id="current-from"></small></span>
+      <svg class="icon chevron"><use href="#i-arrow"/></svg>
+    </a>
+    <div id="enrollment" hidden>
+      <label for="invite" class="sr-only">V2 邀请链接</label>
+      <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="首次使用请粘贴 V2 邀请链接">
     </div>
-
-    <div class="stack">
-      <div class="card">
-        <h2 class="card-title">连接来源</h2>
-        <div class="seg" role="radiogroup" aria-label="连接来源">
-          <label><input type="radio" name="source" value="v2" checked><span>我的 V2 节点</span></label>
-          <label><input type="radio" name="source" value="subscription"><span>订阅节点</span></label>
-        </div>
-        <div id="enrollment" class="field">
-          <label for="invite">V2 邀请链接</label>
-          <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴邀请链接" aria-describedby="invite-hint">
-          <p id="invite-hint" class="hint">首次连接需要邀请；已登记的设备可留空。</p>
-        </div>
-        <a id="selected-sub" class="picked" href="#subscriptions" hidden>
-          <span class="picked-icon"><svg class="icon"><use href="#i-node"/></svg></span>
-          <span class="picked-text"><b id="selected-node"></b><small id="selected-from"></small></span>
-          <span class="picked-action">更换<svg class="icon"><use href="#i-arrow"/></svg></span>
-        </a>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2 class="card-title">分流模式</h2><span id="mode-hint" class="tag" hidden>断开后可更改</span></div>
-        <div class="seg" role="radiogroup" aria-label="分流模式">
-          <label><input type="radio" name="mode" value="split" checked><span>绕过大陆</span></label>
-          <label><input type="radio" name="mode" value="global"><span>全局代理</span></label>
-        </div>
-        <p id="mode-desc" class="hint"></p>
-      </div>
-
-      <div class="card">
-        <h2 class="card-title">接管方式</h2>
-        <div class="opt">
-          <span class="opt-icon"><svg class="icon"><use href="#i-monitor"/></svg></span>
-          <span class="opt-text"><label for="proxy">系统代理</label><small>浏览器等遵循系统代理的应用</small></span>
-          <input type="checkbox" role="switch" id="proxy" checked disabled>
-        </div>
-        <div class="opt">
-          <span class="opt-icon"><svg class="icon"><use href="#i-net"/></svg></span>
-          <span class="opt-text"><label for="tun">TUN 模式</label><small id="tun-hint">接管整台电脑的网络，包括游戏和命令行</small></span>
-          <input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled>
-        </div>
-      </div>
-
-      <div class="card identity">
-        <span class="opt-icon"><svg class="icon"><use href="#i-key"/></svg></span>
-        <span class="opt-text"><b>已登记的 V2 节点</b><small id="identity">读取中…</small></span>
-        <button id="remove" type="button" class="btn ghost-danger" hidden>移除</button>
-      </div>
+    <div class="seg" role="radiogroup" aria-label="分流模式">
+      <label><input type="radio" name="mode" value="split" checked><span>绕过大陆</span></label>
+      <label><input type="radio" name="mode" value="global"><span>全局代理</span></label>
     </div>
   </form>
-
-  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
-    <p>将删除本机保存的设备密钥和节点记录。再次登记需要新的邀请。</p>
-    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="remove" class="btn danger">确认移除</button></form>
-  </dialog>
 </section>
 
-<section id="subscriptions" hidden>
-  <header class="page-head"><h1 tabindex="-1">我的订阅</h1><p>粘贴机场订阅地址，或单条 VLESS、VMess、Trojan、Shadowsocks、Hysteria2 链接。</p></header>
-  <form id="import-form" class="card add-bar">
+<section id="nodes" hidden aria-labelledby="nodes-title">
+  <h1 id="nodes-title" class="sr-only" tabindex="-1">节点</h1>
+  <p id="selected-hint" class="hint"></p>
+  <div class="group">
+    <div class="group-head"><span>我的节点</span></div>
+    <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false">
+      <span class="node-name" id="v2-name">我的 V2 节点</span><span class="badge">V2</span>
+      <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
+    </button>
+  </div>
+  <div id="sub-groups"></div>
+  <p id="sub-feedback" role="status"></p>
+  <form id="import-form" class="add" hidden>
     <label for="subscription-url" class="sr-only">订阅或节点链接</label>
     <input type="password" id="subscription-url" maxlength="524288" autocomplete="off" spellcheck="false" placeholder="粘贴订阅地址或节点链接" required>
-    <button type="submit" id="add-sub" class="btn primary"><svg class="icon"><use href="#i-plus"/></svg>添加</button>
+    <button type="submit" id="add-sub" class="btn primary">添加</button>
   </form>
-  <p id="sub-feedback" role="status"></p>
-  <div id="sub-empty" class="card empty"><span class="empty-icon"><svg class="icon"><use href="#i-layers"/></svg></span><p id="sub-empty-text">正在读取订阅…</p></div>
-  <div id="sub-details" hidden>
-    <div id="sub-list" class="tabs" role="tablist" aria-label="已添加的订阅"></div>
-    <div class="card sub-card" role="tabpanel">
-      <div class="sub-head">
-        <div class="sub-title"><h2 id="sub-name"></h2><div id="sub-meta" class="meta"></div></div>
-        <div class="actions">
-          <button type="button" id="refresh-sub" class="btn"><svg class="icon"><use href="#i-refresh"/></svg>刷新</button>
-          <button type="button" id="delete-sub" class="btn ghost-danger"><svg class="icon"><use href="#i-trash"/></svg>删除</button>
-        </div>
+  <button type="button" id="show-import" class="btn wide"><svg class="icon"><use href="#i-plus"/></svg>添加订阅</button>
+
+  <template id="group-template">
+    <div class="group">
+      <div class="group-head">
+        <span class="group-name"></span><small class="group-meta"></small>
+        <button type="button" class="icon-btn refresh" aria-label="刷新订阅"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <button type="button" class="icon-btn delete" aria-label="删除订阅"><svg class="icon"><use href="#i-trash"/></svg></button>
       </div>
-      <p id="selected-hint" class="hint"></p>
-      <div id="node-list" class="nodes" role="radiogroup" aria-label="节点列表"></div>
+      <div class="group-nodes" role="radiogroup"></div>
     </div>
-  </div>
+  </template>
   <template id="node-template">
     <button type="button" class="node" role="radio" aria-checked="false">
-      <span class="node-dot" aria-hidden="true"></span><span class="node-name"></span><span class="badge"></span>
+      <span class="node-name"></span><span class="badge"></span>
       <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
     </button>
   </template>
   <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除此订阅？</h2><p id="delete-hint"></p>
-    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="delete" class="btn danger">确认删除</button></form>
+    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="delete" class="btn danger">删除</button></form>
   </dialog>
 </section>
 
-<section id="servers" hidden>
-  <header class="page-head"><h1 tabindex="-1">我的服务器</h1></header>
-  <div class="card empty"><span class="empty-icon"><svg class="icon"><use href="#i-phone"/></svg></span>
-    <h2>请在手机上部署和管理服务器</h2><p>桌面版暂不支持部署节点。在 Nexus 手机版的「我的服务器」生成邀请后，粘贴到首页即可连接。</p></div>
-</section>
-<section id="shared" hidden>
-  <header class="page-head"><h1 tabindex="-1">朋友分享</h1></header>
-  <div class="card empty"><span class="empty-icon"><svg class="icon"><use href="#i-share"/></svg></span>
-    <h2>收到邀请了？</h2><p>复制朋友发来的 V2 邀请链接，在首页「连接来源」选择「我的 V2 节点」并粘贴，然后点圆环连接。</p>
-    <a class="btn primary" href="#home">去首页</a></div>
+<section id="settings" hidden aria-labelledby="settings-title">
+  <h1 id="settings-title" class="sr-only" tabindex="-1">设置</h1>
+  <div class="list">
+    <div class="row"><label for="proxy" class="row-text"><b>系统代理</b><small>浏览器等应用自动走代理</small></label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
+    <div class="row"><label for="tun" class="row-text"><b>TUN 模式</b><small id="tun-hint">接管全部网络，需要管理员权限</small></label><input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled></div>
+  </div>
+  <div class="list">
+    <div class="row"><span class="row-text"><b>本机代理端口</b><small id="ports">连接后显示</small></span></div>
+    <div class="row"><span class="row-text"><b>设备身份</b><small id="identity">读取中…</small></span><button id="remove" type="button" class="btn small ghost-danger" hidden>移除</button></div>
+    <div class="row"><span class="row-text"><b>软件更新</b><small id="update-feedback">—</small></span><button type="button" id="update-action" class="btn small" disabled>检查更新</button></div>
+  </div>
+  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
+    <p>将删除本机的设备密钥和节点记录，再次使用需要新的邀请。</p>
+    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="remove" class="btn danger">移除</button></form>
+  </dialog>
 </section>
 </main>
 </body>
