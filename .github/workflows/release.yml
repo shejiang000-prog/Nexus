@@ -74,6 +74,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   windows:
+    if: vars.NEXUS_RELEASE_WINDOWS == 'true'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -153,6 +154,10 @@ jobs:
           retention-days: 1
   publish:
     needs: [build, windows]
+    if: >-
+      !cancelled() && needs.build.result == 'success' &&
+      ((vars.NEXUS_RELEASE_WINDOWS == 'true' && needs.windows.result == 'success') ||
+       (vars.NEXUS_RELEASE_WINDOWS != 'true' && needs.windows.result == 'skipped'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -162,6 +167,7 @@ jobs:
           name: signed-android
           path: assets
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: needs.windows.result == 'success'
         with:
           name: windows-x64
           path: windows
@@ -169,12 +175,17 @@ jobs:
         working-directory: assets
         env:
           EXPECTED_MANIFEST: ${{ needs.build.outputs.release_manifest }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
           WINDOWS_MANIFEST: ${{ needs.windows.outputs.manifest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           test "$(sha256sum SHA256SUMS.txt release-notes.md | sha256sum | cut -d' ' -f1)" = "$EXPECTED_MANIFEST"
           sha256sum --check --strict SHA256SUMS.txt
-          (cd ../windows && echo "$WINDOWS_MANIFEST  WINDOWS-SHA256SUMS.txt" | sha256sum --check --strict && sha256sum --check --strict WINDOWS-SHA256SUMS.txt)
-          test -s ../windows/latest.json || { echo 'Configure the updater signing secrets before publishing a release.'; exit 1; }
-          cat ../windows/windows-release.txt >> release-notes.md
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md "Nexus-${GITHUB_REF_NAME#v}-arm64.apk" "Nexus-${GITHUB_REF_NAME#v}-universal.apk" nexus-node-linux-amd64 nexus-node-linux-arm64 SHA256SUMS.txt ../windows/*
+          windows_assets=()
+          if [[ "$WINDOWS_RESULT" == 'success' ]]; then
+            (cd ../windows && echo "$WINDOWS_MANIFEST  WINDOWS-SHA256SUMS.txt" | sha256sum --check --strict && sha256sum --check --strict WINDOWS-SHA256SUMS.txt)
+            test -s ../windows/latest.json || { echo 'Configure the updater signing secrets before publishing a release.'; exit 1; }
+            cat ../windows/windows-release.txt >> release-notes.md
+            windows_assets=(../windows/*)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nexus ${GITHUB_REF_NAME#v}" --notes-file release-notes.md "Nexus-${GITHUB_REF_NAME#v}-arm64.apk" "Nexus-${GITHUB_REF_NAME#v}-universal.apk" nexus-node-linux-amd64 nexus-node-linux-arm64 SHA256SUMS.txt "${windows_assets[@]}"
