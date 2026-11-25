@@ -6,7 +6,7 @@
   "build": { "frontendDist": "ui" },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{"title":"Nexus","width":400,"height":640,"minWidth":360,"minHeight":540}],
+    "windows": [{"title":"Nexus","width":380,"height":620,"resizable":false,"maximizable":false}],
     "security": {
       "capabilities": [{"identifier":"desktop-main","windows":["main"],"permissions":["control-core"]}],
       "csp":"default-src 'none'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'"}

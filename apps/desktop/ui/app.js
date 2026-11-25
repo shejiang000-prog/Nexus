@@ -80,6 +80,12 @@ let deletingId = "";
 const connected = state => state === "h2" || state === "h3" || state === "subscription";
 const running = state => connected(state) || state === "connecting" || state === "stopping";
 const setText = (element, text) => { if (element.textContent !== text) element.textContent = text; };
+let since = 0;
+function clock() {
+  const seconds = Math.floor((Date.now() - since) / 1000);
+  return [seconds / 3600, seconds / 60 % 60, seconds % 60].map(n => String(Math.floor(n)).padStart(2, "0")).join(":");
+}
+setInterval(() => { if (since) setText($("clock"), clock()); }, 1000);
 
 function render() {
   const [state, socks, http, enabled, notice, sessionTun] = snapshot;
@@ -89,11 +95,13 @@ function render() {
   const error = localError || messages[state] || messages[notice] || "";
   setText($("feedback"), error);
   $("feedback").hidden = !error;
-  toggle.dataset.link = ready ? "on" : active ? "busy" : (state !== "stopped" || localError) ? "failed" : "idle";
+  $("hero").dataset.link = ready ? "on" : active ? "busy" : (state !== "stopped" || localError) ? "failed" : "idle";
   setText($("toggle-label"), active ? "断开" : "连接");
-  const lane = {h3:"HTTP/3", h2:"HTTP/2"}[state];
-  const takeover = [sessionTun && "TUN", enabled && "系统代理"].filter(Boolean).join(" + ");
-  setText($("route"), ready ? [lane, takeover].filter(Boolean).join(" · ") : "");
+  const lane = {h3:"HTTP/3", h2:"HTTP/2"}[state] || "";
+  setText($("lane"), ready ? lane || (sessionTun ? "TUN" : "代理") : "");
+  if (ready && !since) since = Date.now();
+  if (!ready) since = 0;
+  setText($("clock"), ready ? clock() : active ? "" : "点击圆环连接");
 
   const fromSubscription = source === "subscription";
   const selected = catalog.find(sub => sub.id === chosenSub);

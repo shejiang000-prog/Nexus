@@ -22,14 +22,16 @@
 <main>
 <section id="home" aria-labelledby="home-title">
   <h1 id="home-title" class="sr-only" tabindex="-1">连接</h1>
-  <form id="connection-form">
-    <button id="toggle" type="submit" class="dial" data-link="idle" aria-describedby="status" disabled>
-      <span class="dial-ring" aria-hidden="true"></span>
-      <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
-      <span id="toggle-label" class="sr-only">连接</span>
-    </button>
-    <p id="status" role="status">未连接</p>
-    <p id="route"></p>
+  <form id="connection-form" class="home">
+    <div id="hero" class="hero" data-link="idle">
+      <button id="toggle" type="submit" class="dial" aria-describedby="status" disabled>
+        <span class="dial-ring" aria-hidden="true"></span>
+        <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
+        <span id="toggle-label" class="sr-only">连接</span>
+      </button>
+      <p id="status" role="status">未连接</p>
+      <p id="route"><span id="lane"></span><span id="clock"></span></p>
+    </div>
     <p id="feedback" role="alert" hidden></p>
 
     <a id="current" class="row link" href="#nodes">
@@ -97,6 +99,11 @@
     <div class="row"><span class="row-text"><b>本机代理端口</b><small id="ports">连接后显示</small></span></div>
     <div class="row"><span class="row-text"><b>设备身份</b><small id="identity">读取中…</small></span><button id="remove" type="button" class="btn small ghost-danger" hidden>移除</button></div>
     <div class="row"><span class="row-text"><b>软件更新</b><small id="update-feedback">—</small></span><button type="button" id="update-action" class="btn small" disabled>检查更新</button></div>
+  </div>
+  <div class="about">
+    <img src="nexus-logo.svg" alt="" width="40" height="40">
+    <b>Nexus</b>
+    <small>无需注册 · 密钥只保存在本机 · 不收集任何数据</small>
   </div>
   <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
     <p>将删除本机的设备密钥和节点记录，再次使用需要新的邀请。</p>
