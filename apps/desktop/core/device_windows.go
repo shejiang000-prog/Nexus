@@ -256,8 +256,13 @@ func loadDevice(link string) (*device, error) {
 	}
 	defer windows.CloseHandle(lock)
 
+	return loadLockedDevice(dir, link)
+}
+
+func loadLockedDevice(dir, link string) (*device, error) {
 	var invite *enrollment.Invitation
 	var alias string
+	var err error
 	active := filepath.Join(dir, "active")
 	if link = strings.TrimSpace(link); link != "" {
 		invite, err = enrollment.Parse(link)

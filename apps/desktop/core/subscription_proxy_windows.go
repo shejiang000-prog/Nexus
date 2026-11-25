@@ -53,21 +53,25 @@ func subscriptionEndpoint(out *core.OutboundHandlerConfig) (xnet.Destination, er
 	return xnet.TCPDestination(endpoint.Address.AsAddress(), xnet.Port(endpoint.Port)), nil
 }
 
+func buildSubscriptionOutbound(n subscriptions.Node, config *conf.OutboundDetourConfig) (*core.OutboundHandlerConfig, error) {
+	if err := subscriptions.ValidateOutbound(n.Outbound); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(n.Outbound, config); err != nil {
+		return nil, err
+	}
+	config.Tag = "selected"
+	return config.Build()
+}
+
 func runSubscription(sourceID, nodeID, mode string, packets *packetSession) string {
 	fmt.Println("connecting")
 	n, err := subscriptionNode(sourceID, nodeID)
 	if err != nil {
 		return subscriptionError(err)
 	}
-	if err := subscriptions.ValidateOutbound(n.Outbound); err != nil {
-		return "subscription_format"
-	}
 	var config conf.OutboundDetourConfig
-	if err := json.Unmarshal(n.Outbound, &config); err != nil {
-		return "subscription_format"
-	}
-	config.Tag = "selected"
-	out, err := config.Build()
+	out, err := buildSubscriptionOutbound(n, &config)
 	if err != nil {
 		return "subscription_format"
 	}
@@ -138,9 +142,7 @@ func runSubscription(sourceID, nodeID, mode string, packets *packetSession) stri
 	conn.Close()
 	cancel()
 	fmt.Printf("ready:subscription:%d:%d\n", socks, httpPort)
-	if packets == nil {
-		select {}
-	}
+	var traffic trafficSample
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -148,6 +150,7 @@ func runSubscription(sourceID, nodeID, mode string, packets *packetSession) stri
 		case <-packets.done():
 			return "tun_session"
 		case <-ticker.C:
+			traffic.publish()
 			packets.networkChanged()
 		}
 	}

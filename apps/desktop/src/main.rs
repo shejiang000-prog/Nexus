@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod probes;
 mod subscriptions;
 mod system_proxy;
 mod updates;
@@ -23,6 +24,7 @@ struct Core {
     tun: bool,
     tun_supported: Option<bool>,
     notice: &'static str,
+    traffic: [u64; 2],
 }
 
 static CORE: Mutex<Core> = Mutex::new(Core {
@@ -34,6 +36,7 @@ static CORE: Mutex<Core> = Mutex::new(Core {
     tun: false,
     tun_supported: None,
     notice: "",
+    traffic: [0, 0],
 });
 static STOPPED: Condvar = Condvar::new();
 
@@ -114,6 +117,16 @@ fn monitor(mut child: Child) {
             break;
         }
         let line = line.trim_end_matches(['\r', '\n']);
+        if let Some((up, down)) = line
+            .strip_prefix("traffic:")
+            .and_then(|s| s.split_once(':'))
+        {
+            if let (Ok(up), Ok(down)) = (up.parse::<u64>(), down.parse::<u64>()) {
+                let mut core = CORE.lock().unwrap();
+                core.traffic = [core.traffic[0].max(up), core.traffic[1].max(down)];
+                continue;
+            }
+        }
         if line == "connecting" {
             let mut core = CORE.lock().unwrap();
             if core.input.is_some() && core.status != "stopping" {
@@ -186,7 +199,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
                         .is_some_and(|s| s.len() <= 16384 && !s.contains(['\r', '\n']))
                 })
                 .ok_or("invite_invalid")?;
-            format!(r#"{{"invite":{invite},"mode":"{mode}","tun":{tun}}}"#)
+            format!(r#"{{"invite":{invite},"mode":"{mode}","tun":{tun},"trafficStats":true}}"#)
         }
         "subscription" => {
             let id = body
@@ -200,7 +213,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
                 .filter(|id| subscriptions::valid_id(id))
                 .ok_or("subscription_changed")?;
             format!(
-                r#"{{"action":"start","source":"subscription","subscriptionId":"{id}","nodeId":"{node}","mode":"{mode}","tun":{tun}}}"#
+                r#"{{"action":"start","source":"subscription","subscriptionId":"{id}","nodeId":"{node}","mode":"{mode}","tun":{tun},"trafficStats":true}}"#
             )
         }
         _ => return Err("subscription_changed"),
@@ -238,6 +251,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
         return Err("generic");
     }
     core.status = "connecting";
+    core.traffic = [0, 0];
     core.proxy = proxy;
     core.tun = tun;
     core.input = Some(input);
@@ -266,6 +280,16 @@ fn stop_and_wait() -> Result<(), &'static str> {
         return Err("update_cleanup");
     }
     Ok(())
+}
+
+#[tauri::command]
+fn traffic_stats() -> Result<[u64; 2], &'static str> {
+    let core = CORE.lock().unwrap();
+    if matches!(core.status, "h3" | "h2" | "subscription") {
+        Ok(core.traffic)
+    } else {
+        Err("not_connected")
+    }
 }
 
 #[tauri::command]
@@ -422,6 +446,8 @@ fn main() {
             start_core,
             stop_core,
             core_status,
+            traffic_stats,
+            probes::probe_nodes,
             set_proxy,
             device_identity,
             subscriptions::subscriptions,

@@ -1,0 +1,30 @@
+--- a/transport/internet/reality/reality.go
++++ b/transport/internet/reality/reality.go
+@@ -141,6 +141,17 @@
+ 
+ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destination) (net.Conn, error) {
++	return uClient(c, config, ctx, dest, false)
++}
++
++// ProbeHandshake verifies the configured peer without browsing a fallback site.
++// The caller owns the TCP connection and its deadline.
++func ProbeHandshake(c net.Conn, config *Config, ctx context.Context, dest net.Destination) error {
++	_, err := uClient(c, config, ctx, dest, true)
++	return err
++}
++
++func uClient(c net.Conn, config *Config, ctx context.Context, dest net.Destination, probe bool) (net.Conn, error) {
+ 	localAddr := c.LocalAddr().String()
+ 	uConn := &UConn{
+ 		Config: config,
+ 	}
+@@ -205,6 +216,9 @@
+ 	}
+ 	if !uConn.Verified {
++		if probe {
++			return nil, errors.New("REALITY: invalid probe handshake")
++		}
+ 		errors.LogError(ctx, "REALITY: received real certificate (potential MITM or redirection)")
+ 		go func() {
+ 			client := &http.Client{
+ 				Transport: &http2.Transport{

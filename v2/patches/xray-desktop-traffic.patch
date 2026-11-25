@@ -1,0 +1,51 @@
+--- a/app/dispatcher/default.go
++++ b/app/dispatcher/default.go
+@@ -6,6 +6,7 @@
+ 	"sync"
+ 	"time"
+ 
++	appstats "github.com/xtls/xray-core/app/stats"
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/common/errors"
+@@ -137,6 +138,18 @@
+ // Close implements common.Closable.
+ func (*DefaultDispatcher) Close() error { return nil }
+ 
++// nexus-core has one desktop session per process. Meter only the payload links
++// of its three application inbounds, after local SOCKS/CONNECT negotiation.
++var DesktopTraffic struct {
++	Enabled          bool
++	Uplink, Downlink appstats.Counter
++}
++
++func desktopInbound(ctx context.Context) bool {
++	in := session.InboundFromContext(ctx)
++	return DesktopTraffic.Enabled && in != nil && (in.Tag == "socks" || in.Tag == "http" || in.Tag == "packet-tun")
++}
++
+ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *transport.Link) {
+ 	opt := pipe.OptionsFromContext(ctx)
+ 	uplinkReader, uplinkWriter := pipe.New(opt...)
+@@ -184,6 +197,10 @@
+ 		}
+ 	}
+ 
++	if desktopInbound(ctx) {
++		inboundLink.Writer = &SizeStatWriter{Counter: &DesktopTraffic.Uplink, Writer: inboundLink.Writer}
++		outboundLink.Writer = &SizeStatWriter{Counter: &DesktopTraffic.Downlink, Writer: outboundLink.Writer}
++	}
+ 	return inboundLink, outboundLink
+ }
+ 
+@@ -339,6 +356,10 @@
+ 		ctx = session.ContextWithContent(ctx, content)
+ 	}
+ 	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
++	if desktopInbound(ctx) {
++		outbound.Reader.(*buf.TimeoutWrapperReader).Counter = &DesktopTraffic.Uplink
++		outbound.Writer = &SizeStatWriter{Counter: &DesktopTraffic.Downlink, Writer: outbound.Writer}
++	}
+ 	sniffingRequest := content.SniffingRequest
+ 	if !sniffingRequest.Enabled {
+ 		d.routedDispatch(ctx, outbound, destination)

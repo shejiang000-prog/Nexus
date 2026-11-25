@@ -107,6 +107,14 @@ func (k *deviceKey) public() ([]byte, error) {
 }
 
 func (k *deviceKey) Sign(message []byte) ([]byte, error) {
+	signature, err := k.signRaw(message)
+	if err != nil {
+		return nil, err
+	}
+	return asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:])})
+}
+
+func (k *deviceKey) signRaw(message []byte) ([]byte, error) {
 	hash := sha256.Sum256(message)
 	var signature [64]byte
 	var size uint32
@@ -118,5 +126,5 @@ func (k *deviceKey) Sign(message []byte) ([]byte, error) {
 	if size != 64 {
 		return nil, errors.New("invalid P-256 signature length")
 	}
-	return asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:])})
+	return signature[:], nil
 }

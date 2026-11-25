@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 
@@ -27,6 +28,19 @@ import (
 
 //go:embed split-rules.txt
 var splitRules string
+
+type trafficSample struct{ up, down int64 }
+
+func (s *trafficSample) publish() {
+	if !dispatcher.DesktopTraffic.Enabled {
+		return
+	}
+	up, down := dispatcher.DesktopTraffic.Uplink.Value(), dispatcher.DesktopTraffic.Downlink.Value()
+	if s.up != up || s.down != down {
+		fmt.Printf("traffic:%d:%d\n", up, down)
+		s.up, s.down = up, down
+	}
+}
 
 func desktopRouter(mode string) (*router.Config, error) {
 	var rules, dnsTag string

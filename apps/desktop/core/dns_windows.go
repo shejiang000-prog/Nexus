@@ -183,6 +183,8 @@ func (h *splitDNS) exchange(ctx context.Context, dest xnet.Destination, query []
 		}
 		ctx = session.ContextWithContent(ctx, &session.Content{})
 		ctx = session.ContextWithOutbounds(ctx, nil)
+		// The application-facing DNS link already accounts for these bytes.
+		ctx = session.ContextWithInbound(ctx, nil)
 		conn, err = core.Dial(session.SetForcedOutboundTagToContext(ctx, "selected"), h.instance, dest)
 	}
 	if err != nil {

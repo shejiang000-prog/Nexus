@@ -80,7 +80,8 @@ if __name__ == "__main__":
         work = Path(scratch).resolve()
         patched = work / "patched"
         prepare(patched, android=True)
-        patch(patched / "xray", "xray-desktop-socks-udp", "xray-desktop-packet-tun", "xray-desktop-dns-guard")
+        patch(patched / "xray", "xray-desktop-socks-udp", "xray-desktop-packet-tun", "xray-desktop-dns-guard",
+              "xray-desktop-traffic", "xray-desktop-reality-probe")
         lib = stage_client(work, args.source, patched)
         portable_modules(lib)
         # Staged Go sources can come from a CRLF Windows working copy.

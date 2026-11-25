@@ -18,6 +18,7 @@ import (
 	mobile "github.com/xtls/libxray/nexusmobile"
 	"github.com/xtls/libxray/tuntrust"
 	"github.com/xtls/libxray/v2vpn"
+	"github.com/xtls/xray-core/app/dispatcher"
 	xlog "github.com/xtls/xray-core/common/log"
 	"golang.org/x/sys/windows"
 )
@@ -99,6 +100,8 @@ func run(invite, mode string, packets *packetSession) error {
 	defer ticker.Stop()
 	last := ""
 	reconnecting := false
+	var traffic trafficSample
+	var halfSeconds uint64
 	for {
 		if packets.networkChanged() {
 			client.RefreshNetwork()
@@ -142,6 +145,10 @@ func run(invite, mode string, packets *packetSession) error {
 		case <-packets.done():
 			return errPacketSession
 		case <-ticker.C:
+			halfSeconds++
+			if halfSeconds%2 == 0 {
+				traffic.publish()
+			}
 		}
 	}
 }
@@ -156,16 +163,23 @@ func command() (result string) {
 		Invite         *string `json:"invite"`
 		Mode           string  `json:"mode"`
 		Tun            bool    `json:"tun"`
+		TrafficStats   bool    `json:"trafficStats"`
 		URL            string  `json:"url"`
 		ID             string  `json:"id"`
 		Source         string  `json:"source"`
 		SubscriptionID string  `json:"subscriptionId"`
+		V2             *bool   `json:"v2"`
 		NodeID         string  `json:"nodeId"`
 	}
 	if err != nil || len(line) > maxCommand || json.Unmarshal(line, &req) != nil {
 		return "invalid_request"
 	}
 	switch req.Action {
+	case "probe_nodes":
+		if req.V2 != nil && (!*req.V2 || req.SubscriptionID != "") || req.V2 == nil && !validSourceID(req.SubscriptionID) {
+			return "invalid_request"
+		}
+		return probeNodes(req.SubscriptionID)
 	case "subscriptions", "import_subscription", "update_subscription", "remove_subscription":
 		return subscriptionCommand(req.Action, req.URL, req.ID)
 	case "identity":
@@ -200,6 +214,7 @@ func command() (result string) {
 	default:
 		return "invalid_request"
 	}
+	dispatcher.DesktopTraffic.Enabled = req.TrafficStats
 	// Only the command is size-limited. A full command cannot synthesize a stop.
 	stopping := make(chan struct{})
 	go func() {
