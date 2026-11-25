@@ -18,6 +18,8 @@ struct Core {
     socks: u16,
     http: u16,
     proxy: bool,
+    tun: bool,
+    tun_supported: Option<bool>,
     notice: &'static str,
 }
 
@@ -27,6 +29,8 @@ static CORE: Mutex<Core> = Mutex::new(Core {
     socks: 0,
     http: 0,
     proxy: false,
+    tun: false,
+    tun_supported: None,
     notice: "",
 });
 
@@ -58,6 +62,11 @@ fn error_label(line: &str) -> &'static str {
         "error:key_missing" => "key_missing",
         "error:identity_changed" => "identity_changed",
         "error:identity_busy" => "identity_busy",
+        "error:tun_admin" => "tun_admin",
+        "error:tun_driver" => "tun_driver",
+        "error:tun_session" => "tun_session",
+        "error:tun_conflict" => "tun_conflict",
+        "error:tun_recovery" => "tun_recovery",
         "error:local_port" => "local_port",
         "error:no_identity" => "no_identity",
         "error:routing" => "routing",
@@ -103,6 +112,10 @@ fn monitor(mut child: Child) {
         }
         let line = line.trim_end_matches(['\r', '\n']);
         if line == "connecting" {
+            let mut core = CORE.lock().unwrap();
+            if core.input.is_some() && core.status != "stopping" {
+                core.status = "connecting";
+            }
             continue;
         }
         let Some((lane, socks, http)) = ready(line) else {
@@ -115,6 +128,9 @@ fn monitor(mut child: Child) {
         let mut core = CORE.lock().unwrap();
         if core.input.is_none() {
             continue;
+        }
+        if core.http == 0 && core.tun && core.notice.starts_with("tun_") {
+            core.notice = "";
         }
         if core.http == 0 && core.proxy {
             if let Err(code) = system_proxy::enable(http) {
@@ -130,6 +146,9 @@ fn monitor(mut child: Child) {
     let mut core = CORE.lock().unwrap();
     restore(&mut core);
     core.status = if core.status == "stopping" {
+        if terminal == "tun_recovery" {
+            core.notice = terminal;
+        }
         "stopped"
     } else {
         terminal
@@ -139,10 +158,14 @@ fn monitor(mut child: Child) {
     core.socks = 0;
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_core(request: Request<'_>) -> Result<(), &'static str> {
     let InvokeBody::Json(body) = request.body() else {
         return Err("invite_invalid");
+    };
+    let tun = match body.get("tun") {
+        Some(value) => value.as_bool().ok_or("generic")?,
+        None => false,
     };
     let mode = match body.get("mode").and_then(|v| v.as_str()) {
         Some("split") => "split",
@@ -158,7 +181,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
                         .is_some_and(|s| s.len() <= 16384 && !s.contains(['\r', '\n']))
                 })
                 .ok_or("invite_invalid")?;
-            format!(r#"{{"invite":{invite},"mode":"{mode}"}}"#)
+            format!(r#"{{"invite":{invite},"mode":"{mode}","tun":{tun}}}"#)
         }
         "subscription" => {
             let id = body
@@ -172,7 +195,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
                 .filter(|id| subscriptions::valid_id(id))
                 .ok_or("subscription_changed")?;
             format!(
-                r#"{{"action":"start","source":"subscription","subscriptionId":"{id}","nodeId":"{node}","mode":"{mode}"}}"#
+                r#"{{"action":"start","source":"subscription","subscriptionId":"{id}","nodeId":"{node}","mode":"{mode}","tun":{tun}}}"#
             )
         }
         _ => return Err("subscription_changed"),
@@ -181,6 +204,22 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
         .get("proxy")
         .and_then(|v| v.as_bool())
         .ok_or("generic")?;
+    if tun {
+        let probe_again = {
+            let mut core = CORE.lock().unwrap();
+            match core.tun_supported {
+                None => return Err("tun_recovering"),
+                Some(true) => false,
+                Some(false) => {
+                    core.tun_supported = None;
+                    true
+                }
+            }
+        };
+        if probe_again {
+            check_tun_support()?;
+        }
+    }
     let mut core = CORE.lock().unwrap();
     if core.input.is_some() || core.status == "stopping" {
         return Err("busy");
@@ -195,6 +234,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
     }
     core.status = "connecting";
     core.proxy = proxy;
+    core.tun = tun;
     core.input = Some(input);
     thread::spawn(move || monitor(child));
     Ok(())
@@ -210,9 +250,16 @@ fn stop_core() {
 }
 
 #[tauri::command]
-fn core_status() -> (&'static str, u16, u16, bool, &'static str) {
+fn core_status() -> (&'static str, u16, u16, bool, &'static str, bool) {
     let core = CORE.lock().unwrap();
-    (core.status, core.socks, core.http, core.proxy, core.notice)
+    (
+        core.status,
+        core.socks,
+        core.http,
+        core.proxy,
+        core.notice,
+        core.tun,
+    )
 }
 
 #[tauri::command]
@@ -292,10 +339,48 @@ fn device_identity(
     Err("generic")
 }
 
+// This fixed command never starts a tunnel. Recovery can require a UAC
+// response, so keep the WebView and ordinary proxy connections available.
+fn recover_tun() -> Result<(), &'static str> {
+    let mut child = spawn_core()?;
+    let mut reply = String::new();
+    let read =
+        writeln!(child.stdin.take().unwrap(), r#"{{"action":"recover_tun"}}"#).and_then(|_| {
+            BufReader::new(child.stdout.take().unwrap())
+                .take(128)
+                .read_line(&mut reply)
+        });
+    if read.is_err() || reply.len() == 128 {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|_| "tun_version")?;
+    match (status.success(), reply.trim_end()) {
+        (true, "recovered") => Ok(()),
+        (false, "error:tun_admin") => Err("tun_admin"),
+        (false, "error:tun_recovery") => Err("tun_recovery"),
+        _ => Err("tun_version"),
+    }
+}
+
+// Older sidecars ignore extra start fields. A recognized recovery response
+// proves TUN support before we may pass tun=true to the bundled core.
+fn check_tun_support() -> Result<(), &'static str> {
+    let result = recover_tun();
+    let mut core = CORE.lock().unwrap();
+    core.tun_supported = Some(matches!(result, Ok(()) | Err("tun_admin" | "tun_recovery")));
+    if let Err(code) = result {
+        core.notice = code;
+    } else if core.notice.starts_with("tun_") || core.notice == "missing" {
+        core.notice = "";
+    }
+    result
+}
+
 fn main() {
     if let Err(code) = system_proxy::recover() {
         CORE.lock().unwrap().notice = code;
     }
+    thread::spawn(check_tun_support);
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             start_core,

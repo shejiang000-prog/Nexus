@@ -1,0 +1,70 @@
+--- a/internal/nexusv2/transport/tls.go
++++ b/internal/nexusv2/transport/tls.go
+@@ -24,11 +24,24 @@
+ )
+ 
+ // Control runs while the descriptor is owned by the dialer, before connect or bind.
+-func socketControl(protect func(int) bool) func(string, string, syscall.RawConn) error {
+-	if protect == nil {
++var DesktopSocketControl func(string, string, syscall.RawConn) error
++
++func socketControl(protect func(int) bool, peer string) func(string, string, syscall.RawConn) error {
++	if protect == nil && DesktopSocketControl == nil {
+ 		return nil
+ 	}
+-	return func(_, _ string, raw syscall.RawConn) error {
++	return func(network, address string, raw syscall.RawConn) error {
++		if DesktopSocketControl != nil {
++			if peer != "" {
++				address = peer
++			}
++			if err := DesktopSocketControl(network, address, raw); err != nil {
++				return err
++			}
++		}
++		if protect == nil {
++			return nil
++		}
+ 		ok := false
+ 		if err := raw.Control(func(fd uintptr) { ok = protect(int(fd)) }); err != nil {
+ 			return &Error{Configuration, err}
+@@ -119,7 +132,7 @@
+ 		}
+ 	}
+ 	spec.Extensions = utls.ShuffleChromeTLSExtensions(spec.Extensions)
+-	dialer := net.Dialer{Control: socketControl(protect)}
++	dialer := net.Dialer{Control: socketControl(protect, "")}
+ 	if runtime.GOOS == "android" {
+ 		dialer.KeepAlive = -1
+ 	}
+@@ -148,7 +161,7 @@
+ 	if peer.IP.To4() == nil {
+ 		family, bind = "udp6", "[::]:0"
+ 	}
+-	sock, e := (&net.ListenConfig{Control: socketControl(protect)}).ListenPacket(ctx, family, bind)
++	sock, e := (&net.ListenConfig{Control: socketControl(protect, peer.String())}).ListenPacket(ctx, family, bind)
+ 	if e != nil {
+ 		return nil, nil, nil, e
+ 	}
+--- a/internal/nexusv2/transport/client.go
++++ b/internal/nexusv2/transport/client.go
+@@ -156,6 +156,8 @@
+ 	}
+ 	return &Client{s: s, cancel: cancel, expiry: expiry}, nil
+ }
++func (c *Client) RefreshNetwork() { c.s.current().close() }
++
+ func (c *Client) Stop() { c.cancel(nil); c.s.current().close() }
+ 
+ // SetRecoveryAllowed controls background H3 recovery for this client.
+--- a/nexusmobile/mobile.go
++++ b/nexusmobile/mobile.go
+@@ -122,6 +122,8 @@
+ 	}
+ 	return &Client{c, ctx, cancel}, nil
+ }
++func (c *Client) RefreshNetwork() { c.client.RefreshNetwork() }
++
+ func (c *Client) Stop()                           { c.cancel(); c.client.Stop() }
+ func (c *Client) State() string                   { return c.client.State() }
+ func (c *Client) Confirm() error                  { return c.client.Confirm() }

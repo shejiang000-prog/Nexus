@@ -1,0 +1,174 @@
+--- a/proxy/tun/handler.go
++++ b/proxy/tun/handler.go
+@@ -29,6 +29,7 @@
+ 	config          *Config
+ 	stack           Stack
+ 	tun             Tun
++	packetRoute     func(net.Destination) string
+ 	policyManager   policy.Manager
+ 	dispatcher      routing.Dispatcher
+ 	tag             string
+@@ -120,11 +121,16 @@
+ 	return nil
+ }
+ 
++// UsePacketDevice attaches the ordinary process to an already-authorized packet session.
++func (t *Handler) UsePacketDevice(device Tun, route func(net.Destination) string) {
++	t.tun, t.packetRoute = device, route
++}
++
+ func (t *Handler) Start() error {
+ 	tunName := t.config.Name
+-	tunInterface, err := NewTun(t.config)
+-	if err != nil {
+-		return err
++	tunInterface := t.tun
++	if tunInterface == nil {
++		return errors.New("packet device unavailable")
+ 	}
+ 
+ 	if t.config.AutoOutboundsInterface != "" {
+@@ -167,6 +173,7 @@
+ 
+ 	tunStackOptions := StackOptions{
+ 		Tun:         tunInterface,
++		UDPRoute:    t.packetRoute,
+ 		MTU:         t.config.MTU,
+ 		IdleTimeout: t.policyManager.ForLevel(t.config.UserLevel).Timeouts.ConnectionIdle,
+ 	}
+@@ -236,6 +243,15 @@
+ 		SniffingRequest: t.sniffingRequest,
+ 	})
+ 	ctx = session.SubContextFromMuxInbound(ctx)
++	if t.packetRoute != nil {
++		var tag string
++		if u, ok := conn.(*udpConn); ok {
++			tag = u.tag
++		} else {
++			tag = t.packetRoute(destination)
++		}
++		ctx = session.SetForcedOutboundTagToContext(ctx, tag)
++	}
+ 
+ 	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
+ 		From:   inbound.Source,
+--- a/proxy/tun/stack.go
++++ b/proxy/tun/stack.go
+@@ -34,6 +34,7 @@
+ 
+ // StackOptions for the stack implementation
+ type StackOptions struct {
++	UDPRoute    func(net.Destination) string
+ 	Tun         Tun
+ 	MTU         uint32
+ 	IdleTimeout time.Duration
+@@ -117,6 +118,7 @@
+ 	if handler != nil {
+ 		s.handle = handler.HandleConnection
+ 		s.udp = newUdpConnectionHandler(s.handle, s.writeUDP)
++		s.udp.route = options.UDPRoute
+ 	}
+ 	return s, nil
+ }
+--- a/proxy/tun/udp_fullcone.go
++++ b/proxy/tun/udp_fullcone.go
+@@ -11,11 +11,17 @@
+ 	"github.com/xtls/xray-core/common/net"
+ )
+ 
++type udpRouteKey struct {
++	src net.Destination
++	tag string
++}
++
+ // sub-handler specifically for udp connections under main handler
+ type udpConnectionHandler struct {
+ 	sync.RWMutex
+ 
+-	udpConns map[net.Destination]*udpConn
++	route    func(net.Destination) string
++	udpConns map[udpRouteKey]*udpConn
+ 
+ 	handleConnection func(conn net.Conn, dest net.Destination)
+ 	writePacket      func(data []byte, src net.Destination, dst net.Destination) error
+@@ -23,7 +29,7 @@
+ 
+ func newUdpConnectionHandler(handleConnection func(conn net.Conn, dest net.Destination), writePacket func(data []byte, src net.Destination, dst net.Destination) error) *udpConnectionHandler {
+ 	handler := &udpConnectionHandler{
+-		udpConns:         make(map[net.Destination]*udpConn),
++		udpConns:         make(map[udpRouteKey]*udpConn),
+ 		handleConnection: handleConnection,
+ 		writePacket:      writePacket,
+ 	}
+@@ -35,9 +41,13 @@
+ // this custom handler support FullCone NAT of returning packets, binding connection only by the source addr:port
+ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destination, data *buf.Buffer) {
+ 	data.UDP = &dst
++	key := udpRouteKey{src: src}
++	if u.route != nil {
++		key.tag = u.route(dst)
++	}
+ 
+ 	u.RLock()
+-	conn, found := u.udpConns[src]
++	conn, found := u.udpConns[key]
+ 	if found {
+ 		if !conn.queue.push(data) {
+ 			errors.LogDebug(context.Background(), "drop udp with size ", data.Len(), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full")
+@@ -51,10 +61,10 @@
+ 	u.Lock()
+ 	defer u.Unlock()
+ 
+-	conn, found = u.udpConns[src]
++	conn, found = u.udpConns[key]
+ 	if !found {
+-		conn = &udpConn{handler: u, queue: newPacketQueue(udpQueueLimit), src: src, dst: dst}
+-		u.udpConns[src] = conn
++		conn = &udpConn{handler: u, queue: newPacketQueue(udpQueueLimit), src: src, dst: dst, tag: key.tag}
++		u.udpConns[key] = conn
+ 
+ 		go u.handleConnection(conn, dst)
+ 	}
+@@ -69,8 +79,9 @@
+ func (u *udpConnectionHandler) connectionFinished(conn *udpConn) {
+ 	u.Lock()
+ 	// Close runs twice per flow; a newer conn may already own this src.
+-	if u.udpConns[conn.src] == conn {
+-		delete(u.udpConns, conn.src)
++	key := udpRouteKey{src: conn.src, tag: conn.tag}
++	if u.udpConns[key] == conn {
++		delete(u.udpConns, key)
+ 		conn.queue.close()
+ 	}
+ 	u.Unlock()
+@@ -80,6 +91,7 @@
+ type udpConn struct {
+ 	handler *udpConnectionHandler
+ 
++	tag   string
+ 	queue *packetQueue
+ 	src   net.Destination
+ 	dst   net.Destination
+--- a/transport/internet/system_dialer.go
++++ b/transport/internet/system_dialer.go
+@@ -48,7 +48,19 @@
+ 	}
+ }
+ 
+-func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *SocketConfig) (net.Conn, error) {
++// DesktopDialStarted lets the Windows controller retire old physical transports
++// on an interface change without altering their concrete TCP/UDP types.
++var DesktopDialStarted func() func(net.Conn)
++
++func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *SocketConfig) (conn net.Conn, dialErr error) {
++	if DesktopDialStarted != nil {
++		opened := DesktopDialStarted()
++		defer func() {
++			if dialErr == nil && conn != nil {
++				opened(conn)
++			}
++		}()
++	}
+ 	errors.LogDebug(ctx, "dialing to "+dest.String())
+ 
+ 	if dest.Network == net.Network_UDP {

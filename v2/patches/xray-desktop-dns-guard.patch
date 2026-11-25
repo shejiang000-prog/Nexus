@@ -1,0 +1,241 @@
+diff --git a/proxy/tun/desktop_dns_guard_windows.go b/proxy/tun/desktop_dns_guard_windows.go
+new file mode 100644
+index 0000000..75d5c4e
+--- /dev/null
++++ b/proxy/tun/desktop_dns_guard_windows.go
+@@ -0,0 +1,139 @@
++package tun
++
++import (
++	"encoding/binary"
++	"net/netip"
++	"os"
++	"path/filepath"
++	"runtime"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
++)
++
++// OpenDesktopDNSGuard installs outbound DNS blocks for the lifetime of a
++// privileged desktop session. Its only argument is the newly created TUN.
++// The image exception is fixed relative to the authenticated installed helper.
++func OpenDesktopDNSGuard(tun winipcfg.LUID) (func(), error) {
++	if tun == 0 {
++		return nil, windows.ERROR_INVALID_PARAMETER
++	}
++	exe, err := os.Executable()
++	if err != nil {
++		return nil, err
++	}
++	core, err := windows.UTF16PtrFromString(filepath.Join(filepath.Dir(exe), "nexus-core.exe"))
++	if err != nil {
++		return nil, err
++	}
++	engine, err := installWFPSession(func(h windows.Handle) error {
++		var app *fwpByteBlob
++		if err := fwpmResult(procFwpmGetAppIdFromFileName0.Call(uintptr(unsafe.Pointer(core)), uintptr(unsafe.Pointer(&app)))); err != nil {
++			return err
++		}
++		defer func() { procFwpmFreeMemory0.Call(uintptr(unsafe.Pointer(&app))) }()
++		sub := fwpmSublayer0{displayData: fwpmDisplayData0{name: utf16Ptr("Nexus desktop DNS guard")}, weight: 0xffff}
++		var err error
++		if sub.subLayerKey, err = windows.GenerateGUID(); err != nil {
++			return err
++		}
++		if err := fwpmResult(procFwpmSubLayerAdd0.Call(uintptr(h), uintptr(unsafe.Pointer(&sub)), 0)); err != nil {
++			return err
++		}
++		return desktopDNSBlocks(tun, app, dnsClientUsesAnyPort(), func(layer *windows.GUID, conds []fwpmFilterCondition0) error {
++			return addFilter(h, &sub.subLayerKey, layer, "Nexus: block DNS outside TUN", 0, fwpActionBlock, 0, conds...)
++		})
++	})
++	if err != nil {
++		return nil, err
++	}
++	return func() { closeWFPEngine(engine) }, nil
++}
++
++// Each invocation emits just one BLOCK. Separate filters express OR, one
++// condition per field expresses AND. No rule returns PERMIT or clears rights.
++func desktopDNSBlocks(tun winipcfg.LUID, app *fwpByteBlob, encrypted bool, add func(*windows.GUID, []fwpmFilterCondition0) error) error {
++	const notEqual = 10 // FWP_MATCH_NOT_EQUAL on sortable byte blobs, addresses and integers.
++	match := func(field *windows.GUID, typ uint32, value uintptr, comparison uint32) fwpmFilterCondition0 {
++		c := condition(field, typ, value)
++		c.matchType = comparison
++		return c
++	}
++	offImage := match(&fwpmConditionALEAppID, fwpByteBlobType, uintptr(unsafe.Pointer(app)), notEqual)
++	var pins runtime.Pinner
++	defer pins.Unpin()
++	luid := new(uint64)
++	*luid = uint64(tun)
++	pins.Pin(luid)
++	var service fwpmFilterCondition0
++	if encrypted {
++		sd, err := windows.SecurityDescriptorFromString("O:SYG:SYD:(A;;CCRC;;;" + dnsClientSID + ")")
++		if err != nil {
++			return err
++		}
++		blob := &fwpByteBlob{size: sd.Length(), data: (*byte)(unsafe.Pointer(sd))}
++		pins.Pin(sd)
++		pins.Pin(blob)
++		service = condition(&fwpmConditionALEUserID, fwpSecurityDescriptorType, uintptr(unsafe.Pointer(blob)))
++	}
++	port := func(n uintptr, cmp uint32) fwpmFilterCondition0 {
++		return match(&fwpmConditionIPRemotePort, fwpUint16, n, cmp)
++	}
++	protocol := func(n uintptr) fwpmFilterCondition0 { return condition(&fwpmConditionIPProtocol, fwpUint8, n) }
++	for _, family := range []struct {
++		layer       *windows.GUID
++		mdns, llmnr netip.Addr
++	}{
++		{&fwpmLayerALEAuthConnectV4, netip.MustParseAddr("224.0.0.251"), netip.MustParseAddr("224.0.0.252")},
++		{&fwpmLayerALEAuthConnectV6, netip.MustParseAddr("ff02::fb"), netip.MustParseAddr("ff02::1:3")},
++	} {
++		for _, iface := range []*windows.GUID{&fwpmConditionIPLocalInterface, &fwpmConditionIPNexthopInterface} {
++			// During ALE reauthorization an interface can be unknown. Explicitly
++			// fail closed then as well (FWP_MATCH_EQUAL/FWP_EMPTY).
++			for _, offTun := range []fwpmFilterCondition0{
++				match(iface, fwpUint64, uintptr(unsafe.Pointer(luid)), notEqual), condition(iface, 0, 0),
++			} {
++				block := func(c ...fwpmFilterCondition0) error { return add(family.layer, append(c, offTun)) }
++				for _, proto := range []uintptr{windows.IPPROTO_TCP, windows.IPPROTO_UDP} {
++					for _, other := range []fwpmFilterCondition0{offImage, condition(&fwpmConditionALEAppID, 0, 0)} {
++						if err := block(other, protocol(proto), port(53, fwpMatchEqual)); err != nil {
++							return err
++						}
++					}
++				}
++				if !encrypted {
++					continue
++				}
++				if err := block(service, protocol(windows.IPPROTO_TCP)); err != nil {
++					return err
++				}
++				// Dnscache uses any port for encrypted DNS. Only UDP to the two
++				// exact link-local multicast destinations is local name discovery.
++				for _, p := range []fwpmFilterCondition0{port(5353, 2), port(5354, fwpMatchEqual), port(5355, 1)} { // less, equal, greater
++					if err := block(service, protocol(windows.IPPROTO_UDP), p); err != nil {
++						return err
++					}
++				}
++				for _, d := range []struct {
++					port uintptr
++					ip   netip.Addr
++				}{{5353, family.mdns}, {5355, family.llmnr}} {
++					var addr fwpmFilterCondition0
++					if d.ip.Is4() {
++						v := d.ip.As4()
++						addr = match(&fwpmConditionIPRemoteAddress, fwpUint32, uintptr(binary.BigEndian.Uint32(v[:])), notEqual)
++					} else {
++						v := d.ip.As16()
++						pins.Pin(&v)
++						addr = match(&fwpmConditionIPRemoteAddress, fwpByteArray16Type, uintptr(unsafe.Pointer(&v)), notEqual)
++					}
++					if err := block(service, protocol(windows.IPPROTO_UDP), port(d.port, fwpMatchEqual), addr); err != nil {
++						return err
++					}
++				}
++			}
++		}
++	}
++	return nil
++}
+diff --git a/proxy/tun/desktop_dns_guard_windows_test.go b/proxy/tun/desktop_dns_guard_windows_test.go
+new file mode 100644
+index 0000000..22b47be
+--- /dev/null
++++ b/proxy/tun/desktop_dns_guard_windows_test.go
+@@ -0,0 +1,66 @@
++package tun
++
++import (
++	"errors"
++	"testing"
++
++	"golang.org/x/sys/windows"
++)
++
++func TestDesktopDNSBlockScope(t *testing.T) {
++	for _, encrypted := range []bool{false, true} {
++		count := 0
++		err := desktopDNSBlocks(17, new(fwpByteBlob), encrypted, func(layer *windows.GUID, cs []fwpmFilterCondition0) error {
++			if *layer != fwpmLayerALEAuthConnectV4 && *layer != fwpmLayerALEAuthConnectV6 {
++				t.Fatal("unexpected layer")
++			}
++			fields := map[windows.GUID]fwpmFilterCondition0{}
++			for _, c := range cs {
++				if _, ok := fields[c.fieldKey]; ok {
++					t.Fatal("ambiguous AND/OR condition")
++				}
++				fields[c.fieldKey] = c
++			}
++			if _, local := fields[fwpmConditionIPLocalInterface]; !local {
++				if _, hop := fields[fwpmConditionIPNexthopInterface]; !hop {
++					t.Fatal("unscoped interface")
++				}
++			}
++			p := fields[fwpmConditionIPProtocol].conditionValue.value
++			if p != windows.IPPROTO_TCP && p != windows.IPPROTO_UDP {
++				t.Fatal("unscoped protocol")
++			}
++			if _, service := fields[fwpmConditionALEUserID]; service {
++				if !encrypted {
++					t.Fatal("unexpected service block")
++				}
++				if p == windows.IPPROTO_UDP {
++					port := fields[fwpmConditionIPRemotePort]
++					if port.conditionValue.value < 5353 || port.conditionValue.value > 5355 {
++						t.Fatal("unscoped discovery")
++					}
++					if port.matchType == fwpMatchEqual && port.conditionValue.value != 5354 && fields[fwpmConditionIPRemoteAddress].matchType != 10 {
++						t.Fatal("missing multicast exception")
++					}
++				}
++			} else {
++				if _, core := fields[fwpmConditionALEAppID]; !core || fields[fwpmConditionIPRemotePort].conditionValue.value != 53 {
++					t.Fatal("unscoped port 53 block")
++				}
++			}
++			count++
++			return nil
++		})
++		want := 32
++		if encrypted {
++			want = 80
++		}
++		if err != nil || count != want {
++			t.Fatalf("installed %d/%d: %v", count, want, err)
++		}
++	}
++	failed := errors.New("cannot add filter")
++	if err := desktopDNSBlocks(17, new(fwpByteBlob), true, func(*windows.GUID, []fwpmFilterCondition0) error { return failed }); err != failed {
++		t.Fatal("ignored failed installation")
++	}
++}
+diff --git a/proxy/tun/tun_windows_wfp.go b/proxy/tun/tun_windows_wfp.go
+index 86278c8..0ba9bd0 100644
+--- a/proxy/tun/tun_windows_wfp.go
++++ b/proxy/tun/tun_windows_wfp.go
+@@ -366,6 +366,10 @@ const (
+ // The filters live in a dynamic WFP session: closing the returned engine handle
+ // with closeWFPEngine deletes them, and so does Windows when the process dies.
+ func blockLeaks(tun winipcfg.LUID, block leakFilters) (windows.Handle, error) {
++	return installWFPSession(func(engine windows.Handle) error { return addLeakFilters(engine, tun, block) })
++}
++
++func installWFPSession(install func(windows.Handle) error) (windows.Handle, error) {
+ 	engine, err := openWFPEngine()
+ 	if err != nil {
+ 		return 0, err
+@@ -374,7 +378,7 @@ func blockLeaks(tun winipcfg.LUID, block leakFilters) (windows.Handle, error) {
+ 		closeWFPEngine(engine)
+ 		return 0, errors.New("FwpmTransactionBegin0 failed").Base(err)
+ 	}
+-	err = addLeakFilters(engine, tun, block)
++	err = install(engine)
+ 	if err == nil {
+ 		if err = fwpmResult(procFwpmTransactionCommit0.Call(uintptr(engine))); err != nil {
+ 			err = errors.New("FwpmTransactionCommit0 failed").Base(err)

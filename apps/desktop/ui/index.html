@@ -28,6 +28,9 @@
   </form>
   <h2 class="section-title">连接设置</h2>
   <div class="row"><label for="proxy">系统代理</label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
+  <div class="row"><div><label for="tun">TUN 模式</label><p id="tun-hint">接管整台电脑的网络，需要管理员权限</p></div>
+    <input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled>
+  </div>
   <div class="row"><div><label for="mode">分流模式</label><p id="mode-hint" hidden>断开后可更改模式</p></div>
     <select id="mode"><option value="split">绕过大陆</option><option value="global">全局代理</option></select>
   </div>

@@ -53,7 +53,7 @@ func subscriptionEndpoint(out *core.OutboundHandlerConfig) (xnet.Destination, er
 	return xnet.TCPDestination(endpoint.Address.AsAddress(), xnet.Port(endpoint.Port)), nil
 }
 
-func runSubscription(sourceID, nodeID, mode string) string {
+func runSubscription(sourceID, nodeID, mode string, packets *packetSession) string {
 	fmt.Println("connecting")
 	n, err := subscriptionNode(sourceID, nodeID)
 	if err != nil {
@@ -77,16 +77,17 @@ func runSubscription(sourceID, nodeID, mode string) string {
 	}
 
 	var instance *core.Instance
-	socks, httpPort, err := listenProxy(mode, func(cfg *core.Config) error {
+	socks, httpPort, err := listenProxy(mode, packets, func(cfg *core.Config) error {
+		if err := packets.configure(cfg, mode); err != nil {
+			return err
+		}
 		cfg.Outbound[0] = out
 		var err error
 		instance, err = core.New(cfg)
 		if err != nil {
 			return err
 		}
-		if mode == "split" {
-			err = installSplitDNS(instance)
-		}
+		err = packets.setup(instance, mode)
 		if err == nil {
 			err = instance.Start()
 		}
@@ -96,6 +97,9 @@ func runSubscription(sourceID, nodeID, mode string) string {
 		return err
 	})
 	if err != nil {
+		if code := tunErrorCode(err); code != "" {
+			return code
+		}
 		if errors.Is(err, errPort) {
 			return "local_port"
 		}
@@ -122,7 +126,11 @@ func runSubscription(sourceID, nodeID, mode string) string {
 		}
 		conn, err = dialer.Dial(ctx, endpoint)
 	default:
-		conn, err = (&net.Dialer{}).DialContext(ctx, "tcp", endpoint.NetAddr())
+		dialer := &net.Dialer{}
+		if packets != nil {
+			dialer.Control = physicalSocket
+		}
+		conn, err = dialer.DialContext(ctx, "tcp", endpoint.NetAddr())
 	}
 	if err != nil {
 		return "node_unreachable"
@@ -130,6 +138,17 @@ func runSubscription(sourceID, nodeID, mode string) string {
 	conn.Close()
 	cancel()
 	fmt.Printf("ready:subscription:%d:%d\n", socks, httpPort)
-	// The parent owns this single-session process via its inherited stdin.
-	select {}
+	if packets == nil {
+		select {}
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-packets.done():
+			return "tun_session"
+		case <-ticker.C:
+			packets.networkChanged()
+		}
+	}
 }

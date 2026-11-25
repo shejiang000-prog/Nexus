@@ -30,9 +30,16 @@ import (
 type splitDNS struct {
 	instance *core.Instance
 	physical func(context.Context, string) (net.Conn, error)
+	packet   *packetSession
+	learn    bool
 }
 
-func (*splitDNS) Tag() string                          { return "split-dns" }
+func (h *splitDNS) Tag() string {
+	if h.packet != nil {
+		return "tun-dns"
+	}
+	return "split-dns"
+}
 func (*splitDNS) Start() error                         { return nil }
 func (*splitDNS) Close() error                         { return nil }
 func (*splitDNS) SenderSettings() *serial.TypedMessage { return nil }
@@ -75,6 +82,10 @@ func queryName(p []byte) string {
 // Use an up hardware adapter's configured DNS and pin this socket to its
 // interface. This does not modify any adapter, routing table or system DNS.
 func dialPhysicalDNS(ctx context.Context, network string) (net.Conn, error) {
+	return dialAdapterDNS(ctx, network, nil)
+}
+
+func dialAdapterDNS(ctx context.Context, network string, paths *physicalRoutes) (net.Conn, error) {
 	size := uint32(15 * 1024)
 	var data []byte
 	var first *windows.IpAdapterAddresses
@@ -98,6 +109,9 @@ func dialPhysicalDNS(ctx context.Context, network string) (net.Conn, error) {
 		for d := a.FirstDnsServerAddress; d != nil; d = d.Next {
 			ip := d.Address.IP()
 			if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
+				continue
+			}
+			if paths != nil && (ip.To4() != nil && a.IfIndex != paths.ipv4.index || ip.To4() == nil && a.Ipv6IfIndex != paths.ipv6.index) {
 				continue
 			}
 			host := ip.String()
@@ -127,7 +141,7 @@ func dialPhysicalDNS(ctx context.Context, network string) (net.Conn, error) {
 	return nil, errors.New("physical DNS unavailable")
 }
 
-func (h *splitDNS) exchange(ctx context.Context, dest xnet.Destination, query []byte) ([]byte, error) {
+func (h *splitDNS) exchange(ctx context.Context, dest xnet.Destination, query []byte) (reply []byte, result error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	r := h.instance.GetFeature(routing.RouterType()).(routing.Router)
@@ -135,14 +149,38 @@ func (h *splitDNS) exchange(ctx context.Context, dest xnet.Destination, query []
 	if name := queryName(query); name != "" {
 		// Reuse the same compiled domain matcher as HTTP and SOCKS. Port 80
 		// avoids the port 53 intercept; AsIs never resolves an unmatched name.
-		route, err := r.PickRoute(&routesession.Context{Outbound: &session.Outbound{Target: xnet.TCPDestination(xnet.DomainAddress(name), 80)}})
+		var in *session.Inbound
+		if h.packet != nil {
+			in = &session.Inbound{Tag: "tun-question"}
+		}
+		route, err := r.PickRoute(&routesession.Context{Inbound: in, Outbound: &session.Outbound{Target: xnet.TCPDestination(xnet.DomainAddress(name), 80)}})
 		domestic = err == nil && route.GetOutboundTag() == "direct"
 	}
 	var conn net.Conn
 	var err error
 	if domestic {
+		if h.learn {
+			epoch := h.packet.epoch()
+			defer func() {
+				if result == nil {
+					h.packet.remember(epoch, query, reply)
+				}
+			}()
+		}
 		conn, err = h.physical(ctx, dest.Network.SystemString())
 	} else {
+		// A remote exit cannot use a physical LAN resolver. Preserve an
+		// explicit public destination and the isolated test resolver.
+		if h.packet != nil && h.packet.mode == "full" && dest.Address.Family().IsIP() {
+			ip := dest.Address.IP()
+			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				if ip.To4() != nil {
+					dest.Address = xnet.ParseAddress("1.1.1.1")
+				} else {
+					dest.Address = xnet.ParseAddress("2606:4700:4700::1111")
+				}
+			}
+		}
 		ctx = session.ContextWithContent(ctx, &session.Content{})
 		ctx = session.ContextWithOutbounds(ctx, nil)
 		conn, err = core.Dial(session.SetForcedOutboundTagToContext(ctx, "selected"), h.instance, dest)

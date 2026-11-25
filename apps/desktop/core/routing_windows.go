@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	_ "embed"
 	"errors"
 	"net/netip"
@@ -19,7 +18,6 @@ import (
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
-	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/proxy/blackhole"
 	"github.com/xtls/xray-core/proxy/freedom"
 	"github.com/xtls/xray-core/proxy/http"
@@ -113,14 +111,9 @@ func proxyConfig(socksPort, httpPort int, mode string) (*core.Config, error) {
 	return cfg, nil
 }
 
-func startProxy(cfg *core.Config, client *mobile.Client, mode string) (*v2vpn.Session, error) {
-	if mode == "global" {
-		return v2vpn.StartConfig(cfg, client)
+func startProxy(cfg *core.Config, client *mobile.Client, mode string, packets *packetSession) (*v2vpn.Session, error) {
+	if err := packets.configure(cfg, mode); err != nil {
+		return nil, err
 	}
-	return v2vpn.StartWithSetup(cfg, client, installSplitDNS)
-}
-
-func installSplitDNS(instance *core.Instance) error {
-	manager := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
-	return manager.AddHandler(context.Background(), &splitDNS{instance: instance, physical: dialPhysicalDNS})
+	return v2vpn.StartWithSetup(cfg, client, func(instance *core.Instance) error { return packets.setup(instance, mode) })
 }

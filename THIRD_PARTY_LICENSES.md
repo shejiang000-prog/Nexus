@@ -1,5 +1,15 @@
 # 第三方许可证清单
 
+## Windows TUN
+
+| 组件 | 固定版本及摘要 | 随包许可 |
+| --- | --- | --- |
+| Wintun AMD64 DLL | 0.14.1，SHA-256 `e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce`，发行包 SHA-256 `07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51` | WireGuard LLC **Prebuilt Binaries License**。随使用公开 Wintun API 的程序分发未修改的官方 DLL 和完整的 `Wintun-LICENSE.txt`。[官方发布](https://www.wintun.net/) |
+| Go Wintun API | `v0.0.0-20230126152724-0fa3db229ce2`，`h1:B82qJJgjvYKsXS9jeunTOisW56dUokqW/FOteYJJ/yg=` | MIT。[完整许可](assets/licenses/wintun-go/LICENSE) |
+| WireGuard for Windows 的 winipcfg | `v1.1.1`，`h1:8/H97U1v1PNDNcBsMZgU3KFuND9MQdTsU2NOwmCXArE=` | MIT。[完整许可](assets/licenses/wireguard-windows/COPYING) |
+
+## 其他组件
+
 Android 数字字体 Space Grotesk 依 SIL Open Font License 1.1 分发。版权与完整许可见 `assets/licenses/space-grotesk/OFL.txt`。[官方字体文件](https://github.com/google/fonts/tree/main/ofl/spacegrotesk)
 
 以下为两个 Cargo.lock 解析的注册包，包含构建依赖及非当前目标的条件分支。版本、SPDX 或上游许可文件来自对应 Cargo 包元数据。

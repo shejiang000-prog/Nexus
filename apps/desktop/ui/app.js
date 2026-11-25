@@ -32,10 +32,18 @@ const messages = {
   subscription_format: "链接或订阅格式不受支持，或内容超出限制。",
   subscription_storage: "无法读取或保存订阅，请检查本机用户资料。",
   subscription_changed: "订阅或节点已变更，请重新选择。",
+  tun_admin: "未获得管理员权限。请在 Windows 授权提示中选择允许，或关闭 TUN 模式后连接。",
+  tun_driver: "无法加载 Wintun 驱动。请检查安装包中的驱动文件后重试。",
+  tun_conflict: "TUN 与现有虚拟网卡或路由冲突。请先关闭其他应用的 TUN 模式，再重试。",
+  tun_session: "TUN 数据通道已中断，请检查网络或其他 VPN 的状态后重新连接。",
+  tun_recovery: "未能恢复上次 TUN 会话的网络设置。请重新打开 Nexus 并允许恢复。",
+  tun_version: "核心程序未确认支持 TUN。请使用与桌面程序同一版本的 nexus-core.exe 后重试。",
+  tun_recovering: "正在检查上次 TUN 会话，请稍后再连接。",
   generic: "操作失败，请检查本机设备记录和节点授权。"
 };
 const proxy = $("proxy");
 const mode = $("mode");
+const tun = $("tun");
 const toggle = $("toggle");
 const invite = $("invite");
 proxy.checked = localStorage.getItem("systemProxy") !== "off";
@@ -60,7 +68,7 @@ const connected = state => state === "h2" || state === "h3" || state === "subscr
 const running = state => connected(state) || state === "connecting" || state === "stopping";
 
 function render() {
-  const [state, socks, http, enabled, notice] = snapshot;
+  const [state, socks, http, enabled, notice, sessionTun] = snapshot;
   const ready = connected(state);
   const active = running(state);
   const label = state === "subscription" ? "代理已就绪" : ready ? "已连接" : ({stopped:"未连接", connecting:"连接中", stopping:"正在断开"})[state] || "连接失败";
@@ -81,7 +89,11 @@ function render() {
     $("socks").textContent = "127.0.0.1:" + socks;
     $("http").textContent = "127.0.0.1:" + http;
   }
-  if (active) proxy.checked = enabled;
+  if (active) {
+    proxy.checked = enabled;
+    tun.checked = sessionTun;
+  }
+  tun.disabled = active || busy || !invoke;
   toggle.textContent = active ? "断开" : "连接";
   toggle.disabled = busy || state === "stopping" || !invoke || (!active && fromSubscription && (!node || subBusy));
   subControls();
@@ -138,7 +150,7 @@ $("connection-form").addEventListener("submit", event => {
       const selection = source.value === "subscription"
         ? {source:"subscription", subscriptionId:chosenSub, nodeId:chosenNode}
         : {source:"v2", invite:invite.value.trim()};
-      await invoke("start_core", {...selection, mode:mode.value, proxy:proxy.checked});
+      await invoke("start_core", {...selection, mode:mode.value, proxy:proxy.checked, tun:tun.checked});
       if (selection.source === "v2") invite.value = "";
     }
   });

@@ -32,7 +32,7 @@ func reservePort(preferred int) (*net.TCPListener, error) {
 	return ln, err
 }
 
-func listenProxy(mode string, start func(*core.Config) error) (int, int, error) {
+func listenProxy(mode string, packets *packetSession, start func(*core.Config) error) (int, int, error) {
 	// Hold both reservations until the fixed Xray configuration is built. A
 	// competing process can still win the handoff; retry the actual bind.
 	for attempt := 0; attempt < 3; attempt++ {
@@ -59,11 +59,16 @@ func listenProxy(mode string, start func(*core.Config) error) (int, int, error) 
 		if !errors.Is(err, windows.WSAEADDRINUSE) && !errors.Is(err, windows.WSAEACCES) {
 			return 0, 0, err
 		}
+		// A bind race after elevation rolls back the adapter. A second helper
+		// would prompt for UAC twice during the same connection attempt.
+		if packets != nil && packets.device != nil {
+			return 0, 0, errPort
+		}
 	}
 	return 0, 0, errPort
 }
 
-func run(invite, mode string) error {
+func run(invite, mode string, packets *packetSession) error {
 	fmt.Println("connecting")
 	d, err := loadDevice(invite)
 	if err != nil {
@@ -78,9 +83,9 @@ func run(invite, mode string) error {
 		return err
 	}
 	var session *v2vpn.Session
-	socks, http, err := listenProxy(mode, func(cfg *core.Config) error {
+	socks, http, err := listenProxy(mode, packets, func(cfg *core.Config) error {
 		var err error
-		session, err = startProxy(cfg, client, mode)
+		session, err = startProxy(cfg, client, mode, packets)
 		return err
 	})
 	if err != nil {
@@ -90,7 +95,30 @@ func run(invite, mode string) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	last := ""
+	reconnecting := false
 	for {
+		if packets.networkChanged() {
+			client.RefreshNetwork()
+			reconnecting = true
+			if last != "" {
+				fmt.Println("connecting")
+				last = ""
+			}
+		}
+		if reconnecting {
+			if err := client.Confirm(); err != nil {
+				if code := mobile.ErrorCode(err); code == 2 || code == 3 {
+					return err
+				}
+				select {
+				case <-packets.done():
+					return errPacketSession
+				case <-ticker.C:
+					continue
+				}
+			}
+			reconnecting = false
+		}
 		lane := client.State()
 		if lane != "h2" && lane != "h3" {
 			return errors.New("session stopped")
@@ -107,11 +135,15 @@ func run(invite, mode string) error {
 			fmt.Printf("ready:%s:%d:%d\n", lane, socks, http)
 			last = lane
 		}
-		<-ticker.C
+		select {
+		case <-packets.done():
+			return errPacketSession
+		case <-ticker.C:
+		}
 	}
 }
 
-func command() string {
+func command() (result string) {
 	const maxCommand = 3<<20 + 4096
 	input := bufio.NewReader(io.LimitReader(os.Stdin, maxCommand+1))
 	line, err := input.ReadBytes('\n')
@@ -120,6 +152,7 @@ func command() string {
 		Expected       string  `json:"expected"`
 		Invite         *string `json:"invite"`
 		Mode           string  `json:"mode"`
+		Tun            bool    `json:"tun"`
 		URL            string  `json:"url"`
 		ID             string  `json:"id"`
 		Source         string  `json:"source"`
@@ -145,7 +178,9 @@ func command() string {
 		}
 		fmt.Println("removed")
 		return ""
-	case "", "start":
+	case "recover_tun":
+		return recoverTunCommand()
+	case "", "start", "start_test_tun":
 		if req.Source == "subscription" {
 			if req.Invite != nil && *req.Invite != "" || !validSourceID(req.SubscriptionID) || !validSourceID(req.NodeID) {
 				return "invalid_request"
@@ -163,11 +198,49 @@ func command() string {
 		return "invalid_request"
 	}
 	// Only the command is size-limited. A full command cannot synthesize a stop.
-	go func() { io.Copy(io.Discard, os.Stdin); os.Exit(0) }()
-	if req.Source == "subscription" {
-		return runSubscription(req.SubscriptionID, req.NodeID, req.Mode)
+	stopping := make(chan struct{})
+	go func() {
+		io.Copy(io.Discard, os.Stdin)
+		close(stopping)
+		if err := closeTunOnStop(); err != nil {
+			fmt.Println("error:tun_recovery")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}()
+	takeover := ""
+	if req.Action == "start_test_tun" {
+		takeover = "test"
+	} else if req.Tun {
+		takeover = "full"
 	}
-	if err := run(*req.Invite, req.Mode); err != nil {
+	packets, err := newPacketSession(takeover)
+	if err != nil {
+		return "tun_session"
+	}
+	if packets != nil {
+		defer func() {
+			// During a requested stop the stdin watcher owns the final status.
+			select {
+			case <-stopping:
+				select {}
+			default:
+			}
+			if closeTunOnStop() != nil {
+				result = "tun_recovery"
+			}
+		}()
+	}
+	if req.Source == "subscription" {
+		return runSubscription(req.SubscriptionID, req.NodeID, req.Mode, packets)
+	}
+	if err := run(*req.Invite, req.Mode, packets); err != nil {
+		if code := tunErrorCode(err); code != "" {
+			return code
+		}
+		if errors.Is(err, errPacketSession) {
+			return "tun_session"
+		}
 		if errors.Is(err, errPort) {
 			return "local_port"
 		}
