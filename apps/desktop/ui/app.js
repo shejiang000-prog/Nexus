@@ -63,6 +63,8 @@ const messages = {
   update_cleanup: "网络设置尚未恢复。请先断开连接并关闭其他 Nexus 窗口。",
   update_install: "无法启动安装程序，请重试。",
   probe_unsupported: "当前版本暂不支持测速。",
+  probe_busy: "正在测速，请稍候。",
+  probe_failed: "测速未完成，请重试。",
   generic: "操作失败，请检查本机设备记录和节点授权。"
 };
 const protocolName = protocol => ({hysteria:"Hysteria2", vless:"VLESS", vmess:"VMess", trojan:"Trojan", shadowsocks:"Shadowsocks"})[protocol] || String(protocol).toUpperCase();
@@ -216,9 +218,11 @@ async function sampleTraffic() {
       tweenRates(rate);
     }
     lastSample = {time:now, up, down};
-  } catch {
-    trafficSupported = false;
-    render();
+  } catch (err) {
+    // A poll can race a disconnect; only a missing command disables the panel.
+    history.length = 0;
+    lastSample = null;
+    if (err !== "not_connected") { trafficSupported = false; render(); }
   }
 }
 setInterval(sampleTraffic, 1000);
