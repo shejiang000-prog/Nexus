@@ -18,6 +18,8 @@
       <button id="toggle" type="submit" disabled>连接</button>
     </div>
     <p id="feedback" role="alert" hidden></p>
+    <div class="source-picker"><label for="source">连接来源</label><select id="source"><option value="v2">我的 V2 节点</option><option value="subscription">订阅节点</option></select></div>
+    <div id="selected-sub" hidden><span id="selected-node"></span> <a href="#subscriptions">选择节点</a></div>
     <div id="enrollment"><label for="invite">V2 邀请链接</label>
       <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴邀请链接" aria-describedby="invite-hint">
       <p id="invite-hint">首次连接需要邀请。已登记设备可留空。</p>
@@ -29,7 +31,7 @@
   <div class="row"><div><label for="mode">分流模式</label><p id="mode-hint" hidden>断开后可更改模式</p></div>
     <select id="mode"><option value="split">绕过大陆</option><option value="global">全局代理</option></select>
   </div>
-  <div class="row"><div><h3>当前已登记节点</h3><p id="identity">读取中…</p></div>
+  <div class="row"><div><h3>已登记的 V2 节点</h3><p id="identity">读取中…</p></div>
     <button id="remove" type="button" hidden>移除此设备身份</button>
   </div>
   <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
@@ -37,7 +39,23 @@
     <form method="dialog"><button value="cancel" autofocus>取消</button><button value="remove" class="danger">确认移除</button></form>
   </dialog>
 </section>
-<section id="subscriptions" hidden><h1 tabindex="-1">我的订阅</h1><p>暂未支持</p></section>
+<section id="subscriptions" hidden>
+  <h1 tabindex="-1">我的订阅</h1>
+  <form id="import-form"><label for="subscription-url">订阅或节点链接</label>
+    <div class="sub-actions"><input type="password" id="subscription-url" maxlength="524288" autocomplete="off" spellcheck="false" placeholder="粘贴完整链接" required><button type="submit" id="add-sub">添加</button></div>
+  </form>
+  <p id="sub-feedback" role="status"></p>
+  <p id="sub-empty">正在读取订阅…</p>
+  <div id="sub-details" hidden>
+    <div class="sub-heading"><h2 class="section-title"><label for="sub-list">已添加的订阅</label></h2><select id="sub-list"></select></div>
+    <div class="row"><p id="sub-meta"></p><div class="sub-actions"><button id="refresh-sub">刷新</button><button id="delete-sub" class="danger">删除</button></div></div>
+    <label for="node-list" class="node-label">节点列表</label><select id="node-list" size="6"></select>
+    <div class="node-footer"><p id="selected-hint"></p><button id="use-node">使用此节点</button></div>
+  </div>
+  <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除此订阅？</h2><p id="delete-hint"></p>
+    <form method="dialog"><button value="cancel" autofocus>取消</button><button value="delete" class="danger">确认删除</button></form>
+  </dialog>
+</section>
 <section id="servers" hidden><h1 tabindex="-1">我的服务器</h1><p>暂未支持</p></section>
 <section id="shared" hidden><h1 tabindex="-1">朋友分享</h1><p>暂未支持</p></section>
 </main></body></html>

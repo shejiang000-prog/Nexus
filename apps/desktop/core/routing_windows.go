@@ -117,8 +117,10 @@ func startProxy(cfg *core.Config, client *mobile.Client, mode string) (*v2vpn.Se
 	if mode == "global" {
 		return v2vpn.StartConfig(cfg, client)
 	}
-	return v2vpn.StartWithSetup(cfg, client, func(instance *core.Instance) error {
-		manager := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
-		return manager.AddHandler(context.Background(), &splitDNS{instance: instance, physical: dialPhysicalDNS})
-	})
+	return v2vpn.StartWithSetup(cfg, client, installSplitDNS)
+}
+
+func installSplitDNS(instance *core.Instance) error {
+	manager := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
+	return manager.AddHandler(context.Background(), &splitDNS{instance: instance, physical: dialPhysicalDNS})
 }

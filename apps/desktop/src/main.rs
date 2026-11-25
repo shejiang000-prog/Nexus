@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod subscriptions;
 mod system_proxy;
 
 use std::{
@@ -60,6 +61,10 @@ fn error_label(line: &str) -> &'static str {
         "error:local_port" => "local_port",
         "error:no_identity" => "no_identity",
         "error:routing" => "routing",
+        "error:subscription_changed" => "subscription_changed",
+        "error:subscription_download" => "subscription_download",
+        "error:subscription_format" => "subscription_format",
+        "error:subscription_storage" => "subscription_storage",
         _ => "generic",
     }
 }
@@ -72,6 +77,7 @@ fn ready(line: &str) -> Option<(&'static str, u16, u16)> {
     let lane = match parts.next()? {
         "h3" => "h3",
         "h2" => "h2",
+        "subscription" => "subscription",
         _ => return None,
     };
     let socks = parts.next()?.parse().ok()?;
@@ -138,17 +144,38 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
     let InvokeBody::Json(body) = request.body() else {
         return Err("invite_invalid");
     };
-    let invite = body
-        .get("invite")
-        .filter(|v| {
-            v.as_str()
-                .is_some_and(|s| s.len() <= 16384 && !s.contains(['\r', '\n']))
-        })
-        .ok_or("invite_invalid")?;
     let mode = match body.get("mode").and_then(|v| v.as_str()) {
         Some("split") => "split",
         Some("global") => "global",
         _ => return Err("routing"),
+    };
+    let line = match body.get("source").and_then(|v| v.as_str()).unwrap_or("v2") {
+        "v2" => {
+            let invite = body
+                .get("invite")
+                .filter(|v| {
+                    v.as_str()
+                        .is_some_and(|s| s.len() <= 16384 && !s.contains(['\r', '\n']))
+                })
+                .ok_or("invite_invalid")?;
+            format!(r#"{{"invite":{invite},"mode":"{mode}"}}"#)
+        }
+        "subscription" => {
+            let id = body
+                .get("subscriptionId")
+                .and_then(|v| v.as_str())
+                .filter(|id| subscriptions::valid_id(id))
+                .ok_or("subscription_changed")?;
+            let node = body
+                .get("nodeId")
+                .and_then(|v| v.as_str())
+                .filter(|id| subscriptions::valid_id(id))
+                .ok_or("subscription_changed")?;
+            format!(
+                r#"{{"action":"start","source":"subscription","subscriptionId":"{id}","nodeId":"{node}","mode":"{mode}"}}"#
+            )
+        }
+        _ => return Err("subscription_changed"),
     };
     let proxy = body
         .get("proxy")
@@ -160,7 +187,7 @@ fn start_core(request: Request<'_>) -> Result<(), &'static str> {
     }
     let mut child = spawn_core()?;
     let mut input = child.stdin.take().unwrap();
-    if writeln!(input, "{{\"invite\":{invite},\"mode\":\"{mode}\"}}").is_err() {
+    if writeln!(input, "{line}").is_err() {
         drop(input);
         let _ = child.kill();
         let _ = child.wait();
@@ -275,7 +302,8 @@ fn main() {
             stop_core,
             core_status,
             set_proxy,
-            device_identity
+            device_identity,
+            subscriptions::subscriptions
         ])
         .build(tauri::generate_context!())
         .expect("desktop initialization failed")

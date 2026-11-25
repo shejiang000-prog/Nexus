@@ -28,6 +28,10 @@ const messages = {
   "proxy-busy": "另一个 Nexus 窗口正在管理系统代理。",
   "proxy-changed": "系统代理已由其他程序修改，已保留当前设置。",
   "proxy-error": "系统代理设置或恢复失败。请检查权限，必要时重新启动 Nexus 以重试恢复。",
+  subscription_download: "订阅下载失败，请检查链接和网络，然后重试。",
+  subscription_format: "链接或订阅格式不受支持，或内容超出限制。",
+  subscription_storage: "无法读取或保存订阅，请检查本机用户资料。",
+  subscription_changed: "订阅或节点已变更，请重新选择。",
   generic: "操作失败，请检查本机设备记录和节点授权。"
 };
 const proxy = $("proxy");
@@ -44,20 +48,34 @@ let identityToken = "";
 let removingToken = "";
 let localError = "";
 let previous = null;
-const connected = state => state === "h2" || state === "h3";
+const source = $("source");
+source.value = localStorage.getItem("connectionSource") === "subscription" ? "subscription" : "v2";
+let chosenSub = localStorage.getItem("chosenSubscription") || "";
+let chosenNode = localStorage.getItem("chosenNode") || "";
+let catalog = [];
+let subBusy = false;
+let loaded = false;
+let deletingId = "";
+const connected = state => state === "h2" || state === "h3" || state === "subscription";
 const running = state => connected(state) || state === "connecting" || state === "stopping";
 
 function render() {
   const [state, socks, http, enabled, notice] = snapshot;
   const ready = connected(state);
   const active = running(state);
-  const label = ready ? "已连接" : ({stopped:"未连接", connecting:"连接中", stopping:"正在断开"})[state] || "连接失败";
+  const label = state === "subscription" ? "代理已就绪" : ready ? "已连接" : ({stopped:"未连接", connecting:"连接中", stopping:"正在断开"})[state] || "连接失败";
   if ($("status").textContent !== label) $("status").textContent = label;
-  $("route").textContent = ready ? "当前线路 · " + state.toUpperCase() : "";
   const error = localError || messages[state] || messages[notice] || "";
   if ($("feedback").textContent !== error) $("feedback").textContent = error;
   $("feedback").hidden = !error;
-  $("enrollment").hidden = active;
+  const fromSubscription = source.value === "subscription";
+  const selected = catalog.find(sub => sub.id === chosenSub);
+  const node = selected?.nodes.find(item => item[0] === chosenNode);
+  source.disabled = active || busy;
+  $("enrollment").hidden = active || fromSubscription;
+  $("route").textContent = state === "subscription" ? "当前节点 · " + (node?.[1] || "订阅节点") : ready ? "当前线路 · " + state.toUpperCase() : "";
+  $("selected-sub").hidden = !fromSubscription || active;
+  $("selected-node").textContent = node ? selected.name + " · " + node[1] : loaded ? "尚未选择节点" : "正在读取订阅…";
   $("ports").hidden = !ready;
   if (ready) {
     $("socks").textContent = "127.0.0.1:" + socks;
@@ -65,7 +83,8 @@ function render() {
   }
   if (active) proxy.checked = enabled;
   toggle.textContent = active ? "断开" : "连接";
-  toggle.disabled = busy || state === "stopping" || !invoke;
+  toggle.disabled = busy || state === "stopping" || !invoke || (!active && fromSubscription && (!node || subBusy));
+  subControls();
   proxy.disabled = busy || state === "stopping" || !invoke;
   mode.disabled = active || busy;
   $("mode-hint").hidden = !active;
@@ -116,8 +135,11 @@ $("connection-form").addEventListener("submit", event => {
   act(async () => {
     if (running(snapshot[0])) await invoke("stop_core");
     else {
-      await invoke("start_core", {invite:invite.value.trim(), mode:mode.value, proxy:proxy.checked});
-      invite.value = "";
+      const selection = source.value === "subscription"
+        ? {source:"subscription", subscriptionId:chosenSub, nodeId:chosenNode}
+        : {source:"v2", invite:invite.value.trim()};
+      await invoke("start_core", {...selection, mode:mode.value, proxy:proxy.checked});
+      if (selection.source === "v2") invite.value = "";
     }
   });
 });
@@ -150,4 +172,124 @@ async function refresh() {
   }
   setTimeout(refresh, 750);
 }
+function displayed() {
+  return catalog.find(row => row.id === $("sub-list").value);
+}
+
+function subControls() {
+  const sub = displayed();
+  const active = running(snapshot[0]);
+  const inUse = active && source.value === "subscription" && sub?.id === chosenSub;
+  $("subscription-url").disabled = subBusy;
+  $("add-sub").disabled = subBusy || !invoke;
+  $("sub-list").disabled = subBusy;
+  $("node-list").disabled = subBusy || !sub?.nodes.length;
+  $("refresh-sub").disabled = subBusy || !sub?.refreshable || inUse;
+  $("delete-sub").disabled = subBusy || !sub || inUse;
+  $("use-node").disabled = subBusy || active || busy || !$("node-list").value;
+  $("selected-hint").textContent = active ? "断开连接后可切换节点。" :
+    sub && sub.id === chosenSub && $("node-list").value === chosenNode && source.value === "subscription" ? "首页当前使用此节点" : "";
+}
+
+function showNodes(preferred) {
+  const sub = displayed();
+  const nodes = $("node-list");
+  nodes.replaceChildren();
+  if (sub) {
+    const meta = [sub.nodes.length + " 个节点"];
+    if (sub.remaining !== null && sub.remaining >= 0) {
+      const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+      let amount = sub.remaining, index = 0;
+      while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index++; }
+      meta.push("剩余 " + amount.toLocaleString("zh-CN", {maximumFractionDigits:2}) + " " + units[index]);
+    }
+    if (sub.expire > 0) {
+      const end = new Date(sub.expire * 1000);
+      if (!Number.isNaN(end.valueOf())) meta.push("到期 " + end.toLocaleDateString("zh-CN"));
+    }
+    $("sub-meta").textContent = meta.join("　·　");
+    const fragment = document.createDocumentFragment();
+    for (const [id, name, protocol] of sub.nodes) fragment.append(new Option(name + "　·　" + (protocol === "hysteria" ? "Hysteria2" : protocol.toUpperCase()), id));
+    nodes.size = Math.max(2, Math.min(6, sub.nodes.length));
+    nodes.append(fragment);
+    const desired = preferred || (sub.id === chosenSub ? chosenNode : "");
+    if (sub.nodes.some(node => node[0] === desired)) nodes.value = desired;
+    else if (nodes.length) nodes.selectedIndex = 0;
+  }
+  subControls();
+}
+
+function setCatalog(rows, action) {
+  const previousIds = new Set(catalog.map(s => s.id));
+  const prev = displayed()?.id;
+  const prevNode = $("node-list").value;
+  catalog = rows.map(([id,name,refreshable,remaining,expire,nodes]) => ({id,name,refreshable,remaining,expire,nodes}));
+  loaded = true;
+  const list = $("sub-list");
+  list.replaceChildren(...catalog.map(s => new Option(s.name, s.id)));
+  const added = action === "import_subscription" && catalog.find(s => !previousIds.has(s.id));
+  const next = added || catalog.find(s => s.id === prev) || catalog.find(s => s.id === chosenSub) || catalog[0];
+  if (next) list.value = next.id;
+  $("sub-details").hidden = !catalog.length;
+  $("sub-empty").hidden = !!catalog.length;
+  $("sub-empty").textContent = "尚未添加订阅或节点。";
+  showNodes(next?.id === prev ? prevNode : "");
+}
+
+async function manage(action, fields = {}) {
+  if (subBusy) return;
+  const status = $("sub-feedback");
+  subBusy = true;
+  status.classList.remove("error");
+  status.textContent = {import_subscription:"正在添加…",update_subscription:"正在刷新…",remove_subscription:"正在删除…"}[action] || "";
+  render();
+  try {
+    const rows = await invoke("subscriptions", {action, ...fields});
+    setCatalog(rows, action);
+    if (action === "import_subscription") $("subscription-url").value = "";
+    status.textContent = {import_subscription:"已添加。",update_subscription:"订阅已刷新。",remove_subscription:"已删除。"}[action] || "";
+  } catch (err) {
+    status.textContent = messages[err] || "订阅操作失败，请重试。";
+    status.classList.add("error");
+    if (!loaded) { $("sub-empty").textContent = "订阅列表暂不可用。"; loaded = true; }
+  } finally {
+    subBusy = false;
+    render();
+  }
+}
+
+source.addEventListener("change", () => {
+  localStorage.setItem("connectionSource", source.value);
+  localError = "";
+  render();
+});
+$("import-form").addEventListener("submit", event => {
+  event.preventDefault();
+  if (!$("add-sub").disabled) manage("import_subscription", {url:$("subscription-url").value.trim()});
+});
+$("sub-list").addEventListener("change", () => showNodes(""));
+$("node-list").addEventListener("change", subControls);
+$("refresh-sub").addEventListener("click", () => manage("update_subscription", {id:displayed().id}));
+$("delete-sub").addEventListener("click", () => {
+  const sub = displayed();
+  deletingId = sub.id;
+  $("delete-hint").textContent = "将从本机删除「" + sub.name + "」及其节点。";
+  $("confirm-sub").returnValue = "";
+  $("confirm-sub").showModal();
+});
+$("confirm-sub").addEventListener("close", () => {
+  if ($("confirm-sub").returnValue === "delete") manage("remove_subscription", {id:deletingId});
+});
+$("use-node").addEventListener("click", () => {
+  chosenSub = displayed().id;
+  chosenNode = $("node-list").value;
+  source.value = "subscription";
+  localStorage.setItem("chosenSubscription", chosenSub);
+  localStorage.setItem("chosenNode", chosenNode);
+  localStorage.setItem("connectionSource", source.value);
+  localError = "";
+  location.hash = "home";
+  render();
+});
+manage("subscriptions");
 refresh();

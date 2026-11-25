@@ -17,7 +17,7 @@ nav a[aria-current]{background:var(--active);color:var(--accent);font-weight:650
 nav a:hover{text-decoration:underline}
 main{padding:clamp(20px,4vw,48px);min-width:0}
 main section{max-width:840px}
-h1{font-size:clamp(26px,3vw,36px);margin:0 0 22px;font-weight:650}
+h1{width:fit-content;font-size:clamp(26px,3vw,36px);margin:0 0 22px;font-weight:650}
 h2,h3,p{margin:0}
 p{color:var(--muted)}
 #connection-form{background:var(--panel);padding:20px 24px;border-radius:8px}
@@ -49,3 +49,26 @@ dialog form{margin-top:20px;display:flex;justify-content:flex-end;gap:8px}
 @media(prefers-color-scheme:dark){:root{--base:#151c27;--side:#1c2636;--ink:#eaf1ff;--muted:#b3c1d6;--accent:#91b5ff;--line:#46556c;--active:#283e60;--panel:#1e2b40;--error:#ffaaa3}}
 @media(max-width:730px){body{display:block}aside{padding:12px 16px}.brand{margin:0 0 8px;font-size:18px}.brand img{width:26px;height:26px}nav{display:flex;flex-wrap:wrap}nav a{padding:6px 9px}main{padding:20px}#connection-form{padding:16px}.section-title{margin-top:20px}}
 @media(forced-colors:active){nav a[aria-current],#connection-form{outline:1px solid CanvasText}#toggle{border:1px solid ButtonText}}
+
+.source-picker{display:flex;align-items:center;gap:12px;margin-top:16px}
+#selected-sub{margin-top:8px;color:var(--muted);overflow-wrap:anywhere}
+#selected-sub a{color:var(--accent);white-space:nowrap}
+#subscriptions{max-width:760px}
+#import-form label,.node-label{display:block;margin-bottom:6px;font-weight:600}
+.sub-actions,.node-footer{display:flex;align-items:center;gap:8px}
+#subscription-url{min-width:0;flex:1}
+#add-sub,#use-node{background:var(--accent);border-color:transparent;color:var(--base);font-weight:600;flex:none}
+#sub-feedback{margin:12px 0}
+#sub-feedback:empty{display:none}
+#sub-feedback.error{color:var(--error)}
+#sub-empty{padding:24px 0}
+.sub-heading{margin:24px 0 0}
+.sub-heading h2{margin:0 0 8px}
+#sub-list,#node-list{width:100%;text-overflow:ellipsis}
+.node-label{margin-top:18px}
+#node-list{padding:2px}
+#node-list option{padding:6px 10px}
+.node-footer{justify-content:space-between;margin-top:10px}
+#sub-meta,#selected-hint{font-size:14px;overflow-wrap:anywhere}
+#confirm-sub p{overflow-wrap:anywhere}
+#sub-details .sub-actions{flex:none}

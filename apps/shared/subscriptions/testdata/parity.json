@@ -1,0 +1,270 @@
+[
+  {
+    "case": "links",
+    "input": "Synthetic provider notice\nvless://2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11@ws.node.test:443?security=tls&type=ws&host=cdn.node.test&path=%2Fqa&vendor-note=synthetic#cdn\nssr://ignored\nss://YWVzLTEyOC1nY206b25seS1zeW50aGV0aWM@ss.node.test:8388#ss",
+    "expected": [
+      {
+        "name": "cdn",
+        "protocol": "vless",
+        "outbound": {
+          "protocol": "vless",
+          "settings": {
+            "address": "ws.node.test",
+            "encryption": "none",
+            "id": "2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11",
+            "port": 443
+          },
+          "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "cdn.node.test"
+            },
+            "wsSettings": {
+              "host": "cdn.node.test",
+              "path": "/qa"
+            }
+          },
+          "tag": "selected"
+        }
+      },
+      {
+        "name": "ss",
+        "protocol": "shadowsocks",
+        "outbound": {
+          "protocol": "shadowsocks",
+          "settings": {
+            "address": "ss.node.test",
+            "method": "aes-128-gcm",
+            "password": "only-synthetic",
+            "port": 8388
+          },
+          "tag": "selected"
+        }
+      }
+    ]
+  },
+  {
+    "case": "base64",
+    "input": "dmxlc3M6Ly8yZjBkNmMwZS02ZDRiLTRmNDMtOWMzOS04ZjFlNmEzYzFkMTFAd3Mubm9kZS50ZXN0OjQ0Mz9zZWN1cml0eT10bHMmdHlwZT13cyZob3N0PWNkbi5ub2RlLnRlc3QmcGF0aD0lMkZxYSZ2ZW5kb3Itbm90ZT1zeW50aGV0aWMjY2RuCnZtZXNzOi8vZXlKMklqb2dJaklpTENBaWNITWlPaUFpYkdWbllXTjVJaXdnSW1Ga1pDSTZJQ0oyYlM1dWIyUmxMblJsYzNRaUxDQWljRzl5ZENJNklDSTBORE1pTENBaWFXUWlPaUFpTW1Zd1pEWmpNR1V0Tm1RMFlpMDBaalF6TFRsak16a3RPR1l4WlRaaE0yTXhaREV4SWl3Z0ltRnBaQ0k2SUNJd0lpd2dJbTVsZENJNklDSjNjeUlzSUNKMGVYQmxJam9nSW01dmJtVWlMQ0FpYUc5emRDSTZJQ0pqWkc0dWRtMHVkR1Z6ZENJc0lDSndZWFJvSWpvZ0lpOTJiU0lzSUNKMGJITWlPaUFpZEd4ekluMD0",
+    "expected": [
+      {
+        "name": "cdn",
+        "protocol": "vless",
+        "outbound": {
+          "protocol": "vless",
+          "settings": {
+            "address": "ws.node.test",
+            "encryption": "none",
+            "id": "2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11",
+            "port": 443
+          },
+          "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "cdn.node.test"
+            },
+            "wsSettings": {
+              "host": "cdn.node.test",
+              "path": "/qa"
+            }
+          },
+          "tag": "selected"
+        }
+      },
+      {
+        "name": "legacy",
+        "protocol": "vmess",
+        "outbound": {
+          "protocol": "vmess",
+          "settings": {
+            "address": "vm.node.test",
+            "id": "2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11",
+            "port": 443,
+            "security": "auto"
+          },
+          "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "cdn.vm.test"
+            },
+            "wsSettings": {
+              "host": "cdn.vm.test",
+              "path": "/vm"
+            }
+          },
+          "tag": "selected"
+        }
+      }
+    ]
+  },
+  {
+    "case": "clash",
+    "input": "proxies:\n  - name: reality\n    type: vless\n    server: reality.node.test\n    port: 443\n    uuid: 2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11\n    flow: xtls-rprx-vision\n    servername: reality.test\n    client-fingerprint: chrome\n    reality-opts: {public-key: S3eQqL-hHNPrWVR81GK0BpMPJon4Fbp9HvyOq5sBe0M, short-id: 0123}\n  - {name: password, type: trojan, server: tr.node.test, port: 443, password: 1_000}\n  - {name: hopping, type: hysteria2, server: hy.node.test, port: 443, ports: 20000-20010, hop-interval: 30, password: synthetic, obfs: salamander, obfs-password: fake}\n  - {name: grpc, type: vmess, server: grpc.node.test, port: 443, uuid: 2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11, network: grpc, grpc-opts: {grpc-service-name: qa}, tls: true}\n",
+    "expected": [
+      {
+        "name": "reality",
+        "protocol": "vless",
+        "outbound": {
+          "protocol": "vless",
+          "settings": {
+            "address": "reality.node.test",
+            "encryption": "none",
+            "flow": "xtls-rprx-vision",
+            "id": "2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11",
+            "port": 443
+          },
+          "streamSettings": {
+            "network": "raw",
+            "realitySettings": {
+              "fingerprint": "chrome",
+              "password": "S3eQqL-hHNPrWVR81GK0BpMPJon4Fbp9HvyOq5sBe0M",
+              "serverName": "reality.test",
+              "shortId": "0123"
+            },
+            "security": "reality"
+          },
+          "tag": "selected"
+        }
+      },
+      {
+        "name": "password",
+        "protocol": "trojan",
+        "outbound": {
+          "protocol": "trojan",
+          "settings": {
+            "address": "tr.node.test",
+            "password": "1_000",
+            "port": 443
+          },
+          "streamSettings": {
+            "network": "raw",
+            "security": "tls"
+          },
+          "tag": "selected"
+        }
+      },
+      {
+        "name": "hopping",
+        "protocol": "hysteria",
+        "outbound": {
+          "protocol": "hysteria",
+          "settings": {
+            "address": "hy.node.test",
+            "port": 20000,
+            "version": 2
+          },
+          "streamSettings": {
+            "finalmask": {
+              "udp": [
+                {
+                  "settings": {
+                    "packetSize": "0",
+                    "password": "fake"
+                  },
+                  "type": "salamander"
+                },
+                {
+                  "settings": {
+                    "interval": "30",
+                    "mode": "intervalLocal,intervalRemote",
+                    "remoteIPs": null,
+                    "remotePorts": "20000-20010"
+                  },
+                  "type": "udphop"
+                }
+              ]
+            },
+            "hysteriaSettings": {
+              "auth": "synthetic",
+              "version": 2
+            },
+            "network": "hysteria",
+            "security": "tls"
+          },
+          "tag": "selected"
+        }
+      },
+      {
+        "name": "grpc",
+        "protocol": "vmess",
+        "outbound": {
+          "protocol": "vmess",
+          "settings": {
+            "address": "grpc.node.test",
+            "id": "2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11",
+            "port": 443,
+            "security": "auto"
+          },
+          "streamSettings": {
+            "grpcSettings": {
+              "serviceName": "qa"
+            },
+            "network": "grpc",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "grpc.node.test"
+            }
+          },
+          "tag": "selected"
+        }
+      }
+    ]
+  },
+  {
+    "case": "mixed-unavailable",
+    "input": "proxies:\n  - {name: old, type: vmess, server: one.test, port: 443, uuid: 2f0d6c0e-6d4b-4f43-9c39-8f1e6a3c1d11, alterId: 8}\n  - {name: healthy, type: ss, server: two.test, port: 8388, cipher: aes-256-gcm, password: synthetic}\n",
+    "expected": [
+      {
+        "name": "healthy",
+        "protocol": "shadowsocks",
+        "outbound": {
+          "protocol": "shadowsocks",
+          "settings": {
+            "address": "two.test",
+            "method": "aes-256-gcm",
+            "password": "synthetic",
+            "port": 8388
+          },
+          "streamSettings": {
+            "network": "raw",
+            "security": "none"
+          },
+          "tag": "selected"
+        }
+      }
+    ]
+  },
+  {
+    "case": "unsafe-cert",
+    "input": "trojan://synthetic@one.test:443?allowInsecure=1#bad",
+    "expected": []
+  },
+  {
+    "case": "unsafe-yaml",
+    "input": "proxies: [{name: bad, type: trojan, server: tr.test, port: 443, password: fake, skip-cert-verify: true}]",
+    "expected": []
+  },
+  {
+    "case": "duplicates",
+    "input": "proxies: [{name: bad, type: trojan, server: bad.test, port: 443, password: abc, password: def}]",
+    "expected": []
+  },
+  {
+    "case": "alias",
+    "input": "proxies: [&a {name: bad, type: trojan, server: tr.test, port: 443, password: fake}, *a]",
+    "expected": []
+  },
+  {
+    "case": "duplicate-url-field",
+    "input": "trojan://synthetic@one.test:443?sni=a.test&sni=b.test#bad",
+    "expected": []
+  },
+  {
+    "case": "control",
+    "input": "{\"inbounds\":[{\"protocol\":\"socks\"}],\"routing\":{},\"api\":{\"tag\":\"api\"}}",
+    "expected": []
+  }
+]
