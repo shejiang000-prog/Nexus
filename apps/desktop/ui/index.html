@@ -12,11 +12,20 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3.5 5.5 13.5H12l-1 7 7.5-10H12z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
 </svg>
 
-<header class="top">
-  <div class="brand"><img src="nexus-logo.svg" alt="" width="24" height="24"><span>Nexus</span></div>
-  <nav aria-label="主要导航"><a href="#home">连接</a><a href="#nodes">节点</a><a href="#settings">设置</a></nav>
+<header class="top" data-tauri-drag-region>
+  <div class="brand" data-tauri-drag-region><img src="nexus-logo.svg" alt="" width="22" height="22" data-tauri-drag-region><span data-tauri-drag-region>Nexus</span></div>
+  <nav aria-label="主要导航"><span class="nav-pill" aria-hidden="true"></span><a href="#home">连接</a><a href="#nodes">节点</a><a href="#settings">设置</a></nav>
+  <div class="window-controls">
+    <button type="button" id="win-min" aria-label="最小化"><svg class="icon"><use href="#i-min"/></svg></button>
+    <button type="button" id="win-close" class="close" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
 </header>
 
 <main>
@@ -24,18 +33,35 @@
   <h1 id="home-title" class="sr-only" tabindex="-1">连接</h1>
   <form id="connection-form" class="home">
     <div id="hero" class="hero" data-link="idle">
-      <button id="toggle" type="submit" class="dial" aria-describedby="status" disabled>
-        <span class="dial-ring" aria-hidden="true"></span>
-        <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
-        <span id="toggle-label" class="sr-only">连接</span>
-      </button>
+      <span class="hero-glow" aria-hidden="true"></span>
+      <span class="hero-wash" aria-hidden="true"></span>
+      <span class="hero-rings" aria-hidden="true"></span>
+      <div class="dial-wrap">
+        <span class="wave" aria-hidden="true"></span><span class="wave" aria-hidden="true"></span><span class="wave" aria-hidden="true"></span>
+        <span class="orbit" aria-hidden="true"><i></i></span>
+        <button id="toggle" type="submit" class="dial" aria-describedby="status" disabled>
+          <span class="dial-ring" aria-hidden="true"></span>
+          <span class="dial-core" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
+          <span id="toggle-label" class="sr-only">连接</span>
+        </button>
+      </div>
       <p id="status" role="status">未连接</p>
       <p id="route"><span id="lane"></span><span id="clock"></span></p>
+      <div id="traffic" class="traffic" hidden>
+        <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none" aria-hidden="true">
+          <path id="spark-down-fill" class="fill"/><path id="spark-down" class="line"/><path id="spark-up" class="line up"/>
+        </svg>
+        <div class="rates">
+          <span><svg class="icon"><use href="#i-down"/></svg><b id="rate-down">0</b><small id="unit-down">KB/s</small></span>
+          <span><svg class="icon"><use href="#i-up"/></svg><b id="rate-up">0</b><small id="unit-up">KB/s</small></span>
+        </div>
+      </div>
     </div>
     <p id="feedback" role="alert" hidden></p>
 
     <a id="current" class="row link" href="#nodes">
       <span class="row-text"><b id="current-name">我的 V2 节点</b><small id="current-from"></small></span>
+      <span id="current-latency" class="latency" hidden></span>
       <svg class="icon chevron"><use href="#i-arrow"/></svg>
     </a>
     <div id="enrollment" hidden>
@@ -43,6 +69,7 @@
       <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="首次使用请粘贴 V2 邀请链接">
     </div>
     <div class="seg" role="radiogroup" aria-label="分流模式">
+      <span class="seg-pill" aria-hidden="true"></span>
       <label><input type="radio" name="mode" value="split" checked><span>绕过大陆</span></label>
       <label><input type="radio" name="mode" value="global"><span>全局代理</span></label>
     </div>
@@ -53,11 +80,15 @@
   <h1 id="nodes-title" class="sr-only" tabindex="-1">节点</h1>
   <p id="selected-hint" class="hint"></p>
   <div class="group">
-    <div class="group-head"><span>我的节点</span></div>
-    <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false">
-      <span class="node-name" id="v2-name">我的 V2 节点</span><span class="badge">V2</span>
-      <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
-    </button>
+    <div class="group-head"><span class="group-name">我的节点</span><small class="group-meta"></small>
+      <button type="button" class="icon-btn probe" data-probe="v2" aria-label="测试延迟"><svg class="icon"><use href="#i-bolt"/></svg></button>
+    </div>
+    <div class="group-nodes">
+      <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false" data-id="v2">
+        <span class="node-name" id="v2-name">我的 V2 节点</span><span class="latency" hidden></span><span class="badge">V2</span>
+        <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
+      </button>
+    </div>
   </div>
   <div id="sub-groups"></div>
   <p id="sub-feedback" role="status"></p>
@@ -72,6 +103,7 @@
     <div class="group">
       <div class="group-head">
         <span class="group-name"></span><small class="group-meta"></small>
+        <button type="button" class="icon-btn probe" aria-label="测试延迟"><svg class="icon"><use href="#i-bolt"/></svg></button>
         <button type="button" class="icon-btn refresh" aria-label="刷新订阅"><svg class="icon"><use href="#i-refresh"/></svg></button>
         <button type="button" class="icon-btn delete" aria-label="删除订阅"><svg class="icon"><use href="#i-trash"/></svg></button>
       </div>
@@ -80,7 +112,7 @@
   </template>
   <template id="node-template">
     <button type="button" class="node" role="radio" aria-checked="false">
-      <span class="node-name"></span><span class="badge"></span>
+      <span class="node-name"></span><span class="latency" hidden></span><span class="badge"></span>
       <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
     </button>
   </template>
