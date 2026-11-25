@@ -42,6 +42,11 @@ func Start(config string, client *mobile.Client) (*Session, error) {
 
 // StartConfig accepts the fixed desktop configuration without linking Xray's JSON loader.
 func StartConfig(cfg *core.Config, client *mobile.Client) (*Session, error) {
+	return StartWithSetup(cfg, client, nil)
+}
+
+// StartWithSetup lets the desktop add its DNS handler before the listeners open.
+func StartWithSetup(cfg *core.Config, client *mobile.Client, setup func(*core.Instance) error) (*Session, error) {
 	instance, err := core.New(cfg)
 	if err != nil {
 		return nil, err
@@ -58,6 +63,9 @@ func StartConfig(cfg *core.Config, client *mobile.Client) (*Session, error) {
 		}
 		if err == nil {
 			err = manager.AddHandler(ctx, h)
+		}
+		if err == nil && setup != nil {
+			err = setup(instance)
 		}
 		if err == nil {
 			err = instance.Start()

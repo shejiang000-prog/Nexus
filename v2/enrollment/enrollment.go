@@ -31,6 +31,8 @@ import (
 const prefix = "nexus://invite/v2#"
 
 var invalidInvite = errors.New("V2 邀请格式无效")
+var ErrRejected = errors.New("节点未接受邀请，请确认邀请有效且未过期")
+var ErrUnreachable = errors.New("无法建立受信的节点连接，请检查网络和证书")
 var b64 = base64.RawURLEncoding.Strict()
 
 type Invitation struct {
@@ -171,7 +173,7 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 		if errors.As(err, &typed) && typed.Code == transport.Certificate {
 			return nil, &transport.Error{Code: transport.Certificate, Cause: errors.New("节点证书验证失败")}
 		}
-		return nil, errors.New("无法建立受信的节点连接，请检查网络和证书")
+		return nil, ErrUnreachable
 	}
 	defer conn.Close()
 	deadline, _ := ctx.Deadline()
@@ -211,9 +213,8 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 		return nil, errors.New("兑换响应中断，请重试同一邀请")
 	}
 	defer resp.Body.Close()
-	denied := errors.New("节点未接受邀请，请确认邀请有效且未过期")
 	if resp.StatusCode != http.StatusOK {
-		return nil, denied
+		return nil, ErrRejected
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1025))
 	if err != nil {
@@ -225,15 +226,15 @@ func Redeem(i *Invitation, endpoint string, ca, request, public []byte, signer S
 		Expiry json.RawMessage `json:"expires_at"`
 	}
 	if len(body) > 1024 || json.Unmarshal(body, &parsed) != nil || parsed.V != 2 {
-		return nil, denied
+		return nil, ErrRejected
 	}
 	id, err := from64(parsed.ID)
 	if err != nil || len(id) != 16 {
-		return nil, denied
+		return nil, ErrRejected
 	}
 	receipt := &Receipt{DeviceID: hex.EncodeToString(id), ExpiryKnown: parsed.Expiry != nil}
 	if parsed.Expiry != nil && string(parsed.Expiry) != "null" && (json.Unmarshal(parsed.Expiry, &receipt.ExpiresAt) != nil || receipt.ExpiresAt <= 0) {
-		return nil, denied
+		return nil, ErrRejected
 	}
 	return receipt, nil
 }

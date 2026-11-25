@@ -1,0 +1,58 @@
+--- a/proxy/socks/server.go
++++ b/proxy/socks/server.go
+@@ -193,7 +193,7 @@
+ }
+ 
+ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
+-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
++	reply := func(ctx context.Context, packet *udp_proto.Packet) {
+ 		payload := packet.Payload
+ 		errors.LogDebug(ctx, "writing back UDP response with ", payload.Len(), " bytes")
+ 
+@@ -221,12 +221,16 @@
+ 
+ 		conn.Write(udpMessage.Bytes())
+ 		udpMessage.Release()
+-	})
+-	defer udpServer.RemoveRay()
++	}
++	// Each target needs its own routing decision, including on a cone association.
++	servers := make(map[net.Destination]*udp.Dispatcher)
++	defer func() {
++		for _, server := range servers {
++			server.RemoveRay()
++		}
++	}()
+ 
+ 	inbound := session.InboundFromContext(ctx)
+-
+-	var dest *net.Destination
+ 
+ 	reader := buf.NewPacketReader(conn)
+ 	var changeRemote sync.Once
+@@ -275,12 +279,22 @@
+ 
+ 			payload.UDP = &destination
+ 
+-			if !s.cone || dest == nil {
+-				dest = &destination
++			server := servers[destination]
++			if server == nil {
++				// Bound per-association state even if a client cycles destinations.
++				if len(servers) == 64 {
++					for old, stale := range servers {
++						stale.RemoveRay()
++						delete(servers, old)
++						break
++					}
++				}
++				server = udp.NewDispatcher(dispatcher, reply)
++				servers[destination] = server
+ 			}
+ 
+ 			currentPacketCtx = protocol.ContextWithRequestHeader(currentPacketCtx, request)
+-			udpServer.Dispatch(currentPacketCtx, *dest, payload)
++			server.Dispatch(currentPacketCtx, destination, payload)
+ 		}
+ 	}
+ }

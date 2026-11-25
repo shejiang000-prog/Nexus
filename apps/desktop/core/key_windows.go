@@ -26,6 +26,7 @@ var (
 	finalizeKey  = ncrypt.NewProc("NCryptFinalizeKey")
 	exportKey    = ncrypt.NewProc("NCryptExportKey")
 	signHash     = ncrypt.NewProc("NCryptSignHash")
+	deleteKey    = ncrypt.NewProc("NCryptDeleteKey")
 	freeObject   = ncrypt.NewProc("NCryptFreeObject")
 )
 
@@ -55,6 +56,9 @@ func acquireKey(provider, alias string, create bool) (*deviceKey, error) {
 		return &deviceKey{key}, nil
 	}
 	if !create {
+		if rc == uintptr(windows.NTE_BAD_KEYSET) || rc == uintptr(windows.NTE_NOT_FOUND) {
+			return nil, errKeyMissing
+		}
 		return nil, syscall.Errno(rc)
 	}
 	// No overwrite flag, machine-key flag or export permission.
@@ -71,6 +75,16 @@ func acquireKey(provider, alias string, create bool) (*deviceKey, error) {
 }
 
 func (k *deviceKey) Close() { freeObject.Call(k.handle) }
+
+// NCryptDeleteKey frees the handle on success.
+func (k *deviceKey) Delete() error {
+	rc, _, _ := deleteKey.Call(k.handle, 0)
+	if rc != 0 {
+		k.Close()
+		return syscall.Errno(rc)
+	}
+	return nil
+}
 
 func (k *deviceKey) public() ([]byte, error) {
 	var blob [72]byte // BCRYPT_ECCKEY_BLOB, followed by 32-byte X and Y

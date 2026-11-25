@@ -6,11 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/xtls/libxray/enrollment"
+	"github.com/xtls/libxray/internal/nexusv2/transport"
 	"golang.org/x/sys/windows"
 )
 
@@ -54,20 +58,174 @@ func (r *registration) save(path string) error {
 	return save(path, raw)
 }
 
-func loadDevice(link string) (*device, error) {
+var (
+	errIdentityChanged = errors.New("the current identity changed")
+	errInviteInvalid   = errors.New("invalid invitation")
+	errNoIdentity      = errors.New("no local identity")
+	errKeyMissing      = errors.New("local key missing")
+)
+
+func errorCode(err error) string {
+	var carrier *transport.Error
+	switch {
+	case errors.Is(err, errIdentityChanged):
+		return "identity_changed"
+	case errors.Is(err, errInviteInvalid):
+		return "invite_invalid"
+	case errors.Is(err, enrollment.ErrRejected):
+		return "invite_rejected"
+	case errors.Is(err, enrollment.ErrUnreachable), errors.As(err, &carrier) && carrier.Code == transport.Interrupted:
+		return "node_unreachable"
+	case errors.Is(err, errNoIdentity):
+		return "no_identity"
+	case errors.Is(err, errKeyMissing):
+		return "key_missing"
+	default:
+		return "generic"
+	}
+}
+
+func lockProfile() (string, windows.Handle, error) {
 	base := os.Getenv("LOCALAPPDATA")
 	if !filepath.IsAbs(base) {
-		return nil, errors.New("missing local profile")
+		return "", 0, errors.New("missing profile directory")
 	}
 	dir := filepath.Join(base, "Nexus", "desktop")
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
+		return "", 0, err
 	}
-	lockName, err := windows.UTF16PtrFromString(filepath.Join(dir, "enrollment.lock"))
+	name, err := windows.UTF16PtrFromString(filepath.Join(dir, "enrollment.lock"))
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
-	lock, err := windows.CreateFile(lockName, windows.GENERIC_WRITE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	lock, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	return dir, lock, err
+}
+
+func activeAlias(dir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "active"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", errNoIdentity
+	}
+	if err != nil {
+		return "", err
+	}
+	if decoded, err := hex.DecodeString(string(raw)); err != nil || len(decoded) != 32 {
+		return "", errors.New("invalid device reference")
+	}
+	return string(raw), nil
+}
+
+func readRegistration(path string) (registration, error) {
+	var r registration
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return r, err
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return r, err
+	}
+	if r.Provider != platformKSP && r.Provider != softwareKSP {
+		return r, errors.New("unknown key provider")
+	}
+	return r, nil
+}
+
+func maskedEndpoint(authority string) (string, error) {
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 || len(host) == 0 {
+		return "", errors.New("invalid node address")
+	}
+	var mask string
+	if ip := net.ParseIP(host); ip != nil {
+		if v := ip.To4(); v != nil {
+			mask = fmt.Sprintf("%d.%d.*.*", v[0], v[1])
+		} else {
+			mask = fmt.Sprintf("[%x:*]", uint16(ip[0])<<8|uint16(ip[1]))
+		}
+	} else {
+		c := host[0]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return "", errors.New("invalid node name")
+		}
+		mask = string(c) + "***"
+	}
+	return mask + ":" + strconv.FormatUint(n, 10), nil
+}
+
+func currentIdentity() (string, string, error) {
+	dir, lock, err := lockProfile()
+	if err != nil {
+		return "", "", err
+	}
+	defer windows.CloseHandle(lock)
+	alias, err := activeAlias(dir)
+	if errors.Is(err, errNoIdentity) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	r, err := readRegistration(filepath.Join(dir, alias+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		// Finish a removal interrupted after the key and record were deleted.
+		return "", "", os.Remove(filepath.Join(dir, "active"))
+	}
+	if err != nil {
+		return "", "", err
+	}
+	label, err := maskedEndpoint(r.Authority)
+	if err != nil {
+		return "", "", err
+	}
+	return label, alias, nil
+}
+
+func removeDevice(expected string) error {
+	dir, lock, err := lockProfile()
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(lock)
+	alias, err := activeAlias(dir)
+	if errors.Is(err, errNoIdentity) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Compare the full, previously displayed identity under the enrollment lock.
+	// Different identities may have identical masked endpoint labels.
+	if expected != alias || expected != strings.ToLower(expected) {
+		return errIdentityChanged
+	}
+	path := filepath.Join(dir, alias+".json")
+	r, err := readRegistration(path)
+	if err == nil {
+		key, err := acquireKey(r.Provider, alias, false)
+		if err != nil && !errors.Is(err, errKeyMissing) {
+			return err
+		}
+		if key != nil {
+			if err := key.Delete(); err != nil {
+				return err
+			}
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Remove(filepath.Join(dir, "active"))
+}
+
+func loadDevice(link string) (*device, error) {
+	dir, lock, err := lockProfile()
 	if err != nil {
 		return nil, err
 	}
@@ -79,23 +237,18 @@ func loadDevice(link string) (*device, error) {
 	if link = strings.TrimSpace(link); link != "" {
 		invite, err = enrollment.Parse(link)
 		if err != nil {
-			return nil, err
+			return nil, errInviteInvalid
 		}
 		alias = invite.LocalID()
 	} else {
-		raw, err := os.ReadFile(active)
+		alias, err = activeAlias(dir)
 		if err != nil {
 			return nil, err
 		}
-		alias = string(raw)
-	}
-	if decoded, err := hex.DecodeString(alias); err != nil || len(decoded) != 32 {
-		return nil, errors.New("invalid device reference")
 	}
 	path := filepath.Join(dir, alias+".json")
-	var r registration
 	var key *deviceKey
-	raw, err := os.ReadFile(path)
+	r, err := readRegistration(path)
 	if errors.Is(err, os.ErrNotExist) && invite != nil {
 		r = registration{Authority: invite.Authority(), Pin: invite.Pin(), Request: make([]byte, 16), Provider: platformKSP}
 		if _, err := rand.Read(r.Request); err != nil {
@@ -116,12 +269,6 @@ func loadDevice(link string) (*device, error) {
 	} else {
 		if err != nil {
 			return nil, err
-		}
-		if err := json.Unmarshal(raw, &r); err != nil {
-			return nil, err
-		}
-		if r.Provider != platformKSP && r.Provider != softwareKSP {
-			return nil, errors.New("unknown key provider")
 		}
 		if invite != nil && (r.Authority != invite.Authority() || !bytes.Equal(r.Pin, invite.Pin())) {
 			return nil, errors.New("invitation identity changed")

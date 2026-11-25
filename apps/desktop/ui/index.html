@@ -1,12 +1,43 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nexus</title><link href="style.css" rel="stylesheet"><script src="app.js" defer></script></head>
-<body><aside><div class="brand"><span aria-hidden="true">N</span> Nexus</div><nav aria-label="主要导航"><a href="#home">首页</a><a href="#subscriptions">我的订阅</a><a href="#servers">我的服务器</a><a href="#shared">朋友分享</a></nav></aside>
-<main id="content"><section id="home"><h1 tabindex="-1">网络概览</h1>
-<div class="connection"><p>当前连接</p><div role="status" aria-atomic="true"><h2 id="status">未连接</h2><p id="route">当前线路 · —</p></div>
-<form id="connection-form"><div id="enrollment"><label for="invite">V2 邀请链接</label><input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" aria-describedby="invite-hint"><p id="invite-hint">首次连接时粘贴邀请，使用已保存的身份时留空。</p></div>
-<button id="toggle" type="submit" disabled>连接</button></form>
-<p class="endpoints">SOCKS5 · 127.0.0.1:21808　HTTP · 127.0.0.1:21809</p></div>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus</title><link rel="icon" href="nexus-logo.svg"><link href="style.css" rel="stylesheet"><script src="app.js" defer></script>
+</head>
+<body>
+<aside>
+  <div class="brand"><img src="nexus-logo.svg" alt="" width="36" height="36">Nexus</div>
+  <nav aria-label="主要导航"><a href="#home">首页</a><a href="#subscriptions">我的订阅</a><a href="#servers">我的服务器</a><a href="#shared">朋友分享</a></nav>
+</aside>
+<main>
+<section id="home">
+  <h1 tabindex="-1">网络概览</h1>
+  <form id="connection-form">
+    <div class="connection">
+      <div><p>当前连接</p><h2 id="status" role="status">未连接</h2><p id="route"></p></div>
+      <button id="toggle" type="submit" disabled>连接</button>
+    </div>
+    <p id="feedback" role="alert" hidden></p>
+    <div id="enrollment"><label for="invite">V2 邀请链接</label>
+      <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴邀请链接" aria-describedby="invite-hint">
+      <p id="invite-hint">首次连接需要邀请。已登记设备可留空。</p>
+    </div>
+    <div id="ports" class="ports" hidden><span>SOCKS5 <b id="socks"></b></span><span>HTTP <b id="http"></b></span></div>
+  </form>
+  <h2 class="section-title">连接设置</h2>
+  <div class="row"><label for="proxy">系统代理</label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
+  <div class="row"><div><label for="mode">分流模式</label><p id="mode-hint" hidden>断开后可更改模式</p></div>
+    <select id="mode"><option value="split">绕过大陆</option><option value="global">全局代理</option></select>
+  </div>
+  <div class="row"><div><h3>当前已登记节点</h3><p id="identity">读取中…</p></div>
+    <button id="remove" type="button" hidden>移除此设备身份</button>
+  </div>
+  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">移除此设备身份？</h2>
+    <p>将删除本机保存的设备密钥和节点记录。再次登记需要新的邀请。</p>
+    <form method="dialog"><button value="cancel" autofocus>取消</button><button value="remove" class="danger">确认移除</button></form>
+  </dialog>
 </section>
-<section id="subscriptions" hidden><h1 tabindex="-1">我的订阅</h1><p>桌面版暂未支持导入和管理订阅。</p></section>
-<section id="servers" hidden><h1 tabindex="-1">我的服务器</h1><p>桌面版暂未支持管理私人服务器。</p></section>
-<section id="shared" hidden><h1 tabindex="-1">朋友分享</h1><p>可在<a href="#home">首页</a>粘贴 V2 邀请链接并连接节点。</p></section></main></body></html>
+<section id="subscriptions" hidden><h1 tabindex="-1">我的订阅</h1><p>暂未支持</p></section>
+<section id="servers" hidden><h1 tabindex="-1">我的服务器</h1><p>暂未支持</p></section>
+<section id="shared" hidden><h1 tabindex="-1">朋友分享</h1><p>暂未支持</p></section>
+</main></body></html>
