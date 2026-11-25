@@ -17,6 +17,11 @@ const CHANGED: &str = "proxy-changed";
 const BUSY: &str = "proxy-busy";
 const JOURNAL: &str = "wininet.journal";
 const PENDING: &str = "wininet.pending";
+const LOCAL_BYPASS: &str = concat!(
+    "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;",
+    "172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;",
+    "172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;169.254.*;<local>",
+);
 static OWNER: Mutex<Option<File>> = Mutex::new(None);
 
 // None is a missing WinINet string, distinct from an explicit empty string.
@@ -33,7 +38,7 @@ struct Settings {
 }
 
 impl Settings {
-    fn at_step(&self, port: u16, step: u8) -> Self {
+    fn at_step(&self, port: u16, step: u8, owned_bypass: &Wide) -> Self {
         let endpoint = format!("http=127.0.0.1:{port};https=127.0.0.1:{port}");
         Self {
             flags: if step >= 3 {
@@ -47,8 +52,7 @@ impl Settings {
                 self.server.clone()
             },
             bypass: if step >= 2 {
-                // Let the core decide direct vs V2, including single-label names.
-                Some(Vec::new())
+                owned_bypass.clone()
             } else {
                 self.bypass.clone()
             },
@@ -76,6 +80,7 @@ trait Store {
 
 struct Backup {
     connection: Wide,
+    owned_bypass: Wide,
     before: Settings,
     port: u16,
     session: [u8; 20],
@@ -109,9 +114,13 @@ fn read_wide(input: &mut &[u8]) -> Result<Wide> {
 }
 
 impl Backup {
+    fn at_step(&self, step: u8) -> Settings {
+        self.before.at_step(self.port, step, &self.owned_bypass)
+    }
+
     fn save(&self, dir: &Path) -> Result<()> {
         // Write and flush the complete record before publishing its name.
-        let mut data = b"NXP1".to_vec();
+        let mut data = b"NXP2".to_vec();
         data.extend(self.session);
         data.extend([self.from, self.to]);
         data.extend(self.port.to_le_bytes());
@@ -122,6 +131,7 @@ impl Backup {
             &self.before.server,
             &self.before.bypass,
             &self.before.pac,
+            &self.owned_bypass,
         ] {
             match value {
                 Some(value) if value.len() <= 65535 => {
@@ -166,7 +176,8 @@ impl Backup {
             .read_to_end(&mut data)
             .map_err(|_| ERROR)?;
         let mut input = data.as_slice();
-        if take::<4>(&mut input)? != *b"NXP1" {
+        let version = take::<4>(&mut input)?;
+        if &version != b"NXP1" && &version != b"NXP2" {
             return Err(ERROR);
         }
         let session = take::<20>(&mut input)?;
@@ -185,11 +196,19 @@ impl Backup {
             bypass: read_wide(&mut input)?,
             pac: read_wide(&mut input)?,
         };
-        if !input.is_empty() || port == 0 {
+        // V1 used an empty bypass list for every owned snapshot. V2 records
+        // the actual value, including while resuming a partial V1 restore.
+        let owned_bypass = if &version == b"NXP1" {
+            Some(Vec::new())
+        } else {
+            read_wide(&mut input)?
+        };
+        if !input.is_empty() || port == 0 || owned_bypass.is_none() {
             return Err(ERROR);
         }
         Ok(Some(Self {
             connection,
+            owned_bypass,
             before,
             port,
             session,
@@ -202,8 +221,8 @@ impl Backup {
 // Journal the two possible full snapshots around a single WinINet option
 // write. A crash between fields never leaves an unidentifiable partial batch.
 fn change(store: &impl Store, dir: &Path, backup: &mut Backup, from: u8, to: u8) -> Result<()> {
-    let before = backup.before.at_step(backup.port, from);
-    let after = backup.before.at_step(backup.port, to);
+    let before = backup.at_step(from);
+    let after = backup.at_step(to);
     backup.from = from;
     backup.to = to;
     backup.save(dir)?;
@@ -232,7 +251,7 @@ fn recover_locked(store: &impl Store, dir: &Path) -> Result<()> {
     let current = store.read(&backup.connection)?;
     let step = [backup.to, backup.from]
         .into_iter()
-        .find(|step| same_options(&current, &backup.before.at_step(backup.port, *step)));
+        .find(|step| same_options(&current, &backup.at_step(*step)));
     let Some(step) = step else {
         fs::remove_file(dir.join(JOURNAL)).map_err(|_| ERROR)?;
         return Err(CHANGED);
@@ -266,6 +285,7 @@ fn apply(store: &impl Store, dir: &Path, port: u16) -> Result<()> {
     );
     let mut backup = Backup {
         before,
+        owned_bypass: Some(LOCAL_BYPASS.encode_utf16().collect()),
         connection,
         port,
         session,
@@ -570,13 +590,42 @@ mod tests {
             fail_notify: Cell::new(false),
         };
         apply(&store, &dir, 32009).unwrap();
-        assert!(*store.values.borrow() == old.at_step(32009, 3));
+        let bypass = [
+            vec![
+                "localhost".to_owned(),
+                "127.*".to_owned(),
+                "10.*".to_owned(),
+            ],
+            (16..=31).map(|n| format!("172.{n}.*")).collect(),
+            vec![
+                "192.168.*".to_owned(),
+                "169.254.*".to_owned(),
+                "<local>".to_owned(),
+            ],
+        ]
+        .concat()
+        .join(";");
+        assert!(
+            *store.values.borrow() == old.at_step(32009, 3, &Some(bypass.encode_utf16().collect()))
+        );
         drop(file); // Simulate process death: only the disk journal survives.
         let next_owner = lock(&dir).unwrap();
         store.fail_notify.set(true);
         assert_eq!(recover_locked(&store, &dir), Err(ERROR));
         assert!(*store.values.borrow() == old && dir.join(JOURNAL).is_file());
         recover_locked(&store, &dir).unwrap();
+        // Simulate an old, fully applied NXP1 takeover. Its bytes match NXP2
+        // up to the final owned-bypass field, which was implicit in NXP1.
+        apply(&store, &dir, 32009).unwrap();
+        let mut legacy = fs::read(dir.join(JOURNAL)).unwrap();
+        legacy[..4].copy_from_slice(b"NXP1");
+        legacy.truncate(legacy.len() - 4 - LOCAL_BYPASS.encode_utf16().count() * 2);
+        fs::write(dir.join(JOURNAL), legacy).unwrap();
+        store.values.borrow_mut().bypass = None; // WinINet normalizes an empty string.
+        store.fail_after_field.set(3);
+        assert_eq!(recover_locked(&store, &dir), Err(ERROR));
+        recover_locked(&store, &dir).unwrap();
+        assert!(*store.values.borrow() == old);
         store.fail_after_field.set(2);
         assert_eq!(apply(&store, &dir, 32009), Err(ERROR));
         recover_locked(&store, &dir).unwrap();

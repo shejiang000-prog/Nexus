@@ -30,7 +30,25 @@ import (
 //go:embed split-rules.txt
 var splitRules string
 
-func splitRouter() (*router.Config, error) {
+func desktopRouter(mode string) (*router.Config, error) {
+	var rules, dnsTag string
+	switch mode {
+	case "split":
+		rules, dnsTag = strings.TrimSpace(splitRules), "split-dns"
+	case "global":
+		// Keep explicit DNS inside V2 even if the application names a LAN resolver.
+		dnsTag = "selected"
+		rules = `ip:127.0.0.0/8
+ip:10.0.0.0/8
+ip:172.16.0.0/12
+ip:192.168.0.0/16
+ip:169.254.0.0/16
+ip:::1/128
+ip:fc00::/7
+ip:fe80::/10`
+	default:
+		return nil, errors.New("unknown routing mode")
+	}
 	target := &router.RoutingRule_Tag{Tag: "direct"}
 	names := &router.RoutingRule{TargetTag: target}
 	ips := &router.RoutingRule{TargetTag: target}
@@ -38,9 +56,7 @@ func splitRouter() (*router.Config, error) {
 		"domain": geodata.Domain_Domain, "full": geodata.Domain_Full,
 		"regexp": geodata.Domain_Regex, "keyword": geodata.Domain_Substr,
 	}
-	// The Android snapshot already covers LAN IPs. Explicit proxy clients can
-	// also supply these reserved local names without resolving them first.
-	for line := range strings.SplitSeq("full:localhost\ndomain:local\ndomain:home.arpa\n"+strings.TrimSpace(splitRules), "\n") {
+	for line := range strings.SplitSeq("full:localhost\ndomain:local\ndomain:home.arpa\n"+rules, "\n") {
 		kind, value, ok := strings.Cut(line, ":")
 		if !ok || value == "" {
 			return nil, errors.New("invalid split rule")
@@ -60,7 +76,7 @@ func splitRouter() (*router.Config, error) {
 		}
 	}
 	return &router.Config{DomainStrategy: router.Config_AsIs, Rule: []*router.RoutingRule{
-		{TargetTag: &router.RoutingRule_Tag{Tag: "split-dns"}, PortList: &xnet.PortList{Range: []*xnet.PortRange{xnet.SinglePortRange(53)}}},
+		{TargetTag: &router.RoutingRule_Tag{Tag: dnsTag}, PortList: &xnet.PortList{Range: []*xnet.PortRange{xnet.SinglePortRange(53)}}},
 		names, ips,
 	}}, nil
 }
@@ -68,6 +84,10 @@ func splitRouter() (*router.Config, error) {
 func proxyConfig(socksPort, httpPort int, mode string) (*core.Config, error) {
 	if socksPort < 1 || httpPort < 1 || socksPort > 65535 || httpPort > 65535 || socksPort == httpPort {
 		return nil, errors.New("invalid proxy ports")
+	}
+	r, err := desktopRouter(mode)
+	if err != nil {
+		return nil, err
 	}
 	loopback := xnet.NewIPOrDomain(xnet.LocalHostIP)
 	listen := func(port int) *serial.TypedMessage {
@@ -79,34 +99,26 @@ func proxyConfig(socksPort, httpPort int, mode string) (*core.Config, error) {
 			serial.ToTypedMessage(&xlog.Config{}),
 			serial.ToTypedMessage(&dispatcher.Config{}), serial.ToTypedMessage(&proxyman.InboundConfig{}),
 			serial.ToTypedMessage(&proxyman.OutboundConfig{}),
+			serial.ToTypedMessage(r),
 		},
 		Inbound: []*core.InboundHandlerConfig{
 			{Tag: "socks", ReceiverSettings: listen(socksPort), ProxySettings: serial.ToTypedMessage(&socks.ServerConfig{Address: loopback, UdpEnabled: true})},
 			{Tag: "http", ReceiverSettings: listen(httpPort), ProxySettings: serial.ToTypedMessage(&http.ServerConfig{})},
 		},
-		Outbound: []*core.OutboundHandlerConfig{{Tag: "selected", ProxySettings: serial.ToTypedMessage(&blackhole.Config{})}},
-	}
-	switch mode {
-	case "split":
-		r, err := splitRouter()
-		if err != nil {
-			return nil, err
-		}
-		cfg.App = append(cfg.App, serial.ToTypedMessage(r))
-		cfg.Outbound = append(cfg.Outbound, &core.OutboundHandlerConfig{Tag: "direct", ProxySettings: serial.ToTypedMessage(&freedom.Config{})})
-	case "global":
-	default:
-		return nil, errors.New("unknown routing mode")
+		Outbound: []*core.OutboundHandlerConfig{
+			{Tag: "selected", ProxySettings: serial.ToTypedMessage(&blackhole.Config{})},
+			{Tag: "direct", ProxySettings: serial.ToTypedMessage(&freedom.Config{})},
+		},
 	}
 	return cfg, nil
 }
 
-func startProxy(cfg *core.Config, client *mobile.Client) (*v2vpn.Session, error) {
+func startProxy(cfg *core.Config, client *mobile.Client, mode string) (*v2vpn.Session, error) {
+	if mode == "global" {
+		return v2vpn.StartConfig(cfg, client)
+	}
 	return v2vpn.StartWithSetup(cfg, client, func(instance *core.Instance) error {
 		manager := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
-		if manager.GetHandler("direct") == nil {
-			return nil // Global mode uses only the default V2 outbound.
-		}
 		return manager.AddHandler(context.Background(), &splitDNS{instance: instance, physical: dialPhysicalDNS})
 	})
 }

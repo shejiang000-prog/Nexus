@@ -49,7 +49,7 @@ func listenProxy(client *mobile.Client, mode string) (*v2vpn.Session, int, int, 
 		if err != nil {
 			return nil, 0, 0, errConfig
 		}
-		session, err := startProxy(cfg, client)
+		session, err := startProxy(cfg, client, mode)
 		if err == nil {
 			return session, s, h, nil
 		}

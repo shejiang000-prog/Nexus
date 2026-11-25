@@ -26,27 +26,41 @@ func TestDesktopRouting(t *testing.T) {
 		defer instance.Close()
 		r := instance.GetFeature(routing.RouterType()).(routing.Router)
 		fallback := instance.GetFeature(outbound.ManagerType()).(outbound.Manager).GetDefaultHandler().Tag()
-		for target, split := range map[string]string{
-			"tcp:myip.ipip.net:443": "direct", "tcp:www.cloudflare.com:443": "selected",
-			"tcp:www.baidu.com:443": "direct", "tcp:baidu.com.example.org:443": "selected",
-			"tcp:223.5.5.5:80": "direct", "udp:8.8.8.8:443": "selected",
-			"tcp:192.168.1.10:80": "direct", "tcp:[2400:3200::1]:80": "direct",
-			"udp:[2606:4700:4700::1111]:443": "selected", "tcp:router.home.arpa:80": "direct",
-			"udp:192.168.1.1:53": "split-dns", "tcp:223.5.5.5:53": "split-dns",
+		for _, tc := range []struct{ target, split, global string }{
+			{"tcp:myip.ipip.net:443", "direct", "selected"},
+			{"tcp:www.cloudflare.com:443", "selected", "selected"},
+			{"tcp:www.baidu.com:443", "direct", "selected"},
+			{"tcp:baidu.com.example.org:443", "selected", "selected"},
+			{"tcp:223.5.5.5:80", "direct", "selected"},
+			{"udp:8.8.8.8:443", "selected", "selected"},
+			{"tcp:[2400:3200::1]:80", "direct", "selected"},
+			{"udp:[2606:4700:4700::1111]:443", "selected", "selected"},
+			{"tcp:192.168.1.10:80", "direct", "direct"},
+			{"tcp:127.0.0.2:80", "direct", "direct"},
+			{"tcp:169.254.1.2:80", "direct", "direct"},
+			{"udp:[::1]:80", "direct", "direct"},
+			{"udp:[fd12::1]:80", "direct", "direct"},
+			{"udp:[fe80::1]:80", "direct", "direct"},
+			{"tcp:localhost:80", "direct", "direct"},
+			{"tcp:printer.local:80", "direct", "direct"},
+			{"tcp:router.home.arpa:80", "direct", "direct"},
+			{"tcp:router.home.arpa.example.org:80", "selected", "selected"},
+			{"udp:192.168.1.1:53", "split-dns", "selected"},
+			{"tcp:223.5.5.5:53", "split-dns", "selected"},
 		} {
-			dest, err := xnet.ParseDestination(target)
+			dest, err := xnet.ParseDestination(tc.target)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, want := fallback, split
+			got, want := fallback, tc.split
 			if route, err := r.PickRoute(&routesession.Context{Outbound: &session.Outbound{Target: dest}}); err == nil {
 				got = route.GetOutboundTag()
 			}
 			if mode == "global" {
-				want = "selected"
+				want = tc.global
 			}
 			if got != want {
-				t.Errorf("%s %s: got %s, want %s", mode, target, got, want)
+				t.Errorf("%s %s: got %s, want %s", mode, tc.target, got, want)
 			}
 		}
 	}

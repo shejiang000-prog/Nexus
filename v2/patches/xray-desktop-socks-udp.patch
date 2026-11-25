@@ -1,6 +1,37 @@
 --- a/proxy/socks/server.go
 +++ b/proxy/socks/server.go
-@@ -193,7 +193,7 @@
+@@ -16,8 +16,10 @@
+ 	udp_proto "github.com/xtls/xray-core/common/protocol/udp"
+ 	"github.com/xtls/xray-core/common/session"
+ 	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/features/outbound"
+ 	"github.com/xtls/xray-core/features/policy"
+ 	"github.com/xtls/xray-core/features/routing"
++	routesession "github.com/xtls/xray-core/features/routing/session"
+ 	"github.com/xtls/xray-core/proxy"
+ 	"github.com/xtls/xray-core/proxy/http"
+ 	"github.com/xtls/xray-core/transport"
+@@ -29,7 +31,8 @@
+ type Server struct {
+ 	config        *ServerConfig
+ 	policyManager policy.Manager
+-	cone          bool
++	router        routing.Router
++	outbounds     outbound.Manager
+ 	httpServer    *http.Server
+ }
+ 
+@@ -39,7 +42,8 @@
+ 	s := &Server{
+ 		config:        config,
+ 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
+-		cone:          ctx.Value("cone").(bool),
++		router:        v.GetFeature(routing.RouterType()).(routing.Router),
++		outbounds:     v.GetFeature(outbound.ManagerType()).(outbound.Manager),
+ 	}
+ 	httpConfig := &http.ServerConfig{
+ 		UserLevel: config.UserLevel,
+@@ -193,7 +197,7 @@
  }
  
  func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
@@ -9,15 +40,16 @@
  		payload := packet.Payload
  		errors.LogDebug(ctx, "writing back UDP response with ", payload.Len(), " bytes")
  
-@@ -221,12 +221,16 @@
+@@ -221,12 +225,17 @@
  
  		conn.Write(udpMessage.Bytes())
  		udpMessage.Release()
 -	})
 -	defer udpServer.RemoveRay()
 +	}
-+	// Each target needs its own routing decision, including on a cone association.
-+	servers := make(map[net.Destination]*udp.Dispatcher)
++	// A SOCKS association shares a link for packets with the same routing result.
++	// buf.Buffer.UDP still carries the actual target (and the source on replies).
++	servers := make(map[string]*udp.Dispatcher)
 +	defer func() {
 +		for _, server := range servers {
 +			server.RemoveRay()
@@ -30,25 +62,38 @@
  
  	reader := buf.NewPacketReader(conn)
  	var changeRemote sync.Once
-@@ -275,12 +279,22 @@
+@@ -275,12 +284,34 @@
  
  			payload.UDP = &destination
  
 -			if !s.cone || dest == nil {
 -				dest = &destination
-+			server := servers[destination]
-+			if server == nil {
-+				// Bound per-association state even if a client cycles destinations.
-+				if len(servers) == 64 {
-+					for old, stale := range servers {
-+						stale.RemoveRay()
-+						delete(servers, old)
-+						break
-+					}
+-			}
++			route, err := s.router.PickRoute(&routesession.Context{
++				Inbound: inbound, Outbound: &session.Outbound{Target: destination},
++				Content: session.ContentFromContext(currentPacketCtx),
++			})
++			var tag string
++			if err == nil {
++				tag = route.GetOutboundTag()
++			} else if goerrors.Is(err, common.ErrNoClue) {
++				if fallback := s.outbounds.GetDefaultHandler(); fallback != nil {
++					tag = fallback.Tag()
 +				}
++			}
++			if tag == "" {
++				payload.Release()
++				continue
++			}
++			server := servers[tag]
++			if server == nil {
 +				server = udp.NewDispatcher(dispatcher, reply)
-+				servers[destination] = server
- 			}
++				servers[tag] = server
++			}
++			// A dispatcher can recreate an idle ray. Its selection must agree
++			// with the group key even then; never mutate shared session content.
++			currentPacketCtx = session.ContextWithContent(currentPacketCtx, &session.Content{})
++			currentPacketCtx = session.SetForcedOutboundTagToContext(currentPacketCtx, tag)
  
  			currentPacketCtx = protocol.ContextWithRequestHeader(currentPacketCtx, request)
 -			udpServer.Dispatch(currentPacketCtx, *dest, payload)
@@ -56,3 +101,17 @@
  		}
  	}
  }
+--- a/proxy/freedom/freedom.go
++++ b/proxy/freedom/freedom.go
+@@ -542,9 +542,8 @@
+ 		// if udp dest addr is changed, we are unable to get the correct src addr
+ 		// so we don't attach src info to udp packet, break cone behavior, assuming the dial dest is the expected scr addr
+ 		if !r.IsOverridden {
+-			if r.InitChangedAddr == sourceAddr {
+-				sourceAddr = r.InitUnchangedAddr
+-			}
++			// Multiple SOCKS destinations can resolve to the same address.
++			// Return the actual peer instead of the first destination's hostname.
+ 			b.UDP = &net.Destination{
+ 				Address: sourceAddr,
+ 				Port:    net.Port(udpAddr.Port),
