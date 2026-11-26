@@ -17,6 +17,9 @@
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
   <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="6" rx="2"/><rect x="4" y="13.5" width="16" height="6" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></symbol>
 </svg>
 
 <div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -92,6 +95,11 @@
       </button>
     </div>
   </div>
+  <a id="to-servers" class="row link entry" href="#servers">
+    <span class="entry-icon" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span>
+    <span class="row-text"><b>用自己的服务器搭节点</b><small id="servers-summary">有一台 VPS 就行，点一下自动装好</small></span>
+    <svg class="icon chevron"><use href="#i-arrow"/></svg>
+  </a>
   <div id="sub-groups"></div>
   <p id="sub-feedback" role="status"></p>
   <form id="import-form" class="add" hidden>
@@ -120,6 +128,105 @@
   </template>
   <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除这个订阅？</h2><p id="delete-hint"></p>
     <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="delete" class="btn danger">删除</button></form>
+  </dialog>
+</section>
+
+<section id="servers" hidden aria-labelledby="servers-title" data-nav="nodes">
+  <div class="page-head">
+    <button type="button" id="servers-back" class="icon-btn" aria-label="返回"><svg class="icon"><use href="#i-back"/></svg></button>
+    <h1 id="servers-title" tabindex="-1">我的服务器</h1>
+  </div>
+
+  <div id="server-home">
+    <div id="server-list" class="list" hidden></div>
+    <div id="server-empty" class="empty" hidden>
+      <span class="entry-icon big" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span>
+      <b>搭一个只属于你的节点</b>
+      <small>准备一台海外 Linux 服务器，填上 IP 和 root 密码，剩下的交给 Nexus。</small>
+    </div>
+    <form id="server-form" class="card" hidden>
+      <label for="server-address" class="sr-only">服务器 IP</label>
+      <input id="server-address" type="text" maxlength="128" autocomplete="off" spellcheck="false" placeholder="服务器 IP（端口不是 22 就写 IP:端口）" required>
+      <label for="server-password" class="sr-only">root 密码</label>
+      <input id="server-password" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="root 密码" required>
+      <small class="fine">密码只用这一次，不会保存在这台电脑上</small>
+      <div class="actions"><button type="button" id="server-form-cancel" class="btn">取消</button><button type="submit" id="server-start" class="btn primary">开始搭建</button></div>
+    </form>
+    <button type="button" id="show-server-form" class="btn wide"><svg class="icon"><use href="#i-plus"/></svg>添加服务器</button>
+  </div>
+
+  <div id="server-progress" class="card" hidden>
+    <b id="progress-title">正在搭建…</b>
+    <ol class="steps">
+      <li data-step="connect">连接服务器</li>
+      <li data-step="install">安装节点</li>
+      <li data-step="enroll">让这台电脑加入</li>
+    </ol>
+    <small id="progress-hint" class="fine"></small>
+    <div class="actions">
+      <button type="button" id="progress-cancel" class="btn">取消</button>
+      <button type="button" id="progress-invite" class="btn" hidden>邀请朋友</button>
+      <button type="button" id="progress-connect" class="btn primary" hidden>去连接</button>
+    </div>
+  </div>
+
+  <p id="server-feedback" role="status"></p>
+
+  <div id="server-detail" hidden>
+    <div class="card">
+      <b>邀请朋友</b>
+      <small class="fine">朋友装好 Nexus，粘贴这条邀请就能用你的节点</small>
+      <div class="chips" role="radiogroup" aria-label="可以用多久" id="invite-days">
+        <label><input type="radio" name="invite-days" value="30" checked><span>30 天</span></label>
+        <label><input type="radio" name="invite-days" value="90"><span>90 天</span></label>
+        <label><input type="radio" name="invite-days" value="365"><span>一年</span></label>
+        <label><input type="radio" name="invite-days" value=""><span>永久</span></label>
+      </div>
+      <button type="button" id="make-invite" class="btn primary">生成邀请</button>
+      <div id="invite-out" hidden>
+        <p id="invite-text"></p>
+        <div class="actions"><small class="fine">邀请 7 天内有效，只能用一次</small><button type="button" id="copy-invite" class="btn small"><svg class="icon"><use href="#i-copy"/></svg>复制</button></div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-head"><span class="group-name">在用的设备</span><small class="group-meta" id="device-meta"></small>
+        <button type="button" id="devices-refresh" class="icon-btn" aria-label="刷新设备"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      </div>
+      <div id="device-list" class="group-nodes"></div>
+    </div>
+  </div>
+
+  <template id="server-template">
+    <button type="button" class="row server">
+      <span class="entry-icon" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span>
+      <span class="row-text"><b></b><small>管理设备、邀请朋友</small></span>
+      <svg class="icon chevron" aria-hidden="true"><use href="#i-arrow"/></svg>
+    </button>
+  </template>
+  <template id="device-template">
+    <div class="device">
+      <span class="row-text"><b></b><small></small></span>
+      <button type="button" class="btn small renew">续期</button>
+      <button type="button" class="btn small ghost-danger revoke">停用</button>
+    </div>
+  </template>
+  <dialog id="confirm-bind" aria-labelledby="confirm-bind-title"><h2 id="confirm-bind-title">这台服务器已经搭好了</h2>
+    <p>看起来你之前用手机或别的电脑搭过。要直接接管它吗？不会重装，已有的设备照常能用。</p>
+    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="bind" class="btn primary">接管</button></form>
+  </dialog>
+  <dialog id="confirm-renew" aria-labelledby="confirm-renew-title"><h2 id="confirm-renew-title">续期</h2>
+    <p id="renew-hint"></p>
+    <div class="chips light" role="radiogroup" aria-label="续多久">
+      <label><input type="radio" name="renew-days" value="30" checked><span>30 天</span></label>
+      <label><input type="radio" name="renew-days" value="90"><span>90 天</span></label>
+      <label><input type="radio" name="renew-days" value="365"><span>一年</span></label>
+      <label><input type="radio" name="renew-days" value=""><span>永久</span></label>
+    </div>
+    <form method="dialog"><button value="cancel" class="btn">取消</button><button value="renew" class="btn primary">续期</button></form>
+  </dialog>
+  <dialog id="confirm-revoke" aria-labelledby="confirm-revoke-title"><h2 id="confirm-revoke-title">停用这台设备？</h2>
+    <p id="revoke-hint"></p>
+    <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="revoke" class="btn danger">停用</button></form>
   </dialog>
 </section>
 

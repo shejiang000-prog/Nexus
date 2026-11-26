@@ -21,14 +21,14 @@ function navigate(focus) {
   for (const section of pages) section.hidden = section !== page;
   let current = null;
   for (const link of document.querySelectorAll("nav a")) {
-    if (link.hash === "#" + page.id) { link.setAttribute("aria-current", "page"); current = link; }
+    if (link.hash === "#" + (page.dataset.nav || page.id)) { link.setAttribute("aria-current", "page"); current = link; }
     else link.removeAttribute("aria-current");
   }
   placePill(document.querySelector(".nav-pill"), current);
   if (focus) page.querySelector("h1").focus({preventScroll:true});
   document.querySelector("main").scrollTop = 0;
 }
-window.addEventListener("hashchange", () => navigate(true));
+window.addEventListener("hashchange", () => { navigate(true); if (location.hash === "#servers") openServers(); });
 
 const messages = {
   invite_invalid: "这条邀请链接不完整，请重新复制一遍。",
@@ -65,7 +65,26 @@ const messages = {
   probe_unsupported: "这个版本还不支持测速。",
   probe_busy: "正在测速，稍等。",
   probe_failed: "测速没完成，再试一次。",
-  generic: "出了点问题，再试一次。"
+  generic: "出了点问题，再试一次。",
+  invalid_endpoint: "IP 格式不对。端口不是 22 的话，写成 IP:端口。",
+  host_key_changed: "这台服务器的身份和之前不一样，为了安全已经停下。如果你刚重装过系统，先找服务商确认一下。",
+  ssh_timeout: "连不上服务器。检查一下 IP 对不对，也可能是这个 IP 被墙了。",
+  ssh_refused: "服务器拒绝连接，检查一下 SSH 端口。",
+  ssh_auth: "root 密码不对。",
+  ssh_failed: "和服务器的连接出了问题，再试一次。",
+  not_installed: "这台服务器还没搭过节点。",
+  unsupported_arch: "这台服务器的 CPU 类型不支持，换一台 x86 或 ARM 的 Linux 服务器。",
+  node_download: "服务器下载节点程序失败，看看它能不能访问 GitHub。",
+  node_checksum: "下载的节点程序没通过校验，已经停止安装。",
+  install_port_occupied: "服务器上需要的端口被别的程序占了（通常是 443），先停掉它再试。",
+  install_failed: "安装没成功，再试一次。",
+  server_not_found: "找不到这台服务器的记录，重新添加一次。",
+  ledger_failed: "服务器没有正常回应，再试一次。",
+  owner_storage: "这台电脑上的服务器记录读不出来了。",
+  owner_busy: "另一个 Nexus 窗口正在操作服务器，稍等一下。",
+  enrollment_failed: "节点已经装好，但这台电脑没加入成功。再点一次「开始搭建」会接着完成。",
+  cancelled: "已取消。",
+  owner_failed: "没成功，再试一次。"
 };
 const protocolName = protocol => ({hysteria:"Hysteria2", vless:"VLESS", vmess:"VMess", trojan:"Trojan", shadowsocks:"Shadowsocks"})[protocol] || String(protocol).toUpperCase();
 const modeInputs = [...document.querySelectorAll('input[name="mode"]')];
@@ -504,10 +523,324 @@ async function softwareUpdate(automatic) {
 }
 updateAction.addEventListener("click", () => softwareUpdate(false));
 
+// My servers: deploy a node with a root password, then manage who may use it.
+let servers = [];
+let serverId = "";
+let ownerBusy = false;
+let ownerOperation = 0;
+let formKind = "deploy";
+let devices = [];
+let deviceTarget = null;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const serverLabel = label => label.endsWith(":22") ? label.slice(0, -3) : label;
+const chipValue = name => { const v = document.querySelector(`input[name="${name}"]:checked`)?.value; return v ? Number(v) : null; };
+
+async function owner(fields, onPhase) {
+  ownerBusy = true;
+  serverControls();
+  try {
+    const id = await invoke("owner_start", fields);
+    ownerOperation = id;
+    for (;;) {
+      await sleep(400);
+      const {phase, error} = await invoke("owner_status", {operationId:id});
+      onPhase?.(phase);
+      if (phase === "done") return await invoke("owner_result", {operationId:id});
+      if (phase === "failed" || phase === "cancelled") throw error || "owner_failed";
+    }
+  } finally {
+    ownerOperation = 0;
+    ownerBusy = false;
+    serverControls();
+  }
+}
+
+function serverFeedback(text, error) {
+  const status = $("server-feedback");
+  status.textContent = text;
+  status.classList.toggle("error", !!error);
+}
+const ownerMessage = (err, managing) => err === "ssh_auth" && managing
+  ? "服务器不认这台电脑的管理权了。点「添加服务器」，用 root 密码重新接管一次。"
+  : messages[err] || messages.owner_failed;
+
+function showServerView(view) {
+  $("server-home").hidden = view !== "home";
+  $("server-progress").hidden = view !== "progress";
+  $("server-detail").hidden = view !== "detail";
+  const server = servers.find(row => row.serverId === serverId);
+  setText($("servers-title"), view === "detail" && server ? serverLabel(server.label) : "我的服务器");
+  document.querySelector("main").scrollTop = 0;
+}
+
+function serverControls() {
+  $("server-start").disabled = ownerBusy || !invoke;
+  $("show-server-form").disabled = ownerBusy;
+  $("make-invite").disabled = ownerBusy;
+  $("devices-refresh").disabled = ownerBusy;
+  for (const button of document.querySelectorAll("#server-list .server, #device-list .btn")) button.disabled = ownerBusy;
+  $("servers-back").disabled = ownerBusy && !$("server-progress").hidden;
+}
+
+function setFormKind(kind) {
+  formKind = kind;
+  setText($("server-start"), kind === "bind" ? "接管" : "开始搭建");
+}
+function closeServerForm() {
+  $("server-form").hidden = true;
+  $("show-server-form").hidden = false;
+  $("server-password").value = "";
+  setFormKind("deploy");
+}
+
+function showServers() {
+  const template = $("server-template").content.firstElementChild;
+  const rows = servers.map((server, i) => {
+    const row = template.cloneNode(true);
+    row.querySelector("b").textContent = serverLabel(server.label);
+    row.style.setProperty("--i", String(i));
+    row.addEventListener("click", () => openServer(server.serverId));
+    return row;
+  });
+  $("server-list").replaceChildren(...rows);
+  $("server-list").hidden = !servers.length;
+  $("server-empty").hidden = !!servers.length;
+  setText($("servers-summary"), servers.length ? servers.length + " 台服务器 · 管理设备、邀请朋友" : "有一台 VPS 就行，点一下自动装好");
+  setText($("to-servers").querySelector("b"), servers.length ? "我的服务器" : "用自己的服务器搭节点");
+  serverControls();
+}
+
+async function loadServers() {
+  if (!invoke || ownerBusy) return;
+  try { servers = await owner({op:"list"}); }
+  catch (err) { serverFeedback(ownerMessage(err), true); }
+  showServers();
+}
+
+function openServers() {
+  if (ownerBusy) return;
+  serverFeedback("");
+  showServerView("home");
+  loadServers();
+}
+
+$("servers-back").addEventListener("click", () => {
+  if (!$("server-home").hidden) location.hash = "nodes";
+  else { serverFeedback(""); showServerView("home"); loadServers(); }
+});
+$("show-server-form").addEventListener("click", () => {
+  $("server-form").hidden = false;
+  $("show-server-form").hidden = true;
+  serverFeedback("");
+  $("server-address").focus();
+});
+$("server-form-cancel").addEventListener("click", () => { closeServerForm(); serverFeedback(""); showServers(); });
+
+function progress(kind, phase) {
+  const order = kind === "bind" ? ["connect", "enroll"] : ["connect", "install", "enroll"];
+  // Deploy authorizes before installing and checks again after; "binding" keeps the current step.
+  const at = {queued:"connect", connecting:"connect", binding: kind === "bind" ? "enroll" : null, installing:"install", enrolling:"enroll", done:"end"}[phase];
+  if (at) {
+    const index = at === "end" ? order.length : order.indexOf(at);
+    for (const li of $("server-progress").querySelectorAll(".steps li")) {
+      const i = order.indexOf(li.dataset.step);
+      li.hidden = i < 0;
+      li.className = i < index ? "done" : i === index ? "active" : "";
+    }
+  }
+  setText($("progress-hint"), phase === "installing" ? "安装大约要 2 到 5 分钟，别关掉窗口" : "");
+}
+
+function startProgress(kind) {
+  setText($("progress-title"), kind === "bind" ? "正在接管…" : "正在搭建…");
+  setText($("server-progress").querySelector('[data-step="enroll"]'), kind === "bind" ? "接管管理权" : "让这台电脑加入");
+  $("progress-cancel").hidden = false;
+  $("progress-cancel").disabled = false;
+  $("progress-invite").hidden = true;
+  $("progress-connect").hidden = true;
+  progress(kind, "queued");
+  showServerView("progress");
+}
+
+async function addServer(kind, address, password) {
+  serverFeedback("");
+  startProgress(kind);
+  try {
+    const {pin} = await owner({op:"discover", address});
+    const result = await owner({op:kind, address, pin, password}, phase => progress(kind, phase));
+    password = "";
+    serverId = result.serverId;
+    $("server-address").value = "";
+    closeServerForm();
+    progress(kind, "done");
+    $("progress-cancel").hidden = true;
+    $("progress-invite").hidden = false;
+    if (kind === "deploy") {
+      setText($("progress-title"), "搭好了！这台电脑已经加入");
+      source = "v2";
+      localStorage.setItem("connectionSource", source);
+      await readIdentity();
+      render();
+      $("progress-connect").hidden = false;
+    } else setText($("progress-title"), "接管好了");
+    servers = await owner({op:"list"}).catch(() => servers);
+    showServers();
+  } catch (err) {
+    password = "";
+    showServerView("home");
+    if (err === "already_installed" && kind === "deploy") {
+      $("confirm-bind").returnValue = "";
+      $("confirm-bind").showModal();
+      return;
+    }
+    serverFeedback(ownerMessage(err), err !== "cancelled");
+  }
+}
+
+$("server-form").addEventListener("submit", event => {
+  event.preventDefault();
+  if ($("server-start").disabled) return;
+  if (formKind === "deploy" && running(snapshot[0])) { serverFeedback("先在「连接」页断开，再开始搭建。", true); return; }
+  const password = $("server-password").value;
+  $("server-password").value = "";
+  addServer(formKind, $("server-address").value.trim(), password);
+});
+$("confirm-bind").addEventListener("close", () => {
+  if ($("confirm-bind").returnValue !== "bind") { closeServerForm(); showServers(); return; }
+  // The password was cleared on purpose; ask once more rather than keep it in memory.
+  setFormKind("bind");
+  serverFeedback("再输一次 root 密码就能接管。");
+  $("server-password").focus();
+});
+$("progress-cancel").addEventListener("click", async () => {
+  if (!ownerOperation) return;
+  $("progress-cancel").disabled = true;
+  setText($("progress-title"), "正在取消…");
+  try { await invoke("owner_cancel", {operationId:ownerOperation}); } catch {}
+});
+$("progress-connect").addEventListener("click", () => { location.hash = "home"; });
+$("progress-invite").addEventListener("click", () => openServer(serverId));
+
+function expiryText(device) {
+  if (device.revoked) return "已停用";
+  if (!device.expiryKnown) return "到期时间未知";
+  if (device.expiresAt === null) return "永久可用";
+  const end = new Date(device.expiresAt * 1000);
+  if (end <= Date.now()) return "已过期";
+  const days = Math.ceil((end - Date.now()) / 864e5);
+  return end.toLocaleDateString("zh-CN") + " 到期" + (days <= 7 ? "，还剩 " + days + " 天" : "");
+}
+
+function showDevices() {
+  const template = $("device-template").content.firstElementChild;
+  const sorted = [...devices].sort((a, b) => a.revoked - b.revoked);
+  const rows = sorted.map((device, i) => {
+    const row = template.cloneNode(true);
+    row.style.setProperty("--i", String(i));
+    row.classList.toggle("revoked", device.revoked);
+    row.querySelector("b").textContent = device.name;
+    const small = row.querySelector("small");
+    small.textContent = expiryText(device);
+    small.classList.toggle("warn", !device.revoked && device.expiresAt !== null && device.expiresAt * 1000 - Date.now() < 7 * 864e5);
+    row.querySelector(".renew").hidden = device.revoked;
+    row.querySelector(".revoke").hidden = device.revoked;
+    row.querySelector(".renew").addEventListener("click", () => {
+      deviceTarget = device;
+      setText($("renew-hint"), "「" + device.name + "」" + (device.expiresAt && device.expiresAt * 1000 > Date.now() ? "从到期那天往后加。" : "从今天开始算。"));
+      $("confirm-renew").returnValue = "";
+      $("confirm-renew").showModal();
+    });
+    row.querySelector(".revoke").addEventListener("click", () => {
+      deviceTarget = device;
+      setText($("revoke-hint"), "「" + device.name + "」会马上断开，以后也连不上了。想再用需要一条新的邀请。");
+      $("confirm-revoke").returnValue = "";
+      $("confirm-revoke").showModal();
+    });
+    return row;
+  });
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "device-empty";
+    empty.textContent = "还没有设备";
+    rows.push(empty);
+  }
+  $("device-list").replaceChildren(...rows);
+  const live = devices.filter(device => !device.revoked).length;
+  setText($("device-meta"), live ? live + " 台" : "");
+  serverControls();
+}
+
+async function loadDevices() {
+  const button = $("devices-refresh");
+  button.classList.add("spinning");
+  try { devices = await owner({op:"devices", serverId}); showDevices(); }
+  catch (err) { serverFeedback(ownerMessage(err, true), true); }
+  finally { button.classList.remove("spinning"); }
+}
+
+function openServer(id) {
+  serverId = id;
+  serverFeedback("");
+  $("invite-out").hidden = true;
+  setText($("make-invite"), "生成邀请");
+  $("make-invite").classList.add("primary");
+  $("copy-invite").classList.remove("primary");
+  devices = [];
+  $("device-list").replaceChildren();
+  setText($("device-meta"), "");
+  showServerView("detail");
+  loadDevices();
+}
+$("devices-refresh").addEventListener("click", loadDevices);
+
+$("make-invite").addEventListener("click", async () => {
+  serverFeedback("");
+  setText($("make-invite"), "正在生成…");
+  try {
+    const {text} = await owner({op:"invite", serverId, days:chipValue("invite-days")});
+    setText($("invite-text"), text);
+    $("invite-out").hidden = false;
+    setText($("make-invite"), "再生成一条");
+    $("make-invite").classList.remove("primary");
+    $("copy-invite").classList.add("primary");
+    loadDevices();
+  } catch (err) {
+    setText($("make-invite"), "生成邀请");
+    serverFeedback(ownerMessage(err, true), true);
+  }
+});
+$("copy-invite").addEventListener("click", async () => {
+  const label = $("copy-invite").lastChild;
+  try {
+    await navigator.clipboard.writeText($("invite-text").textContent);
+    label.textContent = "已复制";
+  } catch {
+    getSelection().selectAllChildren($("invite-text"));
+    label.textContent = "按 Ctrl+C";
+  }
+  setTimeout(() => { label.textContent = "复制"; }, 1800);
+});
+
+$("confirm-renew").addEventListener("close", async () => {
+  if ($("confirm-renew").returnValue !== "renew" || !deviceTarget) return;
+  const target = deviceTarget;
+  try { await owner({op:"renew", serverId, accountId:target.accountId, days:chipValue("renew-days")}); serverFeedback("续好了"); }
+  catch (err) { serverFeedback(ownerMessage(err, true), true); }
+  loadDevices();
+});
+$("confirm-revoke").addEventListener("close", async () => {
+  if ($("confirm-revoke").returnValue !== "revoke" || !deviceTarget) return;
+  const target = deviceTarget;
+  try { await owner({op:"revoke", serverId, deviceId:target.deviceId}); serverFeedback("已停用"); }
+  catch (err) { serverFeedback(ownerMessage(err, true), true); }
+  loadDevices();
+});
+
 navigate(false);
 placeModePill();
 // Pills are measured after fonts settle so their first position is exact.
 document.fonts?.ready.then(() => { navigate(false); placeModePill(); });
 softwareUpdate(true);
 manage("subscriptions");
+if (location.hash === "#servers") openServers(); else loadServers();
 refresh();
