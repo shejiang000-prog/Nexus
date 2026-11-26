@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod import_link;
 mod owner;
 mod probes;
 mod subscriptions;
@@ -427,6 +428,13 @@ fn main() {
     let cleanup = match args.next() {
         None => false,
         Some(arg) if arg == "--cleanup" && args.next().is_none() => true,
+        // Windows passes a clicked nexus:// link as the only argument.
+        Some(arg) if args.next().is_none() && arg.to_str().is_some_and(|s| s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("nexus://"))) => {
+            if import_link::hand_over(arg.to_str().unwrap_or_default()) {
+                std::process::exit(0);
+            }
+            false
+        }
         Some(_) => std::process::exit(2),
     };
     let _install = updates::install_lock().unwrap_or_else(|code| std::process::exit(code));
@@ -443,6 +451,10 @@ fn main() {
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            import_link::listen(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_core,
             stop_core,
@@ -456,6 +468,7 @@ fn main() {
             set_proxy,
             device_identity,
             subscriptions::subscriptions,
+            import_link::pending_import,
             updates::check_update,
             updates::install_update
         ])

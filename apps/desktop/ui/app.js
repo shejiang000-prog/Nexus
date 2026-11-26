@@ -517,6 +517,25 @@ $("import-form").addEventListener("submit", event => {
   event.preventDefault();
   if (!$("add-sub").disabled) manage("import_subscription", {url:$("subscription-url").value.trim()});
 });
+// One-click import: a website opened nexus://install-config?url=…&name=…
+let importUrl = "";
+async function checkImport() {
+  const found = await invoke("pending_import").catch(() => null);
+  if (!found) return;
+  const [url, name] = found;
+  importUrl = url;
+  $("confirm-import-title").textContent = name ? `添加「${name}」的订阅？` : "添加这个订阅？";
+  $("import-hint").textContent = `来自 ${new URL(url).host}。添加后会自动测试全部节点。`;
+  location.hash = "nodes"; // the dialog lives on the nodes page, where the new subscription appears
+  navigate(false);
+  $("confirm-import").returnValue = "";
+  if (!$("confirm-import").open) $("confirm-import").showModal();
+}
+$("confirm-import").addEventListener("close", () => {
+  if ($("confirm-import").returnValue === "add") manage("import_subscription", {url:importUrl});
+});
+tauri?.event?.listen("nexus-import", checkImport);
+
 $("confirm-sub").addEventListener("close", () => {
   if ($("confirm-sub").returnValue === "delete") manage("remove_subscription", {id:deletingId});
 });
@@ -871,6 +890,6 @@ placeModePill();
 // Pills are measured after fonts settle so their first position is exact.
 document.fonts?.ready.then(() => { navigate(false); placeModePill(); });
 softwareUpdate(true);
-manage("subscriptions");
+manage("subscriptions").then(checkImport);
 if (location.hash === "#servers") openServers(); else loadServers();
 refresh();

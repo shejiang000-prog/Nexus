@@ -128,6 +128,9 @@
       <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
     </button>
   </template>
+  <dialog id="confirm-import" aria-labelledby="confirm-import-title"><h2 id="confirm-import-title">添加这个订阅？</h2><p id="import-hint"></p>
+    <form method="dialog"><button value="cancel" class="btn">忽略</button><button value="add" class="btn primary" autofocus>添加</button></form>
+  </dialog>
   <dialog id="confirm-sub" aria-labelledby="confirm-sub-title"><h2 id="confirm-sub-title">删除这个订阅？</h2><p id="delete-hint"></p>
     <form method="dialog"><button value="cancel" class="btn" autofocus>取消</button><button value="delete" class="btn danger">删除</button></form>
   </dialog>

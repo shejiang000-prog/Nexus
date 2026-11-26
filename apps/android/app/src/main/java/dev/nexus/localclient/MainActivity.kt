@@ -42,10 +42,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private var foundSource by mutableStateOf<String?>(null)
+    private var foundName by mutableStateOf("")
     private var checkedClip = -1L
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus || v2Invite != null) return
+        if (!hasFocus || v2Invite != null || foundSource != null) return
         val clipboard=getSystemService(android.content.ClipboardManager::class.java)
         runCatching {
             val desc=clipboard.primaryClipDescription ?: return
@@ -55,13 +56,18 @@ class MainActivity : ComponentActivity() {
             if (System.currentTimeMillis()-desc.timestamp !in 0..600_000L) return
             val item=clipboard.primaryClip?.takeIf { it.itemCount==1 }?.getItemAt(0)?.text ?: return
             if(item.length<=6000 && acceptV2Link(item.toString().trim())) return
-            subscriptionLink(item.toString())?.takeIf { link -> Subscriptions(this).all().none { it.url==link } }?.let { foundSource=it }
+            subscriptionLink(item.toString())?.takeIf { link -> Subscriptions(this).all().none { it.url==link } }?.let { foundName=""; foundSource=it }
         }
     }
     private fun readInvitation(value: Intent?) {
         if (value?.action != Intent.ACTION_VIEW) return
         val url = value.data ?: return
         if (acceptV2Link(url.toString())) { value.data=null; return }
+        importLink(url.toString())?.let { (link, name) ->
+            value.data=null
+            if (Subscriptions(this).all().any { it.url==link }) android.widget.Toast.makeText(this,"这个订阅已经添加过了",android.widget.Toast.LENGTH_SHORT).show()
+            else { foundName=name; foundSource=link }
+        }
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -274,12 +280,12 @@ class MainActivity : ComponentActivity() {
             }
             inviteError?.let { reason -> AlertDialog(onDismissRequest={inviteError=null},title={Text("无法导入 V2 邀请")},
                 text={Text(reason)},confirmButton={TextButton({inviteError=null}){Text("知道了")}}) }
-            foundSource?.let { link -> AlertDialog(onDismissRequest={foundSource=null},title={Text("发现订阅链接，添加？")},
+            foundSource?.let { link -> AlertDialog(onDismissRequest={foundSource=null},title={Text(if (foundName.isBlank()) "发现订阅链接，添加？" else "添加「$foundName」的订阅？")},
                 text={Text("来自 "+(runCatching { Uri.parse(link).host }.getOrNull() ?: "剪贴板")+"。添加后会自动测试全部节点，并开启「自动选最快」。")},
                 confirmButton={PrimaryAction({
                     foundSource=null
                     scope.launch {
-                        runCatching { withContext(Dispatchers.IO) { store.import("机场订阅",link) } }.onSuccess { source ->
+                        runCatching { withContext(Dispatchers.IO) { store.import(foundName.ifBlank { "机场订阅" },link) } }.onSuccess { source ->
                             choose("auto"); SubscriptionRefresh.testImported(this@MainActivity,source.id)
                             store.appearance.edit().putLong("tested/"+source.id,System.currentTimeMillis()).apply()
                             synchronized(SubscriptionRefresh) { SubscriptionRefresh.revision.value++ }

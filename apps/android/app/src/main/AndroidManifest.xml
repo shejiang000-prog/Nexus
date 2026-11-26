@@ -17,6 +17,13 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="nexus" android:host="invite" android:path="/v2"/>
             </intent-filter>
+            <!-- One-click subscription import from websites: nexus://install-config?url=…&name=… -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="nexus" android:host="install-config"/>
+            </intent-filter>
         </activity>
         <!-- The scanner library ships CaptureActivity locked to landscape; follow the phone instead. -->
         <activity android:name="com.journeyapps.barcodescanner.CaptureActivity"

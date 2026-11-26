@@ -107,3 +107,24 @@ internal fun subscriptionLink(text: String): String? {
         .any { it.length in 16..128 && it.all { c -> c.isLetterOrDigit() && c.code < 128 || c == '_' } && it.any(Char::isDigit) && it.any(Char::isLetter) }
     return link.takeIf { marker.containsMatchIn(tail) || token }
 }
+
+/**
+ * A website's "import to Nexus" button: nexus://install-config?url=<https URL>&name=<label>.
+ * Returns the subscription URL and a display name. It only ever leads to a prompt.
+ */
+internal fun importLink(text: String): Pair<String, String>? {
+    if (text.length > 4096) return null
+    val parts = text.split("://", limit = 2)
+    if (parts.size != 2 || !parts[0].equals("nexus", ignoreCase = true) || !parts[1].contains('?')) return null
+    if (!parts[1].substringBefore('?').trimEnd('/').equals("install-config", ignoreCase = true)) return null
+    var url: String? = null
+    var name = ""
+    for (pair in parts[1].substringAfter('?').split('&')) {
+        val value = runCatching { java.net.URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8") }.getOrNull() ?: return null
+        when (pair.substringBefore('=')) { "url" -> url = value; "name" -> name = value }
+    }
+    val link = url ?: return null
+    if (!link.startsWith("https://") || link.length > 2048 || link.any { it.isWhitespace() || it.isISOControl() }) return null
+    if (link.removePrefix("https://").takeWhile { it !in "/?#" }.isEmpty()) return null
+    return link to name.filterNot { it.isISOControl() }.take(40).trim()
+}

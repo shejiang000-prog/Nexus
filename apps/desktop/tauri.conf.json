@@ -8,7 +8,7 @@
     "withGlobalTauri": true,
     "windows": [{"title":"Nexus","width":440,"height":740,"resizable":false,"maximizable":false,"decorations":false,"shadow":true}],
     "security": {
-      "capabilities": [{"identifier":"desktop-main","windows":["main"],"permissions":["control-core","core:window:allow-start-dragging","core:window:allow-minimize","core:window:allow-close"]}],
+      "capabilities": [{"identifier":"desktop-main","windows":["main"],"permissions":["control-core","core:event:allow-listen","core:event:allow-unlisten","core:window:allow-start-dragging","core:window:allow-minimize","core:window:allow-close"]}],
       "csp":"default-src 'none'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'"}
   },
   "plugins": {"updater":{

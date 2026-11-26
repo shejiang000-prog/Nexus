@@ -264,6 +264,11 @@ Section "Nexus"
   ${If} $OldVersion == ""
     CreateShortcut "$DESKTOP\Nexus.lnk" "$INSTDIR\app\nexus-desktop.exe"
   ${EndIf}
+  ; nexus:// links: one-click subscription import from websites
+  WriteRegStr HKLM "Software\Classes\nexus" "" "URL:Nexus"
+  WriteRegStr HKLM "Software\Classes\nexus" "URL Protocol" ""
+  WriteRegStr HKLM "Software\Classes\nexus\DefaultIcon" "" "$INSTDIR\app\nexus-desktop.exe,0"
+  WriteRegStr HKLM "Software\Classes\nexus\shell\open\command" "" '"$INSTDIR\app\nexus-desktop.exe" "%1"'
   WriteRegStr HKLM "${ARP}" "DisplayName" "Nexus"
   WriteRegStr HKLM "${ARP}" "DisplayIcon" "$INSTDIR\app\nexus-desktop.exe"
   WriteRegStr HKLM "${ARP}" "DisplayVersion" "{{version}}"
@@ -286,6 +291,7 @@ Section "Nexus"
       Goto restore_service
     ${EndIf}
     Delete "$SMPROGRAMS\Nexus.lnk"
+    DeleteRegKey HKLM "Software\Classes\nexus"
     DeleteRegKey HKLM "${ARP}"
     Goto failed
   restore_service:
@@ -315,6 +321,7 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\Nexus.lnk"
   Delete "$DESKTOP\Nexus.lnk"
+  DeleteRegKey HKLM "Software\Classes\nexus"
   DeleteRegKey HKLM "${ARP}"
   DeleteRegKey HKLM "${Marker}"
   Goto done
