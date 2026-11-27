@@ -6,10 +6,11 @@
 
 **把自己的服务器一键变成私人节点，再一键分享给家人朋友。**
 
-Android 代理客户端，无需注册，内置 Nexus V2 协议，也能导入第三方订阅。
+Android 和 Windows 代理客户端，无需注册，内置 Nexus V2 协议，也能导入第三方订阅。
 
 [![Release](https://img.shields.io/github/v/release/shejiang000-prog/Nexus?style=flat-square&label=%E6%9C%80%E6%96%B0%E7%89%88&color=2F6BFF)](https://github.com/shejiang000-prog/Nexus/releases/latest)
 [![Android](https://img.shields.io/badge/Android-8.0%2B-1AA7EC?style=flat-square&logo=android&logoColor=white)](#下载与安装)
+[![Windows](https://img.shields.io/badge/Windows-10%2F11%20x64-2F6BFF?style=flat-square&logo=windows&logoColor=white)](#下载与安装)
 [![License](https://img.shields.io/badge/License-GPL--3.0-4A5A70?style=flat-square)](LICENSE)
 
 [下载](#下载与安装) · [快速上手](#快速上手) · [Nexus V2](#nexus-v2) · [常见问题](#常见问题) · [隐私](PRIVACY.md)
@@ -99,8 +100,11 @@ V2 是 Nexus 自研的传输协议。它走的是标准 HTTPS（HTTP/3 和 HTTP/
 |:--|:--|
 | `Nexus-x.y.z-arm64.apk` | 绝大多数手机（推荐） |
 | `Nexus-x.y.z-universal.apk` | 模拟器，或不确定手机 CPU 架构时 |
+| `Nexus-x.y.z-windows-x64-setup.exe` | Windows 10/11 电脑 |
 
 安装时，系统会要求允许浏览器或文件管理器「安装未知应用」，装完可以关掉这项授权。以后有新版本，App 会提示更新，直接覆盖安装就行。
+
+电脑版双击安装包即可安装。安装包暂未做代码签名，如果 Windows 提示「已保护你的电脑」，点「更多信息」→「仍要运行」。电脑版有新版本时会提示更新。电脑版的摘要在 `WINDOWS-SHA256SUMS.txt` 里。
 
 <details>
 <summary><b>校验安装包（可选）</b></summary>
