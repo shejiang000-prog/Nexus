@@ -25,10 +25,10 @@ def stage_owner_assets(dest):
     if version is None:
         version = json.loads((ROOT / "apps/desktop/tauri.conf.json").read_text(encoding="utf-8"))["version"]
     pins = [os.environ.get("NEXUS_NODE_SHA256_" + cpu) for cpu in ("AMD64", "ARM64")]
-    if pins == [None, None] and version == "2.0.1" and "NEXUS_VERSION" not in os.environ:
-        # Offline development pins from the published v2.0.1 Android APK.
-        pins = ["5b5a21032aeb133c74ac7b4e8f4b25454386a6d5ff7bb246403addbfe947ce78",
-                "c61e9d680fb6314f2ffd1c6ae2d1aae74f98aa298549975e19a1141871e3773b"]
+    if pins == [None, None] and version == "2.1.0" and "NEXUS_VERSION" not in os.environ:
+        # Offline development pins from the published v2.1.0 Android APK.
+        pins = ["f7a5950aa283b0d2fa2e6eeddc6b4dabe3f843c29454474280687a4e1d566dbb",
+                "97ced2738210ce6efafae2c07f7d93c06598b614ed258766fdfc4e659eb21943"]
     if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version) or not all(
             re.fullmatch(r"[0-9a-f]{64}", pin or "") for pin in pins):
         raise ValueError("Expected the desktop release version and both matching Android node SHA-256 digests")
