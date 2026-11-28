@@ -6,6 +6,9 @@ OutFile "{{out_file}}"
 Icon "{{installer_icon}}"
 SetCompressor /SOLID lzma
 AutoCloseWindow true
+ShowInstDetails nevershow
+ShowUninstDetails nevershow
+BrandingText "Nexus"
 VIProductVersion "{{version_with_build}}"
 VIAddVersionKey "ProductName" "Nexus"
 VIAddVersionKey "FileVersion" "{{version}}"
@@ -18,6 +21,7 @@ VIAddVersionKey "LegalCopyright" "Nexus contributors"
 !define Marker "Software\Nexus\DesktopInstaller"
 !define ARP "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexusDesktop"
 !define WV "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+LoadLanguageFile "${NSISDIR}\Contrib\Language files\SimpChinese.nlf"
 Page instfiles
 UninstPage instfiles
 Var OldVersion
@@ -135,8 +139,15 @@ Var Ticket
   !if "${prefix}" == ""
     ${If} $0 == 0
       ClearErrors
-      ${GetOptions} $2 "/UPDATE" $3
+      ; Open Nexus as the signed-in user after an interactive install or an update.
+      StrCpy $3 1
+      IfSilent 0 +2
+        StrCpy $3 0
+      ${GetOptions} $2 "/UPDATE" $4
       ${IfNot} ${Errors}
+        StrCpy $3 1
+      ${EndIf}
+      ${If} $3 == 1
         Exec '"$INSTDIR\app\nexus-desktop.exe"'
       ${EndIf}
       StrCpy $0 0
@@ -210,6 +221,8 @@ Section "Nexus"
   stage:
   SetOutPath "$INSTDIR"
   RMDir /r "$INSTDIR\next"
+  ; 2.1.0 left this literal folder behind after its failed setup.
+  RMDir /r "$INSTDIR\next\{{this}}"
   IfFileExists "$INSTDIR\next" failed
   ClearErrors
   SetOutPath "$INSTDIR\next"
@@ -247,6 +260,10 @@ Section "Nexus"
   !insertmacro Run "$INSTDIR\app\nexus-tun-helper.exe" "--install-service" discard_new
   ClearErrors
   CreateShortcut "$SMPROGRAMS\Nexus.lnk" "$INSTDIR\app\nexus-desktop.exe"
+  ; Updates keep the user's choice if they removed the desktop shortcut.
+  ${If} $OldVersion == ""
+    CreateShortcut "$DESKTOP\Nexus.lnk" "$INSTDIR\app\nexus-desktop.exe"
+  ${EndIf}
   WriteRegStr HKLM "${ARP}" "DisplayName" "Nexus"
   WriteRegStr HKLM "${ARP}" "DisplayIcon" "$INSTDIR\app\nexus-desktop.exe"
   WriteRegStr HKLM "${ARP}" "DisplayVersion" "{{version}}"
@@ -297,6 +314,7 @@ Section "Uninstall"
   Delete "$INSTDIR\maintenance.lock"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\Nexus.lnk"
+  Delete "$DESKTOP\Nexus.lnk"
   DeleteRegKey HKLM "${ARP}"
   DeleteRegKey HKLM "${Marker}"
   Goto done
