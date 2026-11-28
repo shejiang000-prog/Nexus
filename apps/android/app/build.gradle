@@ -4,7 +4,7 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 // Isolated laboratory builds accept a locally built, untracked AAR.
 def labAar = providers.gradleProperty('nexusV2Aar').orNull
-def publicVersion = '2.1.1'
+def publicVersion = '2.2.0'
 def components = publicVersion.tokenize('.').collect { Integer.parseInt(it) }
 assert components.size() == 3 && components[1] < 100 && components[2] < 100
 def numericVersion = components[0] * 10000 + components[1] * 100 + components[2]
