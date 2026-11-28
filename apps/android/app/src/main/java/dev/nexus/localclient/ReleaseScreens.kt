@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -119,7 +118,12 @@ internal fun AboutScreen(){
     val ctx=LocalContext.current
     val c=MaterialTheme.colorScheme
     var document by androidx.compose.runtime.saveable.rememberSaveable {mutableStateOf("")}
-    var feedback by remember {mutableStateOf(false)}
+    var writing by remember {mutableStateOf(false)}
+    var message by remember {mutableStateOf("")}
+    var contact by remember {mutableStateOf("")}
+    var sending by remember {mutableStateOf(false)}
+    var sendStatus by remember {mutableStateOf("会一起发送 App 版本和系统版本")}
+    val scope=rememberCoroutineScope()
     var logs by remember {mutableStateOf(false)}
     var report by remember {mutableStateOf("")}
     val assets=ctx.assets
@@ -132,7 +136,7 @@ internal fun AboutScreen(){
             files("licenses").sorted()
         }
     }
-    androidx.activity.compose.BackHandler(document.isNotEmpty()||logs){ if(report.isNotEmpty()) report="" else {document="";logs=false} }
+    androidx.activity.compose.BackHandler(document.isNotEmpty()||logs||writing){ if(report.isNotEmpty()) report="" else {document="";logs=false;writing=false} }
     val lines by produceState(emptyList<String>(),document){
         value=if(document.isEmpty()||document=="licenses") emptyList() else withContext(Dispatchers.IO){
             assets.open(document).bufferedReader().readLines()
@@ -142,7 +146,26 @@ internal fun AboutScreen(){
         .format(java.util.Date(java.time.Instant.parse(BuildConfig.BUILT_AT).toEpochMilli())) }.getOrDefault(BuildConfig.BUILT_AT) }
     val crashes=remember(logs) { CrashReports.files(ctx) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal=20.dp),contentPadding=PaddingValues(vertical=16.dp)){
-        if(logs){
+        if(writing){
+            item{Text("反馈问题",Modifier.padding(bottom=12.dp),style=MaterialTheme.typography.headlineMedium)}
+            item{OutlinedTextField(message,{message=it.take(Feedback.MAX_BODY)},Modifier.fillMaxWidth(),minLines=6,
+                placeholder={Text("遇到了什么问题，或者希望加什么功能")})}
+            item{OutlinedTextField(contact,{contact=it.take(Feedback.MAX_CONTACT)},Modifier.fillMaxWidth().padding(top=10.dp),singleLine=true,
+                placeholder={Text("联系方式（选填，方便我们回复你）")})}
+            item{Text(sendStatus,Modifier.padding(vertical=10.dp),color=c.onSurfaceVariant,fontSize=13.sp)}
+            item{PrimaryAction({
+                sending=true;sendStatus="正在发送…"
+                scope.launch{
+                    val result=withContext(Dispatchers.IO){Feedback.send(message,contact)}
+                    sending=false
+                    sendStatus=when(result){
+                        Feedback.Result.SENT->{message="";"收到了，谢谢你的反馈！"}
+                        Feedback.Result.BUSY->"发得有点频繁，过一会儿再试。"
+                        Feedback.Result.FAILED->"没发出去，检查一下网络再试。"
+                    }
+                }
+            },Modifier.fillMaxWidth(),enabled=!sending&&message.isNotBlank()){Text("发送")}}
+        }else if(logs){
             item{Text("本机崩溃记录",style=MaterialTheme.typography.headlineMedium)}
             item{Text("只含 App 内部的类名和方法名，不含链接、地址或密钥。",Modifier.padding(top=6.dp,bottom=10.dp),color=c.onSurfaceVariant,fontSize=14.sp)}
             if(crashes.isEmpty())item{Text("尚无崩溃记录",color=c.onSurfaceVariant)}
@@ -179,19 +202,11 @@ internal fun AboutScreen(){
             }
             item{SectionLabel("说明")}
             item{ListRow("GitHub 源码","github.com/shejiang000-prog/Nexus",GroupPlace.First){browse(ctx,REPOSITORY)}}
-            item{ListRow("隐私说明","App 不收集、不上传任何数据",GroupPlace.Middle){document="PRIVACY.md"}}
+            item{ListRow("隐私说明","不收集数据，只在你提交反馈时发送",GroupPlace.Middle){document="PRIVACY.md"}}
             item{ListRow("开源许可","${licenses.size} 份第三方许可证",GroupPlace.Last){document="licenses"}}
             item{SectionLabel("遇到问题")}
             item{ListRow("本机崩溃记录",if(crashes.isEmpty()) "暂无" else "最近 ${crashes.size} 次",GroupPlace.First){logs=true}}
-            item{ListRow("反馈问题","在 GitHub 提交，由你确认后发送",GroupPlace.Last){feedback=true}}
+            item{ListRow("反馈问题","遇到问题或有建议，直接告诉我们",GroupPlace.Last){writing=true}}
         }
-    }
-    if(feedback){
-        val details="App "+BuildConfig.VERSION_NAME+"\nAndroid "+Build.VERSION.RELEASE+"\n机型 "+Build.MODEL
-        AlertDialog(onDismissRequest={feedback=false},title={Text("在 GitHub 反馈问题？")},
-            text={Text("浏览器会预填以下信息，由你检查并提交。崩溃记录可在上一页查看和复制。\n\n"+details)},
-            confirmButton={PrimaryAction({feedback=false;browse(ctx,Uri.parse("$REPOSITORY/issues/new").buildUpon()
-                .appendQueryParameter("title","Android 问题反馈").appendQueryParameter("body",details+"\n\n遇到的问题：").build().toString())}){Text("打开 GitHub")}},
-            dismissButton={SecondaryAction({feedback=false}){Text("取消")}})
     }
 }

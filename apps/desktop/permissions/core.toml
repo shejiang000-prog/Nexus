@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "control-core"
 description = "Read status and start or stop the bundled local core."
-commands.allow = ["start_core", "stop_core", "core_status", "traffic_stats", "probe_nodes", "owner_start", "owner_status", "owner_result", "owner_cancel", "set_proxy", "device_identity", "subscriptions", "pending_import", "check_update", "install_update"]
+commands.allow = ["start_core", "stop_core", "core_status", "traffic_stats", "probe_nodes", "owner_start", "owner_status", "owner_result", "owner_cancel", "set_proxy", "device_identity", "subscriptions", "send_feedback", "pending_import", "check_update", "install_update"]

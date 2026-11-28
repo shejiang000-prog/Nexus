@@ -130,7 +130,7 @@ if __name__ == "__main__":
                             "-run", "^TestDesktopRouting$", "./cmd/nexus-core"], cwd=lib, env=env, check=True)
         if args.test_subscriptions:
             subprocess.run(["go", "test", "-mod=readonly", "-ldflags=-checklinkname=0",
-                            "-run", "Subscription", "./subscriptions", "./cmd/nexus-core"], cwd=lib, env=env, check=True)
+                            "-run", "Subscription|Feedback", "./subscriptions", "./cmd/nexus-core"], cwd=lib, env=env, check=True)
         if args.test_owner:
             subprocess.run(["go", "test", "-mod=readonly", "-ldflags=-checklinkname=0",
                             "-run", "^TestOwner", "-v", "./cmd/nexus-core"], cwd=lib, env=env, check=True)

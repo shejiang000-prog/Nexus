@@ -57,6 +57,8 @@ const messages = {
   tun_version: "程序版本不一致，请重新安装 Nexus。",
   tun_recovering: "正在恢复上次的网络设置，稍等一下再连。",
   update_busy: "正在更新，稍等一下。",
+  feedback_busy: "发得有点频繁，过一会儿再试。",
+  feedback_failed: "没发出去，检查一下网络再试。",
   update_check: "暂时检查不了更新",
   update_download: "更新下载失败，检查网络后再试",
   update_signature: "更新包校验没通过，已取消安装",
@@ -893,3 +895,22 @@ softwareUpdate(true);
 manage("subscriptions").then(checkImport);
 if (location.hash === "#servers") openServers(); else loadServers();
 refresh();
+
+// Feedback is sent only when the user presses 发送.
+$("feedback-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const status = $("feedback-status"), send = $("feedback-send"), body = $("feedback-body");
+  if (send.disabled || !body.value.trim()) return;
+  if (!invoke) { status.textContent = messages.missing; return; }
+  send.disabled = true;
+  status.textContent = "正在发送…";
+  try {
+    await invoke("send_feedback", {body: body.value, contact: $("feedback-contact").value});
+    body.value = "";
+    status.textContent = "收到了，谢谢你的反馈！";
+  } catch (error) {
+    status.textContent = messages[error] || messages.feedback_failed;
+  } finally {
+    send.disabled = false;
+  }
+});

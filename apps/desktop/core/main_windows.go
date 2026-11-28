@@ -216,6 +216,8 @@ func command() (result string) {
 	switch req.Action {
 	case "owner":
 		return ownerCommand(line)
+	case "feedback":
+		return feedbackCommand(line)
 	case "probe_nodes":
 		if req.V2 != nil && (!*req.V2 || req.SubscriptionID != "") || req.V2 == nil && !validSourceID(req.SubscriptionID) {
 			return "invalid_request"

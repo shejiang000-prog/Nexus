@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod feedback;
 mod import_link;
 mod owner;
 mod probes;
@@ -468,6 +469,7 @@ fn main() {
             set_proxy,
             device_identity,
             subscriptions::subscriptions,
+            feedback::send_feedback,
             import_link::pending_import,
             updates::check_update,
             updates::install_update
