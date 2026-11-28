@@ -215,7 +215,7 @@ Section "Nexus"
   SetOutPath "$INSTDIR\next"
   File "/oname=nexus-desktop.exe" "{{main_binary_path}}"
   {{#each resources_dirs}}
-  CreateDirectory "$OUTDIR\{{this}}"
+  CreateDirectory "$OUTDIR\\{{this}}"
   {{/each}}
   {{#each resources}}
   File "/oname={{this.[1]}}" "{{no-escape @key}}"
