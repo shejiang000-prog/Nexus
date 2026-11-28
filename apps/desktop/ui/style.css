@@ -1,5 +1,5 @@
 /* Nexus desktop · "流光": a living blue–cyan–violet field under frosted glass.
-   Fixed 380x620 frameless window. Brand blues match the Android app. */
+   Fixed 440x740 frameless window. Brand blues match the Android app. */
 :root {
   color-scheme: dark;
   --ink: #FFFFFF; --ink-soft: rgba(255,255,255,.82); --ink-muted: rgba(255,255,255,.62);
@@ -9,7 +9,7 @@
   --good: #8CFFD0; --fair: #FFE08A; --bad: #FFC2C2; --danger: #E5484D;
   --spring: cubic-bezier(.34, 1.4, .5, 1);
   --ease: cubic-bezier(.2, .7, .2, 1);
-  font: 13.5px/1.45 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   color: var(--ink); background: #2F6BFF;
 }
 * { box-sizing: border-box; }
@@ -48,7 +48,7 @@ body:has(.hero[data-link=failed]) .aurora::after { background: rgba(120,20,40,.2
 .brand { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: .03em; text-shadow: 0 1px 8px rgba(10,20,80,.2); }
 .brand img { border-radius: 6px; box-shadow: 0 2px 8px rgba(10,20,80,.25); }
 nav { position: relative; display: flex; margin-left: auto; padding: 3px; border-radius: 11px; background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px); }
-nav a { position: relative; z-index: 1; padding: 3px 10px; border-radius: 8px; color: var(--ink-soft); text-decoration: none; font-size: 12.5px; font-weight: 600; transition: color .25s; }
+nav a { position: relative; z-index: 1; padding: 4px 12px; border-radius: 8px; color: var(--ink-soft); text-decoration: none; font-size: 13.5px; font-weight: 600; transition: color .25s; }
 nav a:hover { color: #fff; }
 nav a[aria-current] { color: var(--signal-text); }
 .nav-pill, .seg-pill { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 8px; background: #fff; box-shadow: 0 2px 8px rgba(12,28,96,.18); transition: transform .4s var(--spring), width .4s var(--spring); }
@@ -63,7 +63,7 @@ main section:not([hidden]) { animation: page-in .38s var(--ease); }
 @keyframes page-in { from { opacity: 0; transform: translateY(10px) scale(.99); } }
 
 /* Glass surfaces */
-.glass, .link, .list, .group-nodes, .seg, #enrollment input, .add input, .traffic { background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(18px) saturate(1.2); box-shadow: var(--glass-shadow); }
+.glass, .link, .list, .group-nodes, .seg, .add input, .traffic { background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(18px) saturate(1.2); box-shadow: var(--glass-shadow); }
 
 /* Connect page */
 #home { height: 100%; }
@@ -153,7 +153,14 @@ label.row-text { cursor: pointer; }
 .link:hover .chevron { transform: translateX(3px); }
 .list { overflow: hidden; margin-top: 10px; border-radius: 18px; }
 .list .row + .row { border-top: 1px solid rgba(255,255,255,.16); }
-#enrollment { flex: none; animation: rise .35s var(--ease); }
+#current { min-height: 66px; }
+.eyebrow { color: var(--ink-muted); font-size: 11px !important; letter-spacing: .04em; }
+#current b { font-size: 15px; }
+.change { display: flex; align-items: center; gap: 2px; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+.tun-row { flex: none; border-radius: 18px; background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(18px) saturate(1.2); box-shadow: var(--glass-shadow); }
+.tun-row:has(:checked) { background: var(--glass-strong); border-color: rgba(255,255,255,.5); }
+.join { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 10px; animation: rise .35s var(--ease); }
+.join input[type=password] { height: 36px; border: 1px solid var(--glass-line); background: rgba(255,255,255,.1); }
 input[type=password] { width: 100%; height: 42px; padding: 0 14px; border-radius: 14px; color: #fff; font: inherit; transition: border-color .2s, background .2s; }
 input::placeholder { color: var(--ink-muted); }
 input[type=password]:focus { outline: none; background: var(--glass-strong); border-color: rgba(255,255,255,.7); }

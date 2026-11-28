@@ -65,19 +65,16 @@
     <p id="feedback" role="alert" hidden></p>
 
     <a id="current" class="row link" href="#nodes">
-      <span class="row-text"><b id="current-name">私人节点</b><small id="current-from"></small></span>
+      <span class="row-text"><small class="eyebrow">当前节点</small><b id="current-name">私人节点</b><small id="current-from"></small></span>
       <span id="current-latency" class="latency" hidden></span>
-      <svg class="icon chevron"><use href="#i-arrow"/></svg>
+      <span class="change">换节点<svg class="icon chevron"><use href="#i-arrow"/></svg></span>
     </a>
-    <div id="enrollment" hidden>
-      <label for="invite" class="sr-only">邀请链接</label>
-      <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴邀请链接">
-    </div>
     <div class="seg" role="radiogroup" aria-label="分流模式">
       <span class="seg-pill" aria-hidden="true"></span>
       <label><input type="radio" name="mode" value="split" checked><span>绕过大陆</span></label>
       <label><input type="radio" name="mode" value="global"><span>全局代理</span></label>
     </div>
+    <div class="row tun-row"><label for="tun" class="row-text"><b>接管全部流量（TUN）</b><small id="tun-hint">游戏、命令行也走 Nexus，开启时要授权</small></label><input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled></div>
   </form>
 </section>
 
@@ -85,14 +82,19 @@
   <h1 id="nodes-title" class="sr-only" tabindex="-1">节点</h1>
   <p id="selected-hint" class="hint"></p>
   <div class="group">
-    <div class="group-head"><span class="group-name">我的节点</span><small class="group-meta"></small>
+    <div class="group-head"><span class="group-name">私人节点</span><small class="group-meta"></small>
       <button type="button" class="icon-btn probe" data-probe="v2" aria-label="测试延迟"><svg class="icon"><use href="#i-bolt"/></svg></button>
     </div>
     <div class="group-nodes">
-      <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false" data-id="v2">
+      <button type="button" id="pick-v2" class="node" role="radio" aria-checked="false" data-id="v2" hidden>
         <span class="node-name" id="v2-name">私人节点</span><span class="latency" hidden></span><span class="badge">私人</span>
         <svg class="icon node-check" aria-hidden="true"><use href="#i-check"/></svg>
       </button>
+      <form id="enrollment" class="join" hidden>
+        <label for="invite" class="sr-only">邀请链接</label>
+        <input id="invite" type="password" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="粘贴朋友发来的邀请链接" required>
+        <button type="submit" id="join" class="btn primary small">加入</button>
+      </form>
     </div>
   </div>
   <a id="to-servers" class="row link entry" href="#servers">
@@ -234,7 +236,6 @@
   <h1 id="settings-title" class="sr-only" tabindex="-1">设置</h1>
   <div class="list">
     <div class="row"><label for="proxy" class="row-text"><b>系统代理</b><small>浏览器等软件自动走 Nexus</small></label><input type="checkbox" role="switch" id="proxy" checked disabled></div>
-    <div class="row"><label for="tun" class="row-text"><b>接管全部流量</b><small id="tun-hint">游戏、命令行也走 Nexus，开启时要授权</small></label><input type="checkbox" role="switch" id="tun" aria-describedby="tun-hint" disabled></div>
   </div>
   <div class="list">
     <div class="row"><span class="row-text"><b>本机端口</b><small id="ports">连接后显示</small></span></div>

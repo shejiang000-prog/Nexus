@@ -160,15 +160,19 @@ function render() {
   setText($("clock"), ready ? clock() : active ? "" : "点一下开始连接");
   $("traffic").hidden = !ready || !trafficSupported;
 
+  if (!active) autoPick();
   const fromSubscription = source === "subscription";
   const selected = catalog.find(sub => sub.id === chosenSub);
   const node = selected?.nodes.find(item => item[0] === chosenNode);
-  setText($("current-name"), fromSubscription ? (node ? node[1] : "选一个节点") : identity || !identityRead ? "私人节点" : "还没有节点");
-  setText($("current-from"), fromSubscription ? (node ? selected.name : loaded ? "去「节点」页挑一个" : "")
-    : identity || (identityRead ? "粘贴朋友发来的邀请，或去导入订阅" : ""));
+  setText($("current-name"), fromSubscription ? (node ? node[1] : "选一个节点") : identity || !identityRead || active ? "私人节点" : "还没有节点");
+  setText($("current-from"), fromSubscription ? (node ? selected.name : loaded ? "点这里挑一个" : "")
+    : identity || (active ? "正在加入…" : identityRead ? "点这里添加订阅，或粘贴朋友的邀请" : ""));
   showLatency($("current-latency"), fromSubscription ? latency.get(chosenSub + ":" + chosenNode) : latency.get("v2"));
-  $("enrollment").hidden = active || fromSubscription || !identityRead || !!identity;
-  setText($("v2-name"), identity ? "私人节点 · " + identity : "还没有私人节点");
+  $("enrollment").hidden = !identityRead || !!identity;
+  $("pick-v2").hidden = !identity;
+  document.querySelector('[data-probe="v2"]').hidden = !identity;
+  $("join").disabled = active || busy || !invoke;
+  setText($("v2-name"), "私人节点 · " + identity);
 
   if (active) {
     proxy.checked = enabled;
@@ -361,7 +365,7 @@ async function refresh() {
   setTimeout(refresh, 750);
 }
 
-function choose(subId, nodeId) {
+function pick(subId, nodeId) {
   source = subId ? "subscription" : "v2";
   localStorage.setItem("connectionSource", source);
   if (subId) {
@@ -370,11 +374,35 @@ function choose(subId, nodeId) {
     localStorage.setItem("chosenSubscription", chosenSub);
     localStorage.setItem("chosenNode", chosenNode);
   }
+}
+// Never leave the home card empty while a usable node exists.
+function autoPick() {
+  if (!loaded || !identityRead) return;
+  const usable = catalog.filter(sub => sub.nodes.length);
+  if (source === "subscription") {
+    const sub = catalog.find(row => row.id === chosenSub);
+    if (sub?.nodes.some(node => node[0] === chosenNode)) return;
+    const next = sub?.nodes.length ? sub : usable[0];
+    if (next) pick(next.id, next.nodes[0][0]);
+    else if (identity) pick("", "");
+  } else if (!identity && !invite.value.trim() && usable.length) {
+    pick(usable[0].id, usable[0].nodes[0][0]);
+  }
+}
+function choose(subId, nodeId) {
+  pick(subId, nodeId);
   localError = "";
   render();
   setTimeout(() => { location.hash = "home"; }, reduceMotion ? 0 : 260);
 }
 $("pick-v2").addEventListener("click", () => choose("", ""));
+$("enrollment").addEventListener("submit", event => {
+  event.preventDefault();
+  if ($("join").disabled || !invite.value.trim()) return;
+  pick("", "");
+  location.hash = "home";
+  $("connection-form").requestSubmit();
+});
 
 function nodeControls() {
   const active = running(snapshot[0]);
@@ -466,7 +494,9 @@ async function manage(action, fields = {}) {
       $("import-form").hidden = true;
       $("show-import").hidden = false;
     }
-    status.textContent = {import_subscription:"添加好了",update_subscription:"已更新",remove_subscription:"已删除"}[action] || "";
+    const done = {import_subscription:"添加好了",update_subscription:"已更新",remove_subscription:"已删除"}[action] || "";
+    status.textContent = done;
+    if (done) setTimeout(() => { if (status.textContent === done) status.textContent = ""; }, 2500);
   } catch (err) {
     status.textContent = messages[err] || "没成功，再试一次。";
     status.classList.add("error");
